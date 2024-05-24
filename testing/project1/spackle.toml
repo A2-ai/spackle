@@ -1,0 +1,18 @@
+
+[[slots]]
+key = "file_name"
+type = "String"
+name = "File name"
+description = "The name of the R file (without the extension)"
+
+[[slots]]
+key = "person_name"
+type = "String"
+name = "Person name"
+description = "The name of the fourth person"
+
+[[slots]]
+key = "person_age"
+type = "Number"
+name = "Person age"
+description = "The age of the fourth person"
