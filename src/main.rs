@@ -1,7 +1,7 @@
 use clap::{command, Parser, Subcommand};
 use colored::{Color, Colorize};
 use core::config;
-use std::{collections::HashMap, error::Error, fs, path::PathBuf};
+use std::{borrow::BorrowMut, collections::HashMap, error::Error, fs, path::PathBuf};
 use tera::Tera;
 
 use crate::core::config::SlotType;
@@ -65,7 +65,7 @@ fn main() {
             let config = match config::load(&project_dir) {
                 Ok(config) => config,
                 Err(e) => {
-                    eprintln!("{} {}", "❌", e.to_string().red());
+                    eprintln!("{} {}", "❌", e.to_string().bright_red());
                     std::process::exit(1);
                 }
             };
@@ -89,7 +89,7 @@ fn main() {
             let config = match config::load(&project_dir) {
                 Ok(config) => config,
                 Err(e) => {
-                    eprintln!("{} {}", "❌", e.to_string().red());
+                    eprintln!("{} {}", "❌", e.to_string().bright_red());
                     std::process::exit(1);
                 }
             };
@@ -157,7 +157,7 @@ fn main() {
             let tera = match Tera::new(&glob.to_string_lossy()) {
                 Ok(t) => t,
                 Err(e) => {
-                    eprintln!("{} {}", "❌", e.to_string().red());
+                    eprintln!("{} {}", "❌", e.to_string().bright_red());
                     std::process::exit(1);
                 }
             };
@@ -165,7 +165,7 @@ fn main() {
             let context = match tera::Context::from_serialize(data_entries) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("{} {}", "❌", e.to_string().red());
+                    eprintln!("{} {}", "❌", e.to_string().bright_red());
                     std::process::exit(1);
                 }
             };
@@ -176,10 +176,11 @@ fn main() {
             }
 
             // Render the template
-            let num_templates = tera.get_template_names().count();
-            for (i, template_name) in tera.get_template_names().into_iter().enumerate() {
+            let template_names = tera.get_template_names().collect::<Vec<_>>();
+            let num_templates = template_names.len();
+            for (i, template_name) in template_names.iter().enumerate() {
                 println!(
-                    "\n{} rendering {}...",
+                    "{} rendering {}...\n",
                     ("📄 [".to_owned()
                         + &(i + 1).to_string()
                         + &"/"
@@ -195,7 +196,7 @@ fn main() {
                         eprintln!(
                             "{} {}\n{}",
                             "❌",
-                            e.to_string().red(),
+                            e.to_string().bright_red(),
                             e.source().unwrap().to_string().red()
                         );
 
@@ -208,12 +209,24 @@ fn main() {
                 }
 
                 // Template the file name itself
-                let template_name = match template_name.strip_suffix(".j2") {
-                    Some(name) => name,
-                    None => template_name,
+                let mut tera = tera.clone();
+                let template_name = match tera.render_str(template_name, &context) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        eprintln!(
+                            "{}\n{}\n",
+                            "❌ Failed to render file name".bright_red(),
+                            e.source().unwrap().to_string().red()
+                        );
+
+                        continue;
+                    }
                 };
 
-                // let template_name = template_name.replace("{{", to)
+                let template_name = match template_name.strip_suffix(".j2") {
+                    Some(name) => name,
+                    None => return eprintln!("{}\n", "❌ Error with template name".bright_red()),
+                };
 
                 // Write the output
                 let output_dir = project_dir.join("out").join(template_name);
@@ -226,7 +239,7 @@ fn main() {
                             "{}\n{}\n{}",
                             "❌ Error creating output directory".bright_red(),
                             e.to_string().bright_red(),
-                            output_dir.to_string_lossy().red()
+                            output_dir.to_string_lossy().bright_red()
                         ),
                     },
                 }
@@ -237,7 +250,7 @@ fn main() {
                         "{}\n{}\n{}",
                         "❌ Error writing rendered file".bright_red(),
                         e.to_string().bright_red(),
-                        output_dir.to_string_lossy().red()
+                        output_dir.to_string_lossy().bright_red()
                     ),
                 }
             }
