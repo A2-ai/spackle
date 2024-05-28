@@ -1,9 +1,11 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, env::temp_dir, path::PathBuf};
 
 use spackle::core::fill;
 
 #[test]
 fn test_fill_proj1() {
+    let dir = temp_dir();
+
     let result = fill::fill(
         &PathBuf::from("tests/data/proj1"),
         HashMap::from([
@@ -11,7 +13,7 @@ fn test_fill_proj1() {
             ("person_age".to_string(), "42".to_string()),
             ("file_name".to_string(), "main".to_string()),
         ]),
-        &PathBuf::from("tests/data/proj1-out"),
+        &dir,
     );
 
     println!("{:?}", result);

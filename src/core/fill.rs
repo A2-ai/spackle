@@ -24,7 +24,7 @@ impl Display for Error {
         match self {
             Error::ErrorInitializingTera(e) => write!(f, "error initializing Tera: {}", e),
             Error::ErrorCopyingFromSource { source, path } => {
-                write!(f, "error copying source {}\n{}", path.display(), source)
+                write!(f, "error copying {}\n{}", path.display(), source)
             }
         }
     }
@@ -84,8 +84,6 @@ pub struct RenderedFile {
     pub elapsed: Duration,
 }
 
-// Fills the templates in the project with the provided slot data.
-// Returns a list of results, where each is the result of rendering a given template
 pub fn fill(
     project_dir: &PathBuf,
     data: HashMap<String, String>,
@@ -95,6 +93,11 @@ pub fn fill(
 
     let tera = Tera::new(&glob.to_string_lossy()).map_err(|e| Error::ErrorInitializingTera(e))?;
     let context = Context::from_serialize(data).map_err(|e| Error::ErrorInitializingTera(e))?;
+
+    // fs::remove_dir_all(out_dir).map_err(|e| Error::ErrorCopyingFromSource {
+    //     source: e.into(),
+    //     path: out_dir.clone(),
+    // })?;
 
     // Copy all files not matching the template extension or the out dir
     for entry in WalkDir::new(project_dir) {
@@ -112,9 +115,8 @@ pub fn fill(
                 })?;
         let dst_path = out_dir.join(relative_path);
 
-        println!("{} -> {}", src_path.display(), dst_path.display());
-
-        if entry.file_name() == out_dir {
+        // Skip spackle.toml
+        if entry.file_name() == "spackle.toml" {
             continue;
         }
 
@@ -159,17 +161,20 @@ pub fn fill(
         };
 
         // Render the file name
-        let mut tera = tera.clone();
-        let template_name = match tera.render_str(template_name, &context) {
-            Ok(o) => o,
-            Err(e) => {
-                return Err(FileError {
-                    kind: FileErrorKind::ErrorRenderingName,
-                    file: template_name.to_string(),
-                    source: Box::new(e),
-                });
-            }
-        };
+        let mut template_name = template_name.to_string();
+        if template_name.ends_with(TEMPLATE_EXT) {
+            let mut tera = tera.clone();
+            template_name = match tera.render_str(&template_name, &context) {
+                Ok(s) => s,
+                Err(e) => {
+                    return Err(FileError {
+                        kind: FileErrorKind::ErrorRenderingName,
+                        file: template_name.to_string(),
+                        source: Box::new(e),
+                    });
+                }
+            };
+        }
 
         let template_name = match template_name.strip_suffix(TEMPLATE_EXT) {
             Some(name) => name,

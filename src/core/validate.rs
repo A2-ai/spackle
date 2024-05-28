@@ -1,11 +1,24 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Display};
 
 use super::config::{Slot, SlotType};
 
+#[derive(Debug)]
 pub enum Error {
-    InvalidData(String),
-    DataIsWrongType(String, String),
-    SlotIsMissingData(String),
+    UnknownSlot(String),
+    TypeMismatch(String, String),
+    UndefinedSlot(String),
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::UnknownSlot(key) => write!(f, "unknown slot: {}", key),
+            Error::TypeMismatch(key, r#type) => {
+                write!(f, "type mismatch for key {}: {}", key, r#type)
+            }
+            Error::UndefinedSlot(key) => write!(f, "slot was not defined: {}", key),
+        }
+    }
 }
 
 pub fn validate(data: &HashMap<String, String>, slots: Vec<Slot>) -> Result<(), Error> {
@@ -14,7 +27,7 @@ pub fn validate(data: &HashMap<String, String>, slots: Vec<Slot>) -> Result<(), 
         let slot = match slots.iter().find(|slot| slot.key == *entry.0) {
             Some(slot) => slot,
             None => {
-                return Err(Error::InvalidData(entry.0.clone()));
+                return Err(Error::UnknownSlot(entry.0.clone()));
             }
         };
 
@@ -24,7 +37,7 @@ pub fn validate(data: &HashMap<String, String>, slots: Vec<Slot>) -> Result<(), 
             SlotType::Number => entry.1.parse::<f64>().is_ok(),
             SlotType::Boolean => entry.1.parse::<bool>().is_ok(),
         } {
-            return Err(Error::DataIsWrongType(
+            return Err(Error::TypeMismatch(
                 entry.0.clone(),
                 slot.r#type.to_string(),
             ));
@@ -34,7 +47,7 @@ pub fn validate(data: &HashMap<String, String>, slots: Vec<Slot>) -> Result<(), 
     // Ensure all slots are assigned data
     for slot in slots.iter() {
         if !data.iter().any(|data| *data.0 == slot.key) {
-            return Err(Error::SlotIsMissingData(slot.key.clone()));
+            return Err(Error::UndefinedSlot(slot.key.clone()));
         }
     }
 

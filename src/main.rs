@@ -103,25 +103,12 @@ fn main() {
             match validate::validate(&data_entries, config.slots) {
                 Ok(()) => {}
                 Err(e) => {
-                    // eprintln!("{}", e);
-                    match e {
-                        validate::Error::InvalidData(key) => {
-                            eprintln!(
-                                "{} {}",
-                                "❌".bright_red(),
-                                format!("Missing slot: {}", key).red()
-                            );
-                        }
-                        validate::Error::DataIsWrongType(key, r#type) => {
-                            eprintln!(
-                                "{} {}",
-                                "❌".bright_red(),
-                                format!("Slot {} is of wrong type, should be {}", key, r#type)
-                                    .red()
-                            );
-                        }
-                        validate::Error::SlotIsMissingData(_) => todo!(),
-                    }
+                    eprintln!(
+                        "❌ {}\n{}",
+                        "Error validating supplied data".bright_red(),
+                        e.to_string().red()
+                    );
+
                     std::process::exit(1);
                 }
             }
@@ -136,7 +123,6 @@ fn main() {
                         r.len(),
                         "files",
                         "in".dimmed(),
-                        // use Debug impl
                         format!("{:?}", start_time.elapsed()).dimmed()
                     );
 
