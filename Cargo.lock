@@ -752,6 +752,7 @@ dependencies = [
  "strum_macros",
  "tera",
  "toml",
+ "walkdir",
 ]
 
 [[package]]

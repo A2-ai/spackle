@@ -1,4 +1,4 @@
-use colored::{Color, Colorize};
+use colored::Colorize;
 use serde::Deserialize;
 use std::fmt::Display;
 use std::{error::Error, fs, path::PathBuf};
@@ -29,7 +29,6 @@ impl Display for Slot {
             f,
             "{} {}\n{}",
             self.key.yellow(),
-            // mid gray color
             ("[".to_owned() + &self.r#type.to_string() + "]")
                 .to_string()
                 .to_lowercase()
@@ -47,23 +46,13 @@ pub fn load(dir: &PathBuf) -> Result<Config, Box<dyn Error>> {
 
     let config_str = match fs::read_to_string(config_path) {
         Ok(o) => o,
-        Err(e) => return Err(format!("Failed to read config file: {}", e).into()),
+        Err(e) => return Err(format!("Failed to read config file\n{}", e).into()),
     };
 
     let config = match toml::from_str(&config_str) {
         Ok(o) => o,
-        Err(e) => return Err(format!("Failed to parse config file: {}", e).into()),
+        Err(e) => return Err(format!("Failed to parse config file\n{}", e).into()),
     };
 
     Ok(config)
 }
-
-// Ensure the data is consistent with slot definition
-// pub fn validate_slot_data(
-//     slots: Vec<Slot>,
-//     data: Vec<(String, String)>,
-// ) -> Result<(), Box<dyn Error>> {
-//     slots.into_iter().map(|slot| {
-//         // Check data type
-//     })
-// }
