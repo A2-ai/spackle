@@ -1,7 +1,11 @@
 use clap::{command, Parser, Subcommand};
 use colored::Colorize;
-use core::{config, validate};
-use std::{collections::HashMap, path::PathBuf, time::Instant};
+use core::{
+    config,
+    copy::{self},
+    validate,
+};
+use std::{collections::HashMap, path::PathBuf, process::exit, time::Instant};
 
 use crate::core::fill;
 
@@ -17,7 +21,7 @@ struct Cli {
     #[arg(short = 'D', long, default_value = ".", global = true)]
     dir: PathBuf,
 
-    /// The directory to render to. Defaults to 'render' within the project root.
+    /// The directory to render to. Defaults to 'render' within the current directory. Cannot be the same as the project directory.
     #[arg(short = 'o', long, default_value = "render", global = true)]
     out: PathBuf,
 
@@ -44,6 +48,16 @@ fn main() {
 
     let cli = Cli::parse();
 
+    // Ensure the output directory is not the same as the project directory
+    if cli.out == cli.dir {
+        eprintln!(
+            "{}\n{}",
+            "❌ Output directory cannot be the same as project directory".bright_red(),
+            "Please choose a different output directory.".red()
+        );
+        exit(2);
+    }
+
     let project_dir = cli.dir;
 
     // Check if the project directory is a spackle project
@@ -53,7 +67,7 @@ fn main() {
             "❌ Provided directory is not a spackle project".bright_red(),
             "Valid projects must have a spackle.toml file.".red()
         );
-        std::process::exit(1);
+        exit(1);
     }
 
     // Load the config
@@ -61,18 +75,19 @@ fn main() {
         Ok(config) => config,
         Err(e) => {
             eprintln!(
-                "{} {}",
-                "❌ Error loading project config",
-                e.to_string().bright_red()
+                "❌ {}\n{}",
+                "Error loading project config".bright_red(),
+                e.to_string().red()
             );
-            std::process::exit(1);
+            exit(1);
         }
     };
 
     println!(
-        "📂 {} {}\n",
+        "📂 {} {} {}\n",
         "Using project",
-        project_dir.to_string_lossy().bold()
+        project_dir.to_string_lossy().bold(),
+        format!("with {} {}", config.slots.len(), "slots").dimmed()
     );
 
     match &cli.command {
@@ -109,7 +124,41 @@ fn main() {
                         e.to_string().red()
                     );
 
-                    std::process::exit(1);
+                    exit(1);
+                }
+            }
+
+            let start_time = Instant::now();
+
+            match copy::copy(&project_dir, &cli.out, &config.ignore) {
+                Ok(r) => {
+                    println!(
+                        "{} {} {} {}",
+                        "🖨️  Copied",
+                        r.copied_count,
+                        "files",
+                        format!("in {:?}", start_time.elapsed()).dimmed()
+                    );
+
+                    println!(
+                        "{}",
+                        format!(
+                            "{} {} {}\n",
+                            "  Ignored", r.skipped_count, "files/directories"
+                        )
+                        .to_string()
+                        .dimmed()
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "❌ {}\n{}\n{}",
+                        "Could not copy project".bright_red(),
+                        e.path.to_string_lossy().red(),
+                        e.to_string().red(),
+                    );
+
+                    exit(1);
                 }
             }
 
@@ -119,7 +168,7 @@ fn main() {
                 Ok(r) => {
                     println!(
                         "{} {} {} {} {}\n",
-                        "🏁 Processed",
+                        "⛽ Processed",
                         r.len(),
                         "files",
                         "in".dimmed(),

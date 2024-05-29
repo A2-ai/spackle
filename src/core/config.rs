@@ -5,6 +5,8 @@ use std::{error::Error, fs, path::PathBuf};
 
 #[derive(Deserialize, Debug)]
 pub struct Config {
+    #[serde(default)]
+    pub ignore: Vec<String>,
     pub slots: Vec<Slot>,
 }
 
@@ -38,7 +40,7 @@ impl Display for Slot {
     }
 }
 
-const CONFIG_FILE: &str = "spackle.toml";
+pub const CONFIG_FILE: &str = "spackle.toml";
 
 // Loads the config for the given directory
 pub fn load(dir: &PathBuf) -> Result<Config, Box<dyn Error>> {

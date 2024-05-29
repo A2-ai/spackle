@@ -1,25 +1,16 @@
 # 🚰 spackle
 
-A spackle project is composed of a `spackle.toml` file at the root containing a list of slots.
+A frictionless project templating tool with support for rich interfacing via the web, CLI, and more.
 
-## Slot config
+## Configuration
 
-```toml
-[[slots]]
-key = "slot_name"
-type = "string"
-name = "Slot name"
-description = "A description of the slot"
-```
+A spackle project is defined by a `spackle.toml` file at the root directory. Slots defined in the configuration will
+fill files templated with a `.j2` extension.
 
-### key `string`
+Visit the below page for a full manual on how to configure spackle:
 
-The key of the slot in the project. This is the variable name in the template.
+### [Configuration manual](docs/configuration.md)
 
-### type `string`
+## Contributing
 
-The type of the slot. Can be one of the following:
-
-- `String`
-- `Number`
-- `Boolean`
+`cargo run`

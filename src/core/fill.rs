@@ -6,38 +6,8 @@ use std::{
     time::Duration,
 };
 use tera::{Context, Tera};
-use walkdir::WalkDir;
 
-const TEMPLATE_EXT: &str = ".j2";
-
-#[derive(Debug)]
-pub enum Error {
-    ErrorInitializingTera(tera::Error),
-    ErrorCopyingFromSource {
-        source: Box<dyn std::error::Error>,
-        path: PathBuf,
-    },
-}
-
-impl Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::ErrorInitializingTera(e) => write!(f, "error initializing Tera: {}", e),
-            Error::ErrorCopyingFromSource { source, path } => {
-                write!(f, "error copying {}\n{}", path.display(), source)
-            }
-        }
-    }
-}
-
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::ErrorInitializingTera(e) => e.source(),
-            Error::ErrorCopyingFromSource { source, .. } => source.source(),
-        }
-    }
-}
+pub const TEMPLATE_EXT: &str = ".j2";
 
 #[derive(Debug)]
 pub struct FileError {
@@ -88,61 +58,11 @@ pub fn fill(
     project_dir: &PathBuf,
     data: HashMap<String, String>,
     out_dir: &PathBuf,
-) -> Result<Vec<Result<RenderedFile, FileError>>, Error> {
+) -> Result<Vec<Result<RenderedFile, FileError>>, tera::Error> {
     let glob = project_dir.join("**").join("*".to_owned() + TEMPLATE_EXT);
 
-    let tera = Tera::new(&glob.to_string_lossy()).map_err(|e| Error::ErrorInitializingTera(e))?;
-    let context = Context::from_serialize(data).map_err(|e| Error::ErrorInitializingTera(e))?;
-
-    // fs::remove_dir_all(out_dir).map_err(|e| Error::ErrorCopyingFromSource {
-    //     source: e.into(),
-    //     path: out_dir.clone(),
-    // })?;
-
-    // Copy all files not matching the template extension or the out dir
-    for entry in WalkDir::new(project_dir) {
-        let entry = entry.map_err(|e| Error::ErrorCopyingFromSource {
-            path: e.path().map(|p| p.to_path_buf()).unwrap_or_default(),
-            source: Box::new(e),
-        })?;
-        let src_path = entry.path();
-        let relative_path =
-            src_path
-                .strip_prefix(project_dir)
-                .map_err(|e| Error::ErrorCopyingFromSource {
-                    source: e.into(),
-                    path: src_path.to_path_buf(),
-                })?;
-        let dst_path = out_dir.join(relative_path);
-
-        // Skip spackle.toml
-        if entry.file_name() == "spackle.toml" {
-            continue;
-        }
-
-        if entry.file_type().is_dir() {
-            fs::create_dir_all(&dst_path).map_err(|e| Error::ErrorCopyingFromSource {
-                source: e.into(),
-                path: dst_path.clone(),
-            })?;
-        } else if entry.file_type().is_file() {
-            // Skip entry if it has template extension
-            if dst_path.to_string_lossy().ends_with(TEMPLATE_EXT) {
-                continue;
-            }
-
-            if let Some(parent) = dst_path.parent() {
-                fs::create_dir_all(parent).map_err(|e| Error::ErrorCopyingFromSource {
-                    source: e.into(),
-                    path: parent.to_path_buf(),
-                })?;
-            }
-            fs::copy(&src_path, &dst_path).map_err(|e| Error::ErrorCopyingFromSource {
-                source: e.into(),
-                path: dst_path.clone(),
-            })?;
-        }
-    }
+    let tera = Tera::new(&glob.to_string_lossy())?;
+    let context = Context::from_serialize(data)?;
 
     let template_names = tera.get_template_names().collect::<Vec<_>>();
     let rendered_templates = template_names.iter().map(|template_name| {
@@ -205,7 +125,7 @@ pub fn fill(
         })?;
 
         Ok(RenderedFile {
-            path: output_dir,
+            path: template_name.into(),
             contents: output,
             elapsed: start_time.elapsed(),
         })
