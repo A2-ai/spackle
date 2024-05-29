@@ -136,21 +136,35 @@ pub fn fill(
     Ok(rendered_templates.collect::<Vec<_>>())
 }
 
+pub enum ValidateError {
+    TeraError(tera::Error),
+    RenderError(Vec<(String, tera::Error)>),
+}
+
 // Validates the templates in the directory against the slots
 // Returns an error if any of the templates reference a slot that doesn't exist
-pub fn validate_dir(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), tera::Error> {
+pub fn validate_dir(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), ValidateError> {
     let glob = dir.join("**").join("*".to_owned() + TEMPLATE_EXT);
 
-    let tera = Tera::new(&glob.to_string_lossy())?;
+    let tera = Tera::new(&glob.to_string_lossy()).map_err(|e| ValidateError::TeraError(e))?;
     let context = Context::from_serialize(
         slots
             .iter()
             .map(|s| (s.key.clone(), ""))
             .collect::<HashMap<_, _>>(),
-    )?;
+    )
+    .map_err(|e| ValidateError::TeraError(e))?;
 
-    for template_name in tera.get_template_names() {
-        tera.render(template_name, &context)?;
+    let errors = tera
+        .get_template_names()
+        .filter_map(|template_name| match tera.render(template_name, &context) {
+            Ok(_) => None,
+            Err(e) => Some((template_name.to_string(), e)),
+        })
+        .collect::<Vec<_>>();
+
+    if !errors.is_empty() {
+        return Err(ValidateError::RenderError(errors));
     }
 
     Ok(())

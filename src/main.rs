@@ -29,12 +29,14 @@ enum Commands {
     /// Gets info on a spackle project including the required inputs
     /// and their descriptions.
     Info,
-    /// Fills a spackle template using the provided slot data
+    /// Fills a spackle project using the provided data
     Fill {
         /// Provides a slot with data
         #[arg(short, long)]
         entries: Vec<String>,
     },
+    /// Checks the validity of a spackle project
+    Check,
 }
 
 fn main() {
@@ -85,29 +87,44 @@ fn main() {
     );
 
     match &cli.command {
+        Commands::Check => match template::validate_dir(&project_dir, &config.slots) {
+            Ok(()) => {
+                println!("{}", "✅ Template files are valid".bright_green());
+            }
+            Err(e) => {
+                match e {
+                    template::ValidateError::TeraError(e) => {
+                        eprintln!(
+                            "{}\n{}",
+                            "❌ Error validating template files".bright_red(),
+                            e.to_string().red()
+                        );
+                    }
+                    template::ValidateError::RenderError(e) => {
+                        for (templ, e) in e {
+                            eprintln!(
+                                "{}\n{}",
+                                format!("❌ Template {} has errors", templ.bright_red().bold())
+                                    .bright_red(),
+                                e.source()
+                                    .map(|e| e.to_string())
+                                    .unwrap_or_default()
+                                    .bright_red()
+                                    .dimmed()
+                            )
+                        }
+                    }
+                }
+
+                exit(1);
+            }
+        },
         Commands::Info {} => {
             println!("{}", "slots".truecolor(140, 200, 255).bold());
 
             (&config.slots).into_iter().for_each(|slot| {
                 println!("{}\n", slot);
             });
-
-            match template::validate_dir(&project_dir, &config.slots) {
-                Ok(()) => {
-                    println!("{}", "✅ Template files are valid".bright_green());
-                }
-                Err(e) => {
-                    eprintln!(
-                        "{}\n{}",
-                        "⚠️ One or more template files are invalid".bright_yellow(),
-                        e.source()
-                            .map(|s| s.to_string())
-                            .unwrap_or_default()
-                            .bright_yellow()
-                            .dimmed(),
-                    );
-                }
-            }
         }
         Commands::Fill { entries: data } => {
             let data_entries = data
