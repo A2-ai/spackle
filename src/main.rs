@@ -87,7 +87,7 @@ fn main() {
     );
 
     match &cli.command {
-        Commands::Check => match template::validate_dir(&project_dir, &config.slots) {
+        Commands::Check => match template::validate(&project_dir, &config.slots) {
             Ok(()) => {
                 println!("{}", "✅ Template files are valid".bright_green());
             }

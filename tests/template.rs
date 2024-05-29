@@ -1,9 +1,12 @@
 use std::{collections::HashMap, env::temp_dir, path::PathBuf};
 
-use spackle::core::template;
+use spackle::core::{
+    slot::{Slot, SlotType},
+    template,
+};
 
 #[test]
-fn test_fill_proj1() {
+fn fill_proj1() {
     let dir = temp_dir();
 
     let result = template::fill(
@@ -17,6 +20,36 @@ fn test_fill_proj1() {
     );
 
     println!("{:?}", result);
+
+    assert!(result.is_ok());
+}
+
+#[test]
+fn validate_dir_proj1() {
+    let result = template::validate(
+        &PathBuf::from("tests/data/proj1"),
+        &vec![Slot {
+            key: "defined_field".to_string(),
+            r#type: SlotType::String,
+            name: "Defined field".to_string(),
+            description: "Defined field".to_string(),
+        }],
+    );
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn validate_dir_proj2() {
+    let result = template::validate(
+        &PathBuf::from("tests/data/proj2"),
+        &vec![Slot {
+            key: "defined_field".to_string(),
+            r#type: SlotType::String,
+            name: "Defined field".to_string(),
+            description: "Defined field".to_string(),
+        }],
+    );
 
     assert!(result.is_ok());
 }

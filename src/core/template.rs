@@ -143,7 +143,7 @@ pub enum ValidateError {
 
 // Validates the templates in the directory against the slots
 // Returns an error if any of the templates reference a slot that doesn't exist
-pub fn validate_dir(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), ValidateError> {
+pub fn validate(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), ValidateError> {
     let glob = dir.join("**").join("*".to_owned() + TEMPLATE_EXT);
 
     let tera = Tera::new(&glob.to_string_lossy()).map_err(|e| ValidateError::TeraError(e))?;

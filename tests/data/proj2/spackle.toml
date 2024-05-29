@@ -1,0 +1,6 @@
+
+[[slots]]
+key = "defined_field"
+type = "String"
+name = "Defined filed"
+description = "Defined field"
