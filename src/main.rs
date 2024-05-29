@@ -1,13 +1,7 @@
 use clap::{command, Parser, Subcommand};
 use colored::Colorize;
-use core::{
-    config,
-    copy::{self},
-    validate,
-};
-use std::{collections::HashMap, path::PathBuf, process::exit, time::Instant};
-
-use crate::core::fill;
+use core::{config, copy, slot, template};
+use std::{collections::HashMap, error::Error, path::PathBuf, process::exit, time::Instant};
 
 mod core;
 
@@ -32,7 +26,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Gets info on a spackle template including the required inputs
+    /// Gets info on a spackle project including the required inputs
     /// and their descriptions.
     Info,
     /// Fills a spackle template using the provided slot data
@@ -94,9 +88,26 @@ fn main() {
         Commands::Info {} => {
             println!("{}", "slots".truecolor(140, 200, 255).bold());
 
-            config.slots.into_iter().for_each(|slot| {
+            (&config.slots).into_iter().for_each(|slot| {
                 println!("{}\n", slot);
             });
+
+            match template::validate_dir(&project_dir, &config.slots) {
+                Ok(()) => {
+                    println!("{}", "✅ Template files are valid".bright_green());
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{}\n{}",
+                        "⚠️ One or more template files are invalid".bright_yellow(),
+                        e.source()
+                            .map(|s| s.to_string())
+                            .unwrap_or_default()
+                            .bright_yellow()
+                            .dimmed(),
+                    );
+                }
+            }
         }
         Commands::Fill { entries: data } => {
             let data_entries = data
@@ -115,7 +126,7 @@ fn main() {
                 .map(|(key, value)| (key.to_string(), value.to_string()))
                 .collect::<HashMap<String, String>>();
 
-            match validate::validate(&data_entries, config.slots) {
+            match slot::validate_data(&data_entries, config.slots) {
                 Ok(()) => {}
                 Err(e) => {
                     eprintln!(
@@ -140,15 +151,19 @@ fn main() {
                         format!("in {:?}", start_time.elapsed()).dimmed()
                     );
 
-                    println!(
-                        "{}",
-                        format!(
-                            "{} {} {}\n",
-                            "  Ignored", r.skipped_count, "files/directories"
-                        )
-                        .to_string()
-                        .dimmed()
-                    );
+                    if r.skipped_count > 0 {
+                        println!(
+                            "{}",
+                            format!(
+                                "{} {} {}",
+                                "  Ignored", r.skipped_count, "files/directories"
+                            )
+                            .to_string()
+                            .dimmed()
+                        );
+                    }
+
+                    println!();
                 }
                 Err(e) => {
                     eprintln!(
@@ -164,7 +179,7 @@ fn main() {
 
             let start_time = Instant::now();
 
-            match fill::fill(&project_dir, data_entries, &PathBuf::from(&cli.out)) {
+            match template::fill(&project_dir, data_entries, &PathBuf::from(&cli.out)) {
                 Ok(r) => {
                     println!(
                         "{} {} {} {} {}\n",
@@ -202,7 +217,7 @@ fn main() {
                                     "⚠️ Could not process file".bright_yellow(),
                                     e.file.bright_yellow().bold(),
                                     format!("{}\n{}", e.kind, e.source.source().unwrap())
-                                        .yellow()
+                                        .bright_yellow()
                                         .dimmed(),
                                 );
                             }

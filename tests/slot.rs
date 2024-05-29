@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 
-use spackle::core::{
-    config::{Slot, SlotType},
-    validate,
-};
+use spackle::core::slot::{validate_data, Slot, SlotType};
 
 #[test]
 fn empty() {
@@ -11,7 +8,7 @@ fn empty() {
 
     let data = HashMap::new();
 
-    assert!(validate::validate(&data, slots).is_ok());
+    assert!(validate_data(&data, slots).is_ok());
 }
 
 #[test]
@@ -36,7 +33,7 @@ fn valid() {
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect::<HashMap<String, String>>();
 
-    assert!(validate::validate(&data, slots).is_ok());
+    assert!(validate_data(&data, slots).is_ok());
 }
 
 #[test]
@@ -61,7 +58,7 @@ fn missing_data() {
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect::<HashMap<String, String>>();
 
-    assert!(validate::validate(&data, slots).is_err());
+    assert!(validate_data(&data, slots).is_err());
 }
 
 #[test]
@@ -78,7 +75,7 @@ fn extra_data() {
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect::<HashMap<String, String>>();
 
-    assert!(validate::validate(&data, slots).is_err());
+    assert!(validate_data(&data, slots).is_err());
 }
 
 #[test]
@@ -103,7 +100,7 @@ fn non_string_type() {
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect::<HashMap<String, String>>();
 
-    assert!(validate::validate(&data, slots).is_ok());
+    assert!(validate_data(&data, slots).is_ok());
 }
 
 #[test]
@@ -120,5 +117,5 @@ fn wrong_type() {
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect::<HashMap<String, String>>();
 
-    assert!(validate::validate(&data, slots).is_err());
+    assert!(validate_data(&data, slots).is_err());
 }

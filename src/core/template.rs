@@ -7,6 +7,8 @@ use std::{
 };
 use tera::{Context, Tera};
 
+use super::slot::Slot;
+
 pub const TEMPLATE_EXT: &str = ".j2";
 
 #[derive(Debug)]
@@ -132,4 +134,24 @@ pub fn fill(
     });
 
     Ok(rendered_templates.collect::<Vec<_>>())
+}
+
+// Validates the templates in the directory against the slots
+// Returns an error if any of the templates reference a slot that doesn't exist
+pub fn validate_dir(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), tera::Error> {
+    let glob = dir.join("**").join("*".to_owned() + TEMPLATE_EXT);
+
+    let tera = Tera::new(&glob.to_string_lossy())?;
+    let context = Context::from_serialize(
+        slots
+            .iter()
+            .map(|s| (s.key.clone(), ""))
+            .collect::<HashMap<_, _>>(),
+    )?;
+
+    for template_name in tera.get_template_names() {
+        tera.render(template_name, &context)?;
+    }
+
+    Ok(())
 }

@@ -2,7 +2,7 @@ use std::{fmt::Display, fs, path::PathBuf};
 
 use walkdir::WalkDir;
 
-use super::{config::CONFIG_FILE, fill::TEMPLATE_EXT};
+use super::{config::CONFIG_FILE, template::TEMPLATE_EXT};
 
 #[derive(Debug)]
 pub struct Error {
