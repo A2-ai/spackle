@@ -8,6 +8,7 @@ clap = { version = "4.5.4", features = ["derive"] }
 colored = "2.1.0"
 serde = { version = "1.0.202", features = ["derive"] }
 strum_macros = "0.26.2"
+tempdir = "0.3.7"
 tera = "1.19.1"
 toml = "0.8.13"
 walkdir = "2.5.0"

@@ -1,13 +1,14 @@
-use std::{collections::HashMap, env::temp_dir, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf};
 
 use spackle::core::{
     slot::{Slot, SlotType},
     template,
 };
+use tempdir::TempDir;
 
 #[test]
 fn fill_proj1() {
-    let dir = temp_dir();
+    let dir = TempDir::new("spackle").unwrap().into_path();
 
     let result = template::fill(
         &PathBuf::from("tests/data/proj1"),
