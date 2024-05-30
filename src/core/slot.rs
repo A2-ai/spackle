@@ -5,14 +5,16 @@ use std::{collections::HashMap, fmt::Display};
 #[derive(Deserialize, Debug)]
 pub struct Slot {
     pub key: String,
+    #[serde(default)]
     pub r#type: SlotType,
     pub name: Option<String>,
     pub description: Option<String>,
 }
 
-#[derive(Deserialize, Debug, strum_macros::Display)]
+#[derive(Deserialize, Debug, strum_macros::Display, Default)]
 pub enum SlotType {
     Number,
+    #[default]
     String,
     Boolean,
 }
