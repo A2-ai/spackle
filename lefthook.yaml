@@ -3,3 +3,11 @@ pre-commit:
   commands:
     run-tests:
       run: cargo test
+
+    check-frontend-format:
+      root: frontend
+      run: bun x biome check --apply --no-errors-on-unmatched --files-ignore-unknown=true {staged_files} && git update-index --again
+   
+    check-frontend-types:
+      root: frontend
+      run: bun tsc --noEmit
