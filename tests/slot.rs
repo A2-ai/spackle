@@ -17,14 +17,14 @@ fn valid() {
         Slot {
             key: "key".to_string(),
             r#type: SlotType::String,
-            name: "name".to_string(),
-            description: "description".to_string(),
+            name: None,
+            description: None,
         },
         Slot {
             key: "key2".to_string(),
             r#type: SlotType::String,
-            name: "name2".to_string(),
-            description: "description2".to_string(),
+            name: None,
+            description: None,
         },
     ];
 
@@ -42,14 +42,14 @@ fn missing_data() {
         Slot {
             key: "key".to_string(),
             r#type: SlotType::String,
-            name: "name".to_string(),
-            description: "description".to_string(),
+            name: None,
+            description: None,
         },
         Slot {
             key: "key2".to_string(),
             r#type: SlotType::String,
-            name: "name2".to_string(),
-            description: "description2".to_string(),
+            name: None,
+            description: None,
         },
     ];
 
@@ -66,8 +66,8 @@ fn extra_data() {
     let slots = vec![Slot {
         key: "key".to_string(),
         r#type: SlotType::String,
-        name: "name".to_string(),
-        description: "description".to_string(),
+        name: None,
+        description: None,
     }];
 
     let data = HashMap::from([("key", "value"), ("key2", "value2")])
@@ -84,14 +84,14 @@ fn non_string_type() {
         Slot {
             key: "key".to_string(),
             r#type: SlotType::Number,
-            name: "name".to_string(),
-            description: "description".to_string(),
+            name: None,
+            description: None,
         },
         Slot {
             key: "key2".to_string(),
             r#type: SlotType::Boolean,
-            name: "name".to_string(),
-            description: "description".to_string(),
+            name: None,
+            description: None,
         },
     ];
 
@@ -108,8 +108,8 @@ fn wrong_type() {
     let slots = vec![Slot {
         key: "key".to_string(),
         r#type: SlotType::Number,
-        name: "name".to_string(),
-        description: "description".to_string(),
+        name: None,
+        description: None,
     }];
 
     let data = HashMap::from([("key", "value")])

@@ -32,8 +32,8 @@ fn validate_dir_proj1() {
         &vec![Slot {
             key: "defined_field".to_string(),
             r#type: SlotType::String,
-            name: "Defined field".to_string(),
-            description: "Defined field".to_string(),
+            name: None,
+            description: None,
         }],
     );
 
@@ -47,8 +47,8 @@ fn validate_dir_proj2() {
         &vec![Slot {
             key: "defined_field".to_string(),
             r#type: SlotType::String,
-            name: "Defined field".to_string(),
-            description: "Defined field".to_string(),
+            name: None,
+            description: None,
         }],
     );
 

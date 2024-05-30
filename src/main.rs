@@ -1,6 +1,9 @@
 use clap::{command, Parser, Subcommand};
 use colored::Colorize;
-use core::{config, copy, slot, template};
+use core::{
+    config, copy, slot,
+    template::{self, ValidateError},
+};
 use std::{collections::HashMap, error::Error, path::PathBuf, process::exit, time::Instant};
 
 mod core;
@@ -93,17 +96,17 @@ fn main() {
             }
             Err(e) => {
                 match e {
-                    template::ValidateError::TeraError(e) => {
+                    ValidateError::TeraError(e) => {
                         eprintln!(
                             "{}\n{}",
                             "❌ Error validating template files".bright_red(),
                             e.to_string().red()
                         );
                     }
-                    template::ValidateError::RenderError(e) => {
+                    ValidateError::RenderError(e) => {
                         for (templ, e) in e {
                             eprintln!(
-                                "{}\n{}",
+                                "{}\n{}\n",
                                 format!("❌ Template {} has errors", templ.bright_red().bold())
                                     .bright_red(),
                                 e.source()

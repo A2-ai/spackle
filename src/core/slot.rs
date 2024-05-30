@@ -6,8 +6,8 @@ use std::{collections::HashMap, fmt::Display};
 pub struct Slot {
     pub key: String,
     pub r#type: SlotType,
-    pub name: String,
-    pub description: String,
+    pub name: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Deserialize, Debug, strum_macros::Display)]
@@ -27,7 +27,10 @@ impl Display for Slot {
                 .to_string()
                 .to_lowercase()
                 .truecolor(128, 128, 128),
-            self.description.truecolor(180, 180, 180),
+            self.description
+                .clone()
+                .unwrap_or("no description".to_string())
+                .truecolor(180, 180, 180),
         )
     }
 }

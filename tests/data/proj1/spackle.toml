@@ -9,10 +9,8 @@ description = "The name of the R file (without the extension)"
 key = "person_name"
 type = "String"
 name = "Person name"
-description = "The name of the fourth person"
 
 [[slots]]
 key = "person_age"
 type = "Number"
-name = "Person age"
-description = "The age of the fourth person"
+description = "Person age"
