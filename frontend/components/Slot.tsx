@@ -21,8 +21,13 @@ export enum SlotType {
 export default function Slot(props: {
 	slot: Slot;
 }) {
-	const [state, send] = useMachine(tooltip.machine({ id: createUniqueId() }));
-
+	const [state, send] = useMachine(
+		tooltip.machine({
+			id: createUniqueId(),
+			openDelay: 0,
+			closeDelay: 0,
+		}),
+	);
 	const api = createMemo(() => tooltip.connect(state, send, normalizeProps));
 
 	return (
@@ -31,11 +36,32 @@ export default function Slot(props: {
 				<h3 class="text-gray-800 inline">{props.slot.name}</h3>
 				{props.slot.required && (
 					<>
-						<button class="text-rose-400" {...api().triggerProps}>
+						<button type="button" class="text-rose-400" {...api().triggerProps}>
 							<TbAsterisk class="inline" />
 						</button>
 						<Show when={api().open}>
-							<div {...api().contentProps}>Tooltip</div>
+							<div {...api().positionerProps}>
+								<div
+									style={{
+										"--arrow-size": "10px",
+									}}
+									{...api().arrowProps}
+								>
+									<div
+										// TODO find a better way to select the right color
+										style={{
+											"--arrow-background": "rgb(255 241 242)",
+										}}
+										{...api().arrowTipProps}
+									/>
+								</div>
+								<div
+									class="py-2 px-3 rounded-xl text-rose-400 bg-rose-50 shadow-lg"
+									{...api().contentProps}
+								>
+									required
+								</div>
+							</div>
 						</Show>
 					</>
 				)}

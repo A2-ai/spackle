@@ -1,12 +1,15 @@
 import { TbX } from "solid-icons/tb";
 import { For, Show, createSignal } from "solid-js";
+import { useData } from "vike-solid/useData";
 import Project, { dummyProjects } from "#/components/Project";
+import type { Data } from "./+data";
 
 export default function Page() {
 	const [search, setSearch] = createSignal("");
+	const projects = useData<Data>();
 
 	const filteredProjects = () => {
-		return dummyProjects.filter((p) => {
+		return projects.filter((p) => {
 			const nameMatch = p.name.toLowerCase().includes(search().toLowerCase());
 
 			const descriptionMatch = p.description

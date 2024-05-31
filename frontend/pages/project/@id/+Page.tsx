@@ -1,10 +1,10 @@
 import { TbArrowLeft } from "solid-icons/tb";
 import { For } from "solid-js";
-import tippy from "tippy.js";
+import { useData } from "vike-solid/useData";
 import type { Project } from "#/components/Project";
 import Slot, { SlotType } from "#/components/Slot";
 import type { Slot as SlotT } from "#/components/Slot";
-import "tippy.js/dist/tippy.css";
+import type { Data } from "./+data";
 
 const dummySlots: SlotT[] = [
 	{
@@ -30,25 +30,19 @@ const dummySlots: SlotT[] = [
 ];
 
 export default function Page() {
-	const project: Project = {
-		id: "1",
-		name: "Project 1",
-		description: "Description of project 1",
-	};
-
-	// TODO fetch
+	const project = useData<Data>();
 
 	return (
 		<div class="space-y-4">
 			<div class="flex justify-between items-center">
-				<h2 class="text-3xl text-gray-800 ">{project.name}</h2>
+				<h2 class="text-3xl text-gray-800 font-serif">{project?.name}</h2>
 
 				<a href="/" class="text-stone-400">
-					<TbArrowLeft class="inline" /> Back
+					<TbArrowLeft class="inline" /> All projects
 				</a>
 			</div>
 
-			<p class="text-gray-600">{project.description}</p>
+			<p class="text-gray-600">{project?.description}</p>
 
 			<form class="my-8 space-y-5">
 				<For each={dummySlots}>{(s) => <Slot slot={s} />}</For>
@@ -58,7 +52,7 @@ export default function Page() {
 					<input
 						type="text"
 						class="w-full p-3 rounded-xl bg-stone-50"
-						placeholder={`~/projects/${project.id}`}
+						placeholder={`~/projects/${project?.id}`}
 					/>
 				</label>
 

@@ -1,7 +1,9 @@
+import { TbTrowel } from "solid-icons/tb";
 import type { JSX } from "solid-js";
+
 import "./tailwind.css";
 import "@fontsource-variable/outfit";
-import { TbTrowel } from "solid-icons/tb";
+import "@fontsource/alice";
 
 export default function LayoutDefault(props: { children?: JSX.Element }) {
 	return (
@@ -16,7 +18,7 @@ export default function LayoutDefault(props: { children?: JSX.Element }) {
 function Logo() {
 	return (
 		<a href="/" class="text-center">
-			<h1 class="text-3xl font-medium text-orange-600">
+			<h1 class="text-3xl font-medium font-serif text-orange-600">
 				<TbTrowel class="inline mr-1" />
 				Spackle
 			</h1>

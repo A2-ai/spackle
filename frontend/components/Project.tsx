@@ -12,6 +12,7 @@ export const dummyProjects: Project[] = [
 		id: "1",
 		name: "Project 1",
 		description: "Description of project 1",
+		sourceUrl: "https://github.com",
 	},
 	{
 		id: "2",
@@ -34,7 +35,9 @@ export default function Project(props: {
 			href={`/project/${props.project.id}`}
 		>
 			<div>
-				<h2 class="text-xl text-stone-700">{props.project.name}</h2>
+				<h2 class="text-2xl text-stone-700  font-serif">
+					{props.project.name}
+				</h2>
 				<p class="text-stone-500">{props.project.description}</p>
 			</div>
 

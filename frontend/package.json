@@ -4,30 +4,36 @@
 		"dev": "vite",
 		"build": "vite build",
 		"preview": "vite preview",
-		"lint": "biome lint --apply .",
-		"format": "biome format --write ."
+		"check-types": "tsc --noEmit",
+		"check-format": "biome check --apply ."
 	},
 	"devDependencies": {
 		"@auth/core": "^0.31.0",
 		"@biomejs/biome": "1.7.3",
+		"@hono/vite-dev-server": "^0.12.1",
 		"@types/bun": "^1.1.3",
 		"@types/node": "^20.12.13",
 		"autoprefixer": "^10.4.19",
 		"postcss": "^8.4.38",
 		"tailwindcss": "^3.4.3",
 		"typescript": "^5.4.5",
-		"vite": "^5.2.11"
+		"vite": "^5.2.11",
+		"vite-plugin-wasm": "^3.3.0"
 	},
 	"dependencies": {
 		"@floating-ui/dom": "^1.6.5",
 		"@fontsource-variable/outfit": "^5.0.13",
+		"@fontsource/alice": "^5.0.13",
+		"@hono/node-server": "^1.11.2",
 		"@zag-js/solid": "^0.51.2",
 		"@zag-js/switch": "^0.51.2",
 		"@zag-js/tooltip": "^0.51.2",
 		"cross-fetch": "^4.0.0",
+		"hono": "^4.4.2",
 		"solid-floating-ui": "^0.3.1",
 		"solid-icons": "^1.1.0",
 		"solid-js": "^1.8.17",
+		"telefunc": "^0.1.73",
 		"vike": "^0.4.172",
 		"vike-solid": "^0.4.5"
 	},
