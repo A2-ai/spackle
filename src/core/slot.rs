@@ -1,8 +1,10 @@
 use colored::Colorize;
 use serde::Deserialize;
 use std::{collections::HashMap, fmt::Display};
+use wasm_bindgen::prelude::*;
 
 #[derive(Deserialize, Debug)]
+#[wasm_bindgen(getter_with_clone)]
 pub struct Slot {
     pub key: String,
     #[serde(default)]
@@ -11,7 +13,8 @@ pub struct Slot {
     pub description: Option<String>,
 }
 
-#[derive(Deserialize, Debug, strum_macros::Display, Default)]
+#[derive(Deserialize, Debug, strum_macros::Display, Default, Clone)]
+#[wasm_bindgen]
 pub enum SlotType {
     Number,
     #[default]

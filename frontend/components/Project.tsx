@@ -2,6 +2,7 @@ import { TbArrowRight } from "solid-icons/tb";
 
 export type Project = {
 	id: string;
+	dir: string;
 	name: string;
 	description?: string;
 	sourceUrl?: string;
@@ -11,17 +12,20 @@ export const dummyProjects: Project[] = [
 	{
 		id: "1",
 		name: "Project 1",
+		dir: "../tests/data/proj1",
 		description: "Description of project 1",
 		sourceUrl: "https://github.com",
 	},
 	{
 		id: "2",
 		name: "Project 2",
+		dir: "../tests/data/proj1",
 		description: "Description of project 2",
 	},
 	{
 		id: "3",
 		name: "Project 3",
+		dir: "../tests/data/proj1",
 		description: "Description of project 3",
 	},
 ];

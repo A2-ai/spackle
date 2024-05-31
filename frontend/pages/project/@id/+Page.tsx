@@ -2,11 +2,12 @@ import { TbArrowLeft } from "solid-icons/tb";
 import { For } from "solid-js";
 import { useData } from "vike-solid/useData";
 import type { Project } from "#/components/Project";
-import Slot, { SlotType } from "#/components/Slot";
-import type { Slot as SlotT } from "#/components/Slot";
+import SlotField from "#/components/SlotField";
+import type { Slot } from "#/server/slots";
+import { SlotType } from "../../../../pkg/spackle";
 import type { Data } from "./+data";
 
-const dummySlots: SlotT[] = [
+const dummySlots: Slot[] = [
 	{
 		key: "slot1",
 		type: SlotType.String,
@@ -30,7 +31,7 @@ const dummySlots: SlotT[] = [
 ];
 
 export default function Page() {
-	const project = useData<Data>();
+	const { project, slots } = useData<Data>() || {};
 
 	return (
 		<div class="space-y-4">
@@ -45,7 +46,7 @@ export default function Page() {
 			<p class="text-gray-600">{project?.description}</p>
 
 			<form class="my-8 space-y-5">
-				<For each={dummySlots}>{(s) => <Slot slot={s} />}</For>
+				<For each={slots}>{(s) => <SlotField slot={s} />}</For>
 
 				<label class="block space-y-1">
 					<span class="text-gray-600">Output path</span>

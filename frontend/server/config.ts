@@ -4,10 +4,13 @@ export type ServerConfig = {
 	projects: Project[];
 };
 
-export async function loadConfig() {
-	if (import.meta.env.DEV) {
-		return (await Bun.file("testing/server.json").json()) as ServerConfig;
-	}
+const CONFIG_FILE = import.meta.env.DEV ? "testing/server.json" : "server.json";
 
-	return (await Bun.file("server.json").json()) as ServerConfig;
+export async function loadConfig(): Promise<ServerConfig | undefined> {
+	try {
+		return await Bun.file(CONFIG_FILE).json();
+	} catch (e) {
+		console.error(e);
+		return undefined;
+	}
 }

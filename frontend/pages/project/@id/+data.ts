@@ -1,16 +1,21 @@
 import type { PageContextServer } from "vike/types";
-import type { Project } from "#/components/Project";
-import type { ServerConfig } from "#/server/config";
+import { loadConfig } from "#/server/config";
+import { getSlots } from "#/server/slots";
 
 export { data };
 export type Data = Awaited<ReturnType<typeof data>>;
 
-async function data(
-	pageContext: PageContextServer,
-): Promise<Project | undefined> {
+async function data(pageContext: PageContextServer) {
 	const { id } = pageContext.routeParams || {};
 
-	const config: ServerConfig = await Bun.file("testing/server.json").json();
+	const config = await loadConfig();
+	if (!config) return;
 
-	return config.projects.find((p) => p.id === id);
+	const project = config.projects.find((p) => p.id === id);
+	if (!project) return;
+
+	return {
+		project,
+		slots: await getSlots(project.id),
+	};
 }

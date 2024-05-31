@@ -1,9 +1,9 @@
 {
 	"type": "module",
 	"scripts": {
-		"dev": "vite",
-		"build": "vite build",
-		"preview": "vite preview",
+		"dev": "bun --bun vite",
+		"build": "bun --bun vite build",
+		"preview": "bun --bun vite preview",
 		"check-types": "tsc --noEmit",
 		"check-format": "biome check --apply ."
 	},
@@ -21,6 +21,7 @@
 		"vite-plugin-wasm": "^3.3.0"
 	},
 	"dependencies": {
+		"@ark-ui/solid": "^3.0.2",
 		"@floating-ui/dom": "^1.6.5",
 		"@fontsource-variable/outfit": "^5.0.13",
 		"@fontsource/alice": "^5.0.13",
