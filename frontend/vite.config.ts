@@ -16,4 +16,9 @@ export default defineConfig({
 			"#": __dirname,
 		},
 	},
+	// build: {
+	// 	rollupOptions: {
+	// 		external: ["spackle"],
+	// 	},
+	// },
 });

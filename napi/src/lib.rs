@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-// TODO currently can't derive in core since building bin will trigger linker errors since not dynamic
 #[napi]
 pub struct Slot {
     pub key: String,
