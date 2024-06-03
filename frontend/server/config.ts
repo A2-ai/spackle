@@ -10,7 +10,7 @@ export async function loadConfig(): Promise<ServerConfig | undefined> {
 	try {
 		return await Bun.file(CONFIG_FILE).json();
 	} catch (e) {
-		console.error(e);
+		console.error("Error loading config:", e);
 		return undefined;
 	}
 }

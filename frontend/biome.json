@@ -1,6 +1,17 @@
 {
 	"$schema": "https://biomejs.dev/schemas/1.7.3/schema.json",
 	"files": {
-		"ignore": ["dist/**", "*.js", "*.cjs", "*.mjs", "*.spec.ts"]
+		"ignore": [
+			"node_modules",
+			"dist/**",
+			"*.js",
+			"*.cjs",
+			"*.mjs",
+			"*.spec.ts"
+		],
+		"ignoreUnknown": true
+	},
+	"vcs": {
+		"useIgnoreFile": true
 	}
 }

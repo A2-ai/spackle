@@ -1,4 +1,4 @@
-import { type SlotType, info } from "../../pkg/spackle";
+import { type SlotType, info } from "spackle";
 import { loadConfig } from "./config";
 
 export type Slot = {
@@ -28,7 +28,7 @@ export async function getSlots(id: string): Promise<Slot[]> {
 				}) as Slot,
 		);
 	} catch (e) {
-		console.error(e);
+		console.error("Error loading slots:", e);
 		return [];
 	}
 }

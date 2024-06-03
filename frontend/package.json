@@ -1,8 +1,8 @@
 {
 	"type": "module",
 	"scripts": {
-		"dev": "bun --bun vite",
-		"build": "bun --bun vite build",
+		"dev": "wasm-pack build && bun --bun vite",
+		"build": "wasm-pack build && bun --bun vite build",
 		"preview": "bun --bun vite preview",
 		"check-types": "tsc --noEmit",
 		"check-format": "biome check --apply ."
@@ -18,10 +18,9 @@
 		"tailwindcss": "^3.4.3",
 		"typescript": "^5.4.5",
 		"vite": "^5.2.11",
-		"vite-plugin-wasm": "^3.3.0"
+		"wasm-pack": "^0.12.1"
 	},
 	"dependencies": {
-		"@ark-ui/solid": "^3.0.2",
 		"@floating-ui/dom": "^1.6.5",
 		"@fontsource-variable/outfit": "^5.0.13",
 		"@fontsource/alice": "^5.0.13",
@@ -36,7 +35,9 @@
 		"solid-js": "^1.8.17",
 		"telefunc": "^0.1.73",
 		"vike": "^0.4.172",
-		"vike-solid": "^0.4.5"
+		"vike-solid": "^0.4.5",
+		"vite-plugin-wasm": "^3.3.0",
+		"spackle": "link:spackle"
 	},
 	"trustedDependencies": ["@biomejs/biome"]
 }
