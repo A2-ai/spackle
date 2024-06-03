@@ -1,10 +1,8 @@
 import { TbArrowLeft } from "solid-icons/tb";
 import { For } from "solid-js";
+import { type Slot, SlotType } from "spackle";
 import { useData } from "vike-solid/useData";
-import type { Project } from "#/components/Project";
 import SlotField from "#/components/SlotField";
-import type { Slot } from "#/server/slots";
-import { SlotType } from "../../../../pkg/spackle";
 import type { Data } from "./+data";
 
 const dummySlots: Slot[] = [
@@ -13,7 +11,7 @@ const dummySlots: Slot[] = [
 		type: SlotType.String,
 		name: "Slot 1",
 		description: "Duis ex minim ad id esse.",
-		required: true,
+		// required: true,
 	},
 	{
 		key: "slot2",

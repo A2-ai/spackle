@@ -1,13 +1,6 @@
-import { type SlotType, info } from "spackle";
+import type { Slot } from "spackle";
+import { info } from "spackle";
 import { loadConfig } from "./config";
-
-export type Slot = {
-	key: string;
-	type: SlotType;
-	required?: boolean;
-	name?: string;
-	description?: string;
-};
 
 export async function getSlots(id: string): Promise<Slot[]> {
 	const config = await loadConfig();
@@ -17,16 +10,7 @@ export async function getSlots(id: string): Promise<Slot[]> {
 	if (!project) return [];
 
 	try {
-		return info(id).map(
-			(s) =>
-				({
-					key: s.key,
-					type: s.type,
-					// required: s.required,
-					name: s.name,
-					description: s.description,
-				}) as Slot,
-		);
+		return info(id);
 	} catch (e) {
 		console.error("Error loading slots:", e);
 		return [];

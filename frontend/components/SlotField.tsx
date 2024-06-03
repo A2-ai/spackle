@@ -3,8 +3,7 @@ import * as zagSwitch from "@zag-js/switch";
 import * as tooltip from "@zag-js/tooltip";
 import { TbAsterisk } from "solid-icons/tb";
 import { Match, Show, Switch, createMemo, createUniqueId } from "solid-js";
-import type { Slot } from "#/server/slots";
-import { SlotType } from "../../pkg/spackle";
+import { type Slot, SlotType } from "spackle";
 
 export default function SlotField(props: {
 	slot: Slot;
@@ -16,7 +15,7 @@ export default function SlotField(props: {
 		<div class="p-5 rounded-2xl bg-stone-50 shadow space-y-3">
 			<div class="flex justify-between items-center">
 				<h3 class="text-gray-800 inline">{props.slot.name}</h3>
-				{props.slot.required && <RequiredIcon />}
+				{/* {props.slot.required && <RequiredIcon />} */}
 			</div>
 			<p class="text-gray-400">{props.slot.description}</p>
 
