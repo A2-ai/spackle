@@ -1,11 +1,7 @@
 import { TbArrowLeft } from "solid-icons/tb";
 import { For } from "solid-js";
-import { useData } from "vike-solid/useData";
-import type { Project } from "#/components/Project";
-import SlotField from "#/components/SlotField";
-import type { Slot } from "#/server/slots";
-import { SlotType } from "../../../../pkg/spackle";
-import type { Data } from "./+data";
+import type { Project } from "#/components/ProjectCard";
+import SlotField, { type Slot, SlotType } from "#/components/SlotField";
 
 const dummySlots: Slot[] = [
 	{
@@ -31,8 +27,7 @@ const dummySlots: Slot[] = [
 ];
 
 export default function Page() {
-	const { project, slots } = useData<Data>() || {};
-
+	const project: Project = {};
 	return (
 		<div class="space-y-4">
 			<div class="flex justify-between items-center">

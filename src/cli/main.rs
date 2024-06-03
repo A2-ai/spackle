@@ -1,12 +1,10 @@
 use clap::{command, Parser, Subcommand};
 use colored::Colorize;
-use core::{
+use spackle::core::{
     config, copy, slot,
     template::{self, ValidateError},
 };
 use std::{collections::HashMap, error::Error, path::PathBuf, process::exit, time::Instant};
-
-mod core;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]

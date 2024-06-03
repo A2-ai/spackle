@@ -30,7 +30,7 @@ export const dummyProjects: Project[] = [
 	},
 ];
 
-export default function Project(props: {
+export default function ProjectCard(props: {
 	project: Project;
 }) {
 	return (

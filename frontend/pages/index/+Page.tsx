@@ -1,15 +1,25 @@
 import { TbX } from "solid-icons/tb";
-import { For, Show, createSignal } from "solid-js";
-import { useData } from "vike-solid/useData";
-import Project, { dummyProjects } from "#/components/Project";
-import type { Data } from "./+data";
+import { For, Show, createResource, createSignal } from "solid-js";
+import type { Project } from "#/components/ProjectCard";
+import ProjectCard from "#/components/ProjectCard";
+
+async function fetchData(): Promise<Project[]> {
+	const res = await fetch("/");
+
+	if (!res.ok) {
+		throw new Error("Failed to fetch projects");
+	}
+
+	return await res.json();
+}
 
 export default function Page() {
 	const [search, setSearch] = createSignal("");
-	const projects = useData<Data>();
+	// const projects = useData<Data>();
+	const [projects] = createResource(fetchData);
 
 	const filteredProjects = () => {
-		return projects.filter((p) => {
+		return projects()?.filter((p) => {
 			const nameMatch = p.name.toLowerCase().includes(search().toLowerCase());
 
 			const descriptionMatch = p.description
@@ -46,9 +56,11 @@ export default function Page() {
 			</div>
 
 			<div class="space-y-4">
-				<For each={filteredProjects()}>{(p) => <Project project={p} />}</For>
+				<For each={filteredProjects()}>
+					{(p) => <ProjectCard project={p} />}
+				</For>
 
-				{filteredProjects().length === 0 && (
+				{filteredProjects()?.length === 0 && (
 					<p class="text-center text-slate-500 p-6">
 						No projects found matching "{search()}"
 					</p>
