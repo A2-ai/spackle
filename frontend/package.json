@@ -1,9 +1,9 @@
 {
 	"type": "module",
 	"scripts": {
-		"dev": "bun --bun vite",
-		"build": "bun --bun vite build",
-		"preview": "bun --bun vite preview",
+		"dev": "vite",
+		"build": "vite build",
+		"preview": "vite preview",
 		"check-types": "tsc --noEmit",
 		"check-format": "biome check --apply ."
 	},
@@ -16,7 +16,8 @@
 		"postcss": "^8.4.38",
 		"tailwindcss": "^3.4.3",
 		"typescript": "^5.4.5",
-		"vite": "^5.2.11"
+		"vite": "^5.2.11",
+		"vite-plugin-native": "^0.2.0"
 	},
 	"dependencies": {
 		"@floating-ui/dom": "^1.6.5",
@@ -34,8 +35,7 @@
 		"spackle": "../napi/",
 		"telefunc": "^0.1.73",
 		"vike": "^0.4.172",
-		"vike-solid": "^0.4.5",
-		"vite-plugin-require": "^1.2.14"
+		"vike-solid": "^0.4.5"
 	},
 	"trustedDependencies": ["@biomejs/biome"]
 }

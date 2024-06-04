@@ -10,7 +10,7 @@ export async function getSlots(id: string): Promise<Slot[]> {
 	if (!project) return [];
 
 	try {
-		return info(id);
+		return info(project.dir);
 	} catch (e) {
 		console.error("Error loading slots:", e);
 		return [];

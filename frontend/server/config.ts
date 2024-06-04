@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import type { Project } from "#/components/Project";
 
 export type ServerConfig = {
@@ -6,9 +7,9 @@ export type ServerConfig = {
 
 const CONFIG_FILE = import.meta.env.DEV ? "testing/server.json" : "server.json";
 
-export async function loadConfig(): Promise<ServerConfig | undefined> {
+export function loadConfig(): ServerConfig | undefined {
 	try {
-		return await Bun.file(CONFIG_FILE).json();
+		return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) as ServerConfig;
 	} catch (e) {
 		console.error("Error loading config:", e);
 		return undefined;
