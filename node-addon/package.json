@@ -1,0 +1,30 @@
+{
+  "name": "spackle",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "napi build --release dist --no-const-enum && cp import.js dist/index.js",
+    "build:debug": "napi build dist --no-const-enum && cp import.js dist/index.js"
+  },
+  "engines": {
+    "node": ">= 10"
+  },
+  "napi": {
+    "triples": {
+      "additional": [
+        "aarch64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "aarch64-unknown-linux-musl"
+      ]
+    }
+  },
+  "dependencies": {
+    "bindings": "^1.5.0"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.3",
+    "@types/bindings": "^1.5.5"
+  }
+}

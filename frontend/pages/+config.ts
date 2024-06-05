@@ -9,4 +9,5 @@ export default {
 	title: "Spackle",
 	extends: vikeSolid,
 	ssr: true,
+	// clientRouting: false,
 } satisfies Config;

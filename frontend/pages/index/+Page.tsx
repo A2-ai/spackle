@@ -50,7 +50,8 @@ export default function Page() {
 
 				{filteredProjects().length === 0 && (
 					<p class="text-center text-slate-500 p-6">
-						No projects found matching "{search()}"
+						No projects found
+						{search().length > 0 ? ` matching ${search()}` : ""}
 					</p>
 				)}
 			</div>

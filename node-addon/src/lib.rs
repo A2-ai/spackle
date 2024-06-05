@@ -42,8 +42,11 @@ impl From<slot::SlotType> for SlotType {
     }
 }
 
+/// Get all the slots in the specified project
+///
+/// Returns an error if there was an error loading the config
 #[napi]
-pub fn info(project_dir: String) -> Result<Vec<Slot>, String> {
+pub fn get_slots(project_dir: String) -> Result<Vec<Slot>, String> {
     // Load the config
     let config = match config::load(&PathBuf::from(project_dir)) {
         Ok(config) => config,
@@ -51,12 +54,4 @@ pub fn info(project_dir: String) -> Result<Vec<Slot>, String> {
     };
 
     Ok(config.slots.into_iter().map(|s| s.into()).collect())
-}
-
-#[napi]
-pub fn fibonacci(n: u32) -> u32 {
-    match n {
-        1 | 2 => 1,
-        _ => fibonacci(n - 1) + fibonacci(n - 2),
-    }
 }

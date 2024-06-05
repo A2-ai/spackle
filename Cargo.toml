@@ -2,9 +2,31 @@
 name = "spackle"
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/A2-ai/spackle"
 
 [workspace]
-members = ["napi"]
+members = ["node-addon"]
+
+# Config for 'cargo dist'
+[workspace.metadata.dist]
+# The preferred cargo-dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.15.1"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "x86_64-pc-windows-msvc",
+]
+# Publish jobs to run in CI
+pr-run-mode = "plan"
+# Whether to install an updater program
+install-updater = false
 
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }
@@ -15,3 +37,9 @@ tempdir = "0.3.7"
 tera = "1.19.1"
 toml = "0.8.13"
 walkdir = "2.5.0"
+
+# The profile that 'cargo dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+strip = "symbols"

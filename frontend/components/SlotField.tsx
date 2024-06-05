@@ -3,7 +3,21 @@ import * as zagSwitch from "@zag-js/switch";
 import * as tooltip from "@zag-js/tooltip";
 import { TbAsterisk } from "solid-icons/tb";
 import { Match, Show, Switch, createMemo, createUniqueId } from "solid-js";
-import { type Slot, SlotType } from "spackle";
+// import { type Slot, SlotType } from "#/server/slots";
+
+type Slot = {
+	key: string;
+	name: string;
+	description: string;
+	type: SlotType;
+	required: boolean;
+};
+
+enum SlotType {
+	String = 0,
+	Number = 1,
+	Boolean = 2,
+}
 
 export default function SlotField(props: {
 	slot: Slot;

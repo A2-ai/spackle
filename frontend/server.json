@@ -1,0 +1,22 @@
+{
+	"projects": [
+		{
+			"id": "proj-1",
+			"name": "Project 1",
+			"description": "Project 1 description",
+			"dir": "../tests/data/proj1"
+		},
+		{
+			"id": "proj-2",
+			"name": "Project 2",
+			"description": "Project 2 description",
+			"dir": "../tests/data/proj2"
+		},
+		{
+			"id": "proj-3",
+			"name": "Project 3",
+			"description": "Project 3 description",
+			"dir": "../tests/data/proj3"
+		}
+	]
+}
