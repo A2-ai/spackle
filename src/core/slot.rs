@@ -1,8 +1,8 @@
 use colored::Colorize;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt::Display};
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Slot {
     pub key: String,
     #[serde(default)]
@@ -11,7 +11,7 @@ pub struct Slot {
     pub description: Option<String>,
 }
 
-#[derive(Deserialize, Debug, strum_macros::Display, Default, Clone)]
+#[derive(Serialize, Deserialize, Debug, strum_macros::Display, Default, Clone)]
 pub enum SlotType {
     Number,
     #[default]
