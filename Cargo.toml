@@ -3,6 +3,9 @@ name = "spackle"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+members = ["cli"]
+
 [dependencies]
 colored = "2.1.0"
 getrandom = { version = "0.2.15", features = ["js"] }
