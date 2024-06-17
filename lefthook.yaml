@@ -2,7 +2,7 @@ pre-commit:
   parallel: true
   commands:
     run-tests:
-      run: cargo test
+      run: cargo test --workspace
 
     check-frontend-format:
       root: frontend

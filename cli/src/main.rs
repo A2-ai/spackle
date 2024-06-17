@@ -1,8 +1,11 @@
 use clap::{command, Parser, Subcommand};
 use colored::Colorize;
-use spackle::core::{
-    config, copy, slot,
-    template::{self, ValidateError},
+use spackle::{
+    core::{
+        config, slot,
+        template::{self, ValidateError},
+    },
+    util::copy,
 };
 use std::{collections::HashMap, error::Error, path::PathBuf, process::exit, time::Instant};
 
@@ -197,7 +200,7 @@ fn main() {
 
             let start_time = Instant::now();
 
-            match template::fill(&project_dir, data_entries, &PathBuf::from(&cli.out)) {
+            match template::fill(&project_dir, &data_entries, &PathBuf::from(&cli.out)) {
                 Ok(r) => {
                     println!(
                         "{} {} {} {} {}\n",

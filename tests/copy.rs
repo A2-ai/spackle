@@ -1,6 +1,6 @@
 use std::fs;
 
-use spackle::core::copy;
+use spackle::util::copy;
 use tempdir::TempDir;
 
 #[test]

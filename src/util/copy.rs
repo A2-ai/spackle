@@ -2,7 +2,7 @@ use std::{fmt::Display, fs, path::PathBuf};
 
 use walkdir::WalkDir;
 
-use super::{config::CONFIG_FILE, template::TEMPLATE_EXT};
+use crate::core::{config::CONFIG_FILE, template::TEMPLATE_EXT};
 
 #[derive(Debug)]
 pub struct Error {
@@ -43,6 +43,7 @@ pub fn copy(src: &PathBuf, dest: &PathBuf, skip: &Vec<String>) -> Result<CopyRes
                 return false;
             }
 
+            // TODO pull these out and pass as args if possible
             // Skip config file
             if entry.file_name() == CONFIG_FILE {
                 return false;
