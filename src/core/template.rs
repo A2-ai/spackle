@@ -58,7 +58,7 @@ pub struct RenderedFile {
 
 pub fn fill(
     project_dir: &PathBuf,
-    data: HashMap<String, String>,
+    data: &HashMap<String, String>,
     out_dir: &PathBuf,
 ) -> Result<Vec<Result<RenderedFile, FileError>>, tera::Error> {
     let glob = project_dir.join("**").join("*".to_owned() + TEMPLATE_EXT);

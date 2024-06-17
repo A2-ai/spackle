@@ -12,7 +12,7 @@ fn fill_proj1() {
 
     let result = template::fill(
         &PathBuf::from("tests/data/proj1"),
-        HashMap::from([
+        &HashMap::from([
             ("person_name".to_string(), "Joe Bloggs".to_string()),
             ("person_age".to_string(), "42".to_string()),
             ("file_name".to_string(), "main".to_string()),
