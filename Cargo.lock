@@ -1851,7 +1851,6 @@ dependencies = [
  "strum_macros",
  "tempdir",
  "tera",
- "tokio-stream",
  "toml",
  "tracing",
  "tracing-subscriber",
