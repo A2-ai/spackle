@@ -1,20 +1,24 @@
-use std::error::Error;
-
 use async_process::Command;
-use futures::{stream, Stream};
+use futures::{executor, pin_mut, stream, Stream, StreamExt};
+
+use crate::core::hook;
 
 use super::config::Hook;
 
-pub enum StreamStatus {
+pub enum CommandResult {
     HookCompleted(Hook),
-    HookFailed(Hook),
+    HookFailed { hook: Hook, stderr: String },
     Done,
 }
 
+#[derive(Debug)]
+pub enum Error {
+    ErrorSpawning(Hook, Box<dyn std::error::Error>),
+    ErrorExecuting(Hook, String),
+}
+
 /// Run a set of hooks asynchronously and returns a stream of their execution results.
-pub fn run_hooks_async(
-    hooks: Vec<Hook>,
-) -> Result<impl Stream<Item = StreamStatus>, Box<dyn Error>> {
+pub fn run_hooks_async(hooks: Vec<Hook>) -> Result<impl Stream<Item = CommandResult>, Error> {
     let mut children = Vec::new();
     for hook in hooks {
         let child = Command::new(&hook.command[0])
@@ -23,24 +27,34 @@ pub fn run_hooks_async(
 
         match child {
             Ok(child) => children.push((hook, child)),
-            Err(e) => return Err(Box::new(e)),
+            Err(e) => {
+                return Err(Error::ErrorSpawning(hook, Box::new(e)));
+            }
         }
     }
 
     let stream = stream::unfold(children.into_iter(), |mut children| async move {
         match children.next() {
             Some((hook, child)) => {
-                let status = match child.output().await {
-                    Ok(output) => output.status,
+                let output = match child.output().await {
+                    Ok(output) => output,
                     Err(_) => {
-                        // yield error
-                        return Some((StreamStatus::HookFailed(hook), children));
+                        return Some((
+                            CommandResult::HookFailed {
+                                hook,
+                                stderr: "".to_string(),
+                            },
+                            children,
+                        ));
                     }
                 };
 
-                let result = match status.success() {
-                    true => StreamStatus::HookCompleted(hook),
-                    false => StreamStatus::HookFailed(hook),
+                let result = match output.status.success() {
+                    true => CommandResult::HookCompleted(hook),
+                    false => CommandResult::HookFailed {
+                        hook,
+                        stderr: String::from_utf8_lossy(&output.stderr).into(),
+                    },
                 };
 
                 Some((result, children))
@@ -50,4 +64,23 @@ pub fn run_hooks_async(
     });
 
     Ok(stream)
+}
+
+pub fn run_hooks(hooks: Vec<Hook>) -> Result<(), Error> {
+    let stream = run_hooks_async(hooks)?;
+    pin_mut!(stream);
+
+    while let Some(status) = executor::block_on(stream.next()) {
+        match status {
+            hook::CommandResult::HookCompleted(hook) => {
+                println!("hook completed: {:?}", hook);
+            }
+            hook::CommandResult::HookFailed { hook, stderr } => {
+                return Err(Error::ErrorExecuting(hook, stderr));
+            }
+            hook::CommandResult::Done => break,
+        }
+    }
+
+    Ok(())
 }

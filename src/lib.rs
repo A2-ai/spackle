@@ -1,4 +1,7 @@
-use core::{config, hook, template};
+use core::{
+    config::{self},
+    hook, template,
+};
 use std::{collections::HashMap, path::PathBuf};
 
 use futures::Stream;
@@ -13,8 +16,7 @@ pub enum Error {
     ConfigError(config::Error),
     CopyError(copy::Error),
     TemplateError(Box<dyn std::error::Error>),
-    HookSpawnFailed(Box<dyn std::error::Error>),
-    HookRunFailed(Box<dyn std::error::Error>),
+    HookFailed(hook::Error),
 }
 
 impl std::fmt::Display for Error {
@@ -24,8 +26,7 @@ impl std::fmt::Display for Error {
             Error::ConfigError(e) => write!(f, "Error loading config: {}", e),
             Error::TemplateError(e) => write!(f, "Error rendering template: {}", e),
             Error::CopyError(e) => write!(f, "Error copying files: {}", e),
-            Error::HookSpawnFailed(e) => write!(f, "Error spawning hook: {}", e),
-            Error::HookRunFailed(e) => write!(f, "Error running hook: {}", e),
+            Error::HookFailed(e) => write!(f, "Error running hooks: {:?}", e),
         }
     }
 }
@@ -37,8 +38,7 @@ impl std::error::Error for Error {
             Error::ConfigError(_) => None,
             Error::TemplateError(e) => Some(e.as_ref()),
             Error::CopyError(e) => Some(e),
-            Error::HookSpawnFailed(e) => Some(e.as_ref()),
-            Error::HookRunFailed(e) => Some(e.as_ref()),
+            Error::HookFailed(_) => None,
         }
     }
 }
@@ -50,7 +50,7 @@ pub fn generate_stream(
     project_dir: &PathBuf,
     data: &HashMap<String, String>,
     out_dir: &PathBuf,
-) -> Result<impl Stream<Item = hook::StreamStatus>, Error> {
+) -> Result<impl Stream<Item = hook::CommandResult>, Error> {
     if out_dir.exists() {
         return Err(Error::AlreadyExists(out_dir.clone()));
     }
@@ -69,7 +69,7 @@ pub fn generate_stream(
         }
     }
 
-    let hook_stream = hook::run_hooks_async(config.hooks).map_err(Error::HookSpawnFailed)?;
+    let hook_stream = hook::run_hooks_async(config.hooks).map_err(Error::HookFailed)?;
 
     Ok(hook_stream)
 }
@@ -99,6 +99,9 @@ pub fn generate(
             return Err(Error::TemplateError(e.into()));
         }
     }
+
+    // Run post-template hooks
+    hook::run_hooks(config.hooks).map_err(Error::HookFailed)?;
 
     Ok(())
 }
