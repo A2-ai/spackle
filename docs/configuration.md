@@ -14,6 +14,10 @@ ignore = [
 ]
 ```
 
+## slots `table`
+
+Slots are defined by one or more `[[slots]]` table entries in the `spackle.toml` file.
+
 ```toml
 [[slots]]
 key = "slot_name"
@@ -60,7 +64,7 @@ description = "A description of the slot"
 
 ## hooks `table`
 
-Hooks are defined by one or more `[[hooks]]` table entries in the `spackle.toml` file.
+Hooks are defined by one or more `[[hooks]]` table entries in the `spackle.toml` file. Hooks are ran after the project is rendered and ran in the generated directory, and can be used to modify the project or enable specific functionality.
 
 ```toml
 [[hooks]]
@@ -75,12 +79,8 @@ The name of the hook.
 
 ### command `string[]`
 
-The command to execute. The first element is the command and the rest are arguments. The command is executed in the generated directory.
+The command to execute. The first element is the command and the rest are arguments.
 
 ### if `string`
 
-The condition to execute the hook. The condition is evaluated in the context of the project slots.
-
-## slots `table`
-
-Slots are defined by one or more `[[slots]]` table entries in the `spackle.toml` file.
+The condition to execute the hook. The condition is templated just like the template files, allowing you to conditionally execute a hook.
