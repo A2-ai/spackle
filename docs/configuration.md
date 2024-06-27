@@ -1,6 +1,6 @@
 # Project configuration
 
-A spackle project is defined by a `spackle.toml` file at the root directory. This file contains project-level configuration and slot configuration.
+A spackle project is defined by a `spackle.toml` file at the root directory. Below is a reference for the configuration file.
 
 ## Project-level config
 
@@ -13,10 +13,6 @@ ignore = [
     ".git"
 ]
 ```
-
-## Slot config
-
-Slots are defined by one or more `[[slots]]` table entries in the `spackle.toml` file.
 
 ```toml
 [[slots]]
@@ -61,3 +57,30 @@ The human-friendly description of the slot.
 ```toml
 description = "A description of the slot"
 ```
+
+## hooks `table`
+
+Hooks are defined by one or more `[[hooks]]` table entries in the `spackle.toml` file.
+
+```toml
+[[hooks]]
+name = "create file"
+command = ["touch", "new_file"]
+if = "{{foo}} != 'bar'"
+```
+
+### name `string`
+
+The name of the hook.
+
+### command `string[]`
+
+The command to execute. The first element is the command and the rest are arguments. The command is executed in the generated directory.
+
+### if `string`
+
+The condition to execute the hook. The condition is evaluated in the context of the project slots.
+
+## slots `table`
+
+Slots are defined by one or more `[[slots]]` table entries in the `spackle.toml` file.
