@@ -2,6 +2,10 @@
 
 A frictionless project templating tool with support for rich interfacing via the web, CLI, and more.
 
+## Usage
+
+`spackle run`
+
 ## Configuration
 
 A spackle project is defined by a `spackle.toml` file at the root directory. Slots defined in the configuration will

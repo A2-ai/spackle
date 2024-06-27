@@ -1,3 +1,6 @@
+[[hooks]]
+name = "Echo hello world"
+command = ["echo", "Hello, world!"]
 
 [[slots]]
 key = "file_name"
