@@ -15,6 +15,7 @@ pub struct Config {
 pub struct Hook {
     pub name: String,
     pub command: Vec<String>,
+    pub r#if: Option<String>,
 }
 
 pub const CONFIG_FILE: &str = "spackle.toml";

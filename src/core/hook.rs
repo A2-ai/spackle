@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use async_process::Command;
 use futures::{executor, pin_mut, stream, Stream, StreamExt};
 
@@ -18,11 +20,17 @@ pub enum Error {
 }
 
 /// Run a set of hooks asynchronously and returns a stream of their execution results.
-pub fn run_hooks_async(hooks: Vec<Hook>) -> Result<impl Stream<Item = CommandResult>, Error> {
+///
+/// The `dir` argument is the directory to run the hooks in.
+pub fn run_hooks_async(
+    hooks: Vec<Hook>,
+    dir: impl AsRef<Path>,
+) -> Result<impl Stream<Item = CommandResult>, Error> {
     let mut children = Vec::new();
     for hook in hooks {
         let child = Command::new(&hook.command[0])
             .args(&hook.command[1..])
+            .current_dir(dir.as_ref())
             .spawn();
 
         match child {
@@ -66,8 +74,11 @@ pub fn run_hooks_async(hooks: Vec<Hook>) -> Result<impl Stream<Item = CommandRes
     Ok(stream)
 }
 
-pub fn run_hooks(hooks: Vec<Hook>) -> Result<(), Error> {
-    let stream = run_hooks_async(hooks)?;
+/// Run a set of hooks, returning an error if any of the hooks fail.
+///
+/// The `dir` argument is the directory to run the hooks in.
+pub fn run_hooks(hooks: Vec<Hook>, dir: impl AsRef<Path>) -> Result<(), Error> {
+    let stream = run_hooks_async(hooks, dir)?;
     pin_mut!(stream);
 
     while let Some(status) = executor::block_on(stream.next()) {

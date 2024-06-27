@@ -69,7 +69,8 @@ pub fn generate_stream(
         }
     }
 
-    let hook_stream = hook::run_hooks_async(config.hooks).map_err(Error::HookFailed)?;
+    let hook_stream =
+        hook::run_hooks_async(config.hooks, out_dir.clone()).map_err(Error::HookFailed)?;
 
     Ok(hook_stream)
 }
@@ -100,8 +101,8 @@ pub fn generate(
         }
     }
 
-    // Run post-template hooks
-    hook::run_hooks(config.hooks).map_err(Error::HookFailed)?;
+    // Run post-template hooks in the output directory
+    hook::run_hooks(config.hooks, out_dir).map_err(Error::HookFailed)?;
 
     Ok(())
 }
