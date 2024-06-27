@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path, str::ParseBoolError};
+use std::{collections::HashMap, fmt::Display, path::Path, str::ParseBoolError};
 
 use async_process::Command;
 use futures::{executor, pin_mut, stream, Stream, StreamExt};
@@ -15,11 +15,32 @@ pub enum CommandResult {
 }
 
 #[derive(Debug)]
-pub enum Error {
-    ErrorRenderingConditional(Hook, tera::Error),
-    ErrorParsingConditional(Hook, ParseBoolError),
-    ErrorSpawning(Hook, Box<dyn std::error::Error>),
-    ErrorExecuting(Hook, String),
+pub struct Error {
+    pub hook: Hook,
+    pub error: ErrorKind,
+}
+
+#[derive(Debug)]
+pub enum ErrorKind {
+    ErrorRenderingConditional(tera::Error),
+    ErrorParsingConditional(ParseBoolError),
+    ErrorSpawning(Box<dyn std::error::Error>),
+    ErrorExecuting(String),
+}
+
+impl Display for ErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ErrorKind::ErrorRenderingConditional(e) => {
+                write!(f, "Error rendering conditional\n{}", e)
+            }
+            ErrorKind::ErrorParsingConditional(e) => {
+                write!(f, "Error parsing conditional\n{}", e)
+            }
+            ErrorKind::ErrorSpawning(e) => write!(f, "Error spawning\n{}", e),
+            ErrorKind::ErrorExecuting(e) => write!(f, "Error executing\n{}", e),
+        }
+    }
 }
 
 /// Run a set of hooks asynchronously and returns a stream of their execution results.
@@ -38,17 +59,20 @@ pub fn run_hooks_async(
     let mut valid_hooks = Vec::new();
     for hook in hooks {
         if let Some(r#if) = hook.clone().r#if {
-            let context = Context::from_serialize(data.clone())
-                .map_err(|e| Error::ErrorRenderingConditional(hook.clone(), e))?;
+            let context = Context::from_serialize(data.clone()).map_err(|e| Error {
+                hook: hook.clone(),
+                error: ErrorKind::ErrorRenderingConditional(e),
+            })?;
 
-            let condition = Tera::one_off(&r#if, &context, false)
-                .map_err(|e| Error::ErrorRenderingConditional(hook.clone(), e))?;
+            let condition = Tera::one_off(&r#if, &context, false).map_err(|e| Error {
+                hook: hook.clone(),
+                error: ErrorKind::ErrorRenderingConditional(e),
+            })?;
 
-            if condition
-                .trim()
-                .parse::<bool>()
-                .map_err(|e| Error::ErrorParsingConditional(hook.clone(), e))?
-            {
+            if condition.trim().parse::<bool>().map_err(|e| Error {
+                hook: hook.clone(),
+                error: ErrorKind::ErrorParsingConditional(e),
+            })? {
                 valid_hooks.push(hook);
             } else {
                 skipped_hooks.push(hook);
@@ -69,7 +93,10 @@ pub fn run_hooks_async(
         match child {
             Ok(child) => children.push((hook, child)),
             Err(e) => {
-                return Err(Error::ErrorSpawning(hook, Box::new(e)));
+                return Err(Error {
+                    hook: hook.clone(),
+                    error: ErrorKind::ErrorSpawning(Box::new(e)),
+                });
             }
         }
     }
@@ -120,11 +147,12 @@ pub fn run_hooks(
 
     while let Some(status) = executor::block_on(stream.next()) {
         match status {
-            hook::CommandResult::HookCompleted(hook) => {
-                println!("hook completed: {:?}", hook);
-            }
+            hook::CommandResult::HookCompleted(_) => {}
             hook::CommandResult::HookFailed { hook, stderr } => {
-                return Err(Error::ErrorExecuting(hook, stderr));
+                return Err(Error {
+                    hook: hook.clone(),
+                    error: ErrorKind::ErrorExecuting(stderr),
+                });
             }
             hook::CommandResult::Done => break,
         }

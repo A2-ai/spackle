@@ -29,12 +29,12 @@ fn exec_error() {
 
     let err = hook::run_hooks(hooks, ".", HashMap::new()).unwrap_err();
 
-    let hook_err = match err {
-        hook::Error::ErrorExecuting(hook, _) => hook,
-        _ => panic!("expected ErrorExecuting, got {:?}", err),
-    };
+    if let hook::ErrorKind::ErrorExecuting(_) = err.error {
+    } else {
+        panic!("expected ErrorExecuting, got {:?}", err);
+    }
 
-    assert_eq!(hook_err.name, "fail".to_string());
+    assert_eq!(err.hook.name, "fail".to_string());
 }
 
 #[test]

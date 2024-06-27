@@ -3,5 +3,5 @@ setup:
     cd frontend && bun install
 
 run *args="":
-    cargo run -p spackle-cli $args
+    cargo run -p spackle-cli {{args}}
  

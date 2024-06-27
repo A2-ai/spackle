@@ -1,6 +1,7 @@
 [[hooks]]
-name = "Echo hello world"
-command = ["echo", "Hello, world!"]
+name = "create hook_ran file"
+command = ["touch", "hook_ran"]
+if = "{{file_name == 'main.R' }}"
 
 [[slots]]
 key = "file_name"
