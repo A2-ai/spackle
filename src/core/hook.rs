@@ -1,7 +1,8 @@
-use std::path::Path;
+use std::{collections::HashMap, path::Path, str::ParseBoolError};
 
 use async_process::Command;
 use futures::{executor, pin_mut, stream, Stream, StreamExt};
+use tera::{Context, Tera};
 
 use crate::core::hook;
 
@@ -15,6 +16,8 @@ pub enum CommandResult {
 
 #[derive(Debug)]
 pub enum Error {
+    ErrorRenderingConditional(Hook, tera::Error),
+    ErrorParsingConditional(Hook, ParseBoolError),
     ErrorSpawning(Hook, Box<dyn std::error::Error>),
     ErrorExecuting(Hook, String),
 }
@@ -22,12 +25,42 @@ pub enum Error {
 /// Run a set of hooks asynchronously and returns a stream of their execution results.
 ///
 /// The `dir` argument is the directory to run the hooks in.
+///
+/// The `data` argument is a map of key-value pairs to be used in the hooks.
 pub fn run_hooks_async(
     hooks: Vec<Hook>,
     dir: impl AsRef<Path>,
-) -> Result<impl Stream<Item = CommandResult>, Error> {
-    let mut children = Vec::new();
+    data: HashMap<String, String>,
+) -> Result<(impl Stream<Item = CommandResult>, Vec<Hook>), Error> {
+    let mut skipped_hooks = Vec::new();
+
+    // Filter out hooks that have an r#if condition that evaluates to false
+    let mut valid_hooks = Vec::new();
     for hook in hooks {
+        if let Some(r#if) = hook.clone().r#if {
+            let context = Context::from_serialize(data.clone())
+                .map_err(|e| Error::ErrorRenderingConditional(hook.clone(), e))?;
+
+            let condition = Tera::one_off(&r#if, &context, false)
+                .map_err(|e| Error::ErrorRenderingConditional(hook.clone(), e))?;
+
+            if condition
+                .trim()
+                .parse::<bool>()
+                .map_err(|e| Error::ErrorParsingConditional(hook.clone(), e))?
+            {
+                valid_hooks.push(hook);
+            } else {
+                skipped_hooks.push(hook);
+            }
+        } else {
+            valid_hooks.push(hook);
+        }
+    }
+
+    let mut children = Vec::new();
+
+    for hook in valid_hooks {
         let child = Command::new(&hook.command[0])
             .args(&hook.command[1..])
             .current_dir(dir.as_ref())
@@ -71,14 +104,18 @@ pub fn run_hooks_async(
         }
     });
 
-    Ok(stream)
+    Ok((stream, skipped_hooks))
 }
 
-/// Run a set of hooks, returning an error if any of the hooks fail.
+/// Run a set of hooks, returning an error if any of the hooks fail. Returns a list of hooks that were skipped.
 ///
 /// The `dir` argument is the directory to run the hooks in.
-pub fn run_hooks(hooks: Vec<Hook>, dir: impl AsRef<Path>) -> Result<(), Error> {
-    let stream = run_hooks_async(hooks, dir)?;
+pub fn run_hooks(
+    hooks: Vec<Hook>,
+    dir: impl AsRef<Path>,
+    data: HashMap<String, String>,
+) -> Result<Vec<Hook>, Error> {
+    let (stream, skipped_hooks) = run_hooks_async(hooks, dir, data)?;
     pin_mut!(stream);
 
     while let Some(status) = executor::block_on(stream.next()) {
@@ -93,5 +130,5 @@ pub fn run_hooks(hooks: Vec<Hook>, dir: impl AsRef<Path>) -> Result<(), Error> {
         }
     }
 
-    Ok(())
+    Ok(skipped_hooks)
 }
