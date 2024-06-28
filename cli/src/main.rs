@@ -2,7 +2,7 @@ use clap::{command, Parser, Subcommand};
 use colored::Colorize;
 use spackle::{
     core::{
-        config, slot,
+        config, hook, slot,
         template::{self, ValidateError},
     },
     util::copy,
@@ -187,6 +187,8 @@ fn main() {
                     println!();
                 }
                 Err(e) => {
+                    std::fs::remove_dir_all(&cli.out).unwrap();
+
                     eprintln!(
                         "❌ {}\n{}\n{}",
                         "Could not copy project".bright_red(),
@@ -246,11 +248,31 @@ fn main() {
                     }
                 }
                 Err(e) => {
+                    std::fs::remove_dir_all(&cli.out).unwrap();
+
                     eprintln!(
                         "❌ {}\n{}",
                         "Could not fill project".bright_red(),
                         e.to_string().red(),
                     );
+                }
+            }
+
+            match hook::run_hooks(config.hooks, &cli.out, data_entries) {
+                Ok(_) => {
+                    println!("🪝  Hooks executed successfully");
+                }
+                Err(e) => {
+                    std::fs::remove_dir_all(&cli.out).unwrap();
+
+                    eprintln!(
+                        "❌ {} {}\n{}",
+                        "Error running hook".bright_red(),
+                        e.hook.name.bright_red().bold(),
+                        e.error.to_string().red()
+                    );
+
+                    exit(1);
                 }
             }
         }

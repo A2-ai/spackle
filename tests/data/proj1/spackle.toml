@@ -1,3 +1,7 @@
+[[hooks]]
+name = "create hook_ran file"
+command = ["touch", "hook_ran"]
+if = "{{file_name == 'main.R' }}"
 
 [[slots]]
 key = "file_name"

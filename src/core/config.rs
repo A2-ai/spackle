@@ -8,6 +8,14 @@ pub struct Config {
     #[serde(default)]
     pub ignore: Vec<String>,
     pub slots: Vec<Slot>,
+    pub hooks: Vec<Hook>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct Hook {
+    pub name: String,
+    pub command: Vec<String>,
+    pub r#if: Option<String>,
 }
 
 pub const CONFIG_FILE: &str = "spackle.toml";
