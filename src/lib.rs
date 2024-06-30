@@ -5,6 +5,7 @@ use core::{
 use std::{collections::HashMap, path::PathBuf};
 
 use futures::Stream;
+use tera::Context;
 use util::copy;
 
 pub mod core;
@@ -58,7 +59,9 @@ pub fn generate_stream(
     let config = config::load(project_dir).map_err(Error::ConfigError)?;
 
     // Copy all non-template files to the output directory
-    copy::copy(project_dir, &out_dir, &config.ignore).map_err(Error::CopyError)?;
+    // TODO: must actually pass in context
+    let context = &Context::new();
+    copy::copy(project_dir, &out_dir, &config.ignore, context).map_err(Error::CopyError)?;
 
     // Render template files to the output directory
     let results =
@@ -90,7 +93,9 @@ pub fn generate(
     let config = config::load(project_dir).map_err(Error::ConfigError)?;
 
     // Copy all non-template files to the output directory
-    copy::copy(project_dir, &out_dir, &config.ignore).map_err(Error::CopyError)?;
+    // TODO: must actually pass in context
+    let context = &Context::new();
+    copy::copy(project_dir, &out_dir, &config.ignore, context).map_err(Error::CopyError)?;
 
     // Render template files to the output directory
     let results =
