@@ -73,6 +73,16 @@ command = ["touch", "new_file"]
 if = "{{foo}} != 'bar'"
 ```
 
+#### Command sequences
+
+To manage hook command sequences, create a single hook that runs a shell command, invoking your desired commands in sequence. For example:
+
+```toml
+[[hooks]]
+name = "create file"
+command = ["bash", "-c", "touch new_file && chmod +x new_file"]
+```
+
 ### name `string`
 
 The name of the hook.
