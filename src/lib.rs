@@ -1,6 +1,7 @@
 use core::{
-    config::{self, Hook},
-    hook, template,
+    config::{self},
+    hook::{self, HookResult, HookUpdate},
+    template,
 };
 use std::{collections::HashMap, path::PathBuf};
 
@@ -50,7 +51,7 @@ pub fn generate_stream(
     project_dir: &PathBuf,
     data: &HashMap<String, String>,
     out_dir: &PathBuf,
-) -> Result<(impl Stream<Item = hook::CommandResult>, Vec<Hook>), Error> {
+) -> Result<impl Stream<Item = HookUpdate>, Error> {
     if out_dir.exists() {
         return Err(Error::AlreadyExists(out_dir.clone()));
     }
@@ -82,7 +83,7 @@ pub fn generate(
     project_dir: &PathBuf,
     data: &HashMap<String, String>,
     out_dir: &PathBuf,
-) -> Result<Vec<Hook>, Error> {
+) -> Result<Vec<HookResult>, Error> {
     if out_dir.exists() {
         return Err(Error::AlreadyExists(out_dir.clone()));
     }
@@ -102,8 +103,8 @@ pub fn generate(
     }
 
     // Run post-template hooks in the output directory
-    let skipped_hooks =
+    let results =
         hook::run_hooks(config.hooks, out_dir, data.clone()).map_err(Error::HookFailed)?;
 
-    Ok(skipped_hooks)
+    Ok(results)
 }

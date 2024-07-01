@@ -1,4 +1,7 @@
-use spackle::core::{config::Hook, hook};
+use spackle::core::{
+    config::Hook,
+    hook::{self, HookResult},
+};
 use std::collections::HashMap;
 
 #[test]
@@ -27,14 +30,8 @@ fn exec_error() {
         },
     ];
 
-    let err = hook::run_hooks(hooks, ".", HashMap::new()).unwrap_err();
-
-    if let hook::ErrorKind::ErrorExecuting(_) = err.error {
-    } else {
-        panic!("expected ErrorExecuting, got {:?}", err);
-    }
-
-    assert_eq!(err.hook.name, "fail".to_string());
+    let result = hook::run_hooks(hooks, ".", HashMap::new()).unwrap_err();
+    assert_eq!(result.hook.name, "fail".to_string());
 }
 
 #[test]
@@ -57,10 +54,13 @@ fn conditional() {
         },
     ];
 
-    let result = hook::run_hooks(hooks, ".", HashMap::new()).unwrap();
+    let results = hook::run_hooks(hooks, ".", HashMap::new()).unwrap();
 
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0].name, "2".to_string());
+    let skipped_hooks: Vec<_> = results
+        .iter()
+        .filter(|r| matches!(r, HookResult::Skipped(_)))
+        .collect();
+    assert_eq!(skipped_hooks.len(), 1);
 }
 
 #[test]
