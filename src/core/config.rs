@@ -1,6 +1,6 @@
 use super::slot::Slot;
 use colored::Colorize;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{fmt::Display, fs, io, path::PathBuf};
 
 #[derive(Deserialize, Debug)]
@@ -11,7 +11,7 @@ pub struct Config {
     pub hooks: Vec<Hook>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Hook {
     pub key: String,
     pub command: Vec<String>,
@@ -49,7 +49,7 @@ impl Display for Hook {
     }
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HookConfigOptional {
     /// Whether the hook is enabled by default.
     pub default: bool,
