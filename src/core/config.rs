@@ -18,6 +18,8 @@ pub struct Hook {
     pub r#if: Option<String>,
     /// Should hook be user-toggleable?
     pub optional: Option<HookConfigOptional>,
+    pub name: Option<String>,
+    pub description: Option<String>,
 }
 
 impl Display for Hook {

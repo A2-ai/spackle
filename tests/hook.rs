@@ -11,6 +11,8 @@ fn basic() {
         command: vec!["echo".to_string(), "hello world".to_string()],
         r#if: None,
         optional: None,
+        name: None,
+        description: None,
     }];
 
     assert!(hook::run_hooks(&hooks, ".", HashMap::new(), &HashMap::new()).is_ok());
@@ -24,12 +26,16 @@ fn exec_error() {
             command: vec!["echo".to_string(), "hello world".to_string()],
             r#if: None,
             optional: None,
+            name: None,
+            description: None,
         },
         Hook {
             key: "fail".to_string(),
             command: vec!["false".to_string()],
             r#if: None,
             optional: None,
+            name: None,
+            description: None,
         },
     ];
 
@@ -45,18 +51,24 @@ fn conditional() {
             command: vec!["echo".to_string(), "hello world".to_string()],
             r#if: Some("true".to_string()),
             optional: None,
+            name: None,
+            description: None,
         },
         Hook {
             key: "2".to_string(),
             command: vec!["echo".to_string(), "hello world".to_string()],
             r#if: Some("false".to_string()),
             optional: None,
+            name: None,
+            description: None,
         },
         Hook {
             key: "3".to_string(),
             command: vec!["echo".to_string(), "hello world".to_string()],
             r#if: None,
             optional: None,
+            name: None,
+            description: None,
         },
     ];
 
@@ -77,12 +89,16 @@ fn bad_conditional_template() {
             command: vec!["echo".to_string(), "hello world".to_string()],
             r#if: Some("{{ good_var }}".to_string()),
             optional: None,
+            name: None,
+            description: None,
         },
         Hook {
             key: "2".to_string(),
             command: vec!["echo".to_string(), "hello world".to_string()],
             r#if: Some("{{ bad_var }}".to_string()),
             optional: None,
+            name: None,
+            description: None,
         },
     ];
 
@@ -102,6 +118,8 @@ fn bad_conditional_value() {
         command: vec!["echo".to_string(), "hello world".to_string()],
         r#if: Some("lorem ipsum".to_string()),
         optional: None,
+        name: None,
+        description: None,
     }];
 
     assert!(hook::run_hooks(
@@ -121,12 +139,16 @@ fn optional() {
             command: vec!["echo".to_string(), "hello world".to_string()],
             r#if: None,
             optional: None,
+            name: None,
+            description: None,
         },
         Hook {
             key: "2".to_string(),
             command: vec!["echo".to_string(), "hello world".to_string()],
             r#if: None,
             optional: Some(HookConfigOptional { default: false }),
+            name: None,
+            description: None,
         },
     ];
 
