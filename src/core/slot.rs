@@ -24,7 +24,7 @@ impl Display for Slot {
         write!(
             f,
             "{} {}\n{}",
-            self.key.yellow(),
+            self.key.bold(),
             ("[".to_owned() + &self.r#type.to_string() + "]")
                 .to_string()
                 .to_lowercase()
@@ -56,7 +56,7 @@ impl Display for Error {
     }
 }
 
-pub fn validate_data(data: &HashMap<String, String>, slots: Vec<Slot>) -> Result<(), Error> {
+pub fn validate_data(data: &HashMap<String, String>, slots: &Vec<Slot>) -> Result<(), Error> {
     for entry in data.iter() {
         // Check if the data is assigned to a slot
         let slot = match slots.iter().find(|slot| slot.key == *entry.0) {

@@ -1,13 +1,11 @@
 use clap::{command, Parser, Subcommand};
 use colored::Colorize;
-use spackle::{
-    core::{
-        config, hook, slot,
-        template::{self, ValidateError},
-    },
-    util::copy,
-};
-use std::{collections::HashMap, error::Error, path::PathBuf, process::exit, time::Instant};
+use spackle::core::config;
+use std::{path::PathBuf, process::exit};
+
+mod check;
+mod fill;
+mod info;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -35,9 +33,13 @@ enum Commands {
     Info,
     /// Fills a spackle project using the provided data
     Fill {
-        /// Provides a slot with data
+        /// Assign a given slot a value
         #[arg(short, long)]
-        entries: Vec<String>,
+        slot: Vec<String>,
+
+        /// Toggle a given hook on or off
+        #[arg(short = 'H', long)]
+        hook: Vec<String>,
     },
     /// Checks the validity of a spackle project
     Check,
@@ -58,7 +60,7 @@ fn main() {
         exit(2);
     }
 
-    let project_dir = cli.dir;
+    let project_dir = cli.dir.clone();
 
     // Check if the project directory is a spackle project
     if !project_dir.join("spackle.toml").exists() {
@@ -91,190 +93,10 @@ fn main() {
     );
 
     match &cli.command {
-        Commands::Check => match template::validate(&project_dir, &config.slots) {
-            Ok(()) => {
-                println!("{}", "✅ Template files are valid".bright_green());
-            }
-            Err(e) => {
-                match e {
-                    ValidateError::TeraError(e) => {
-                        eprintln!(
-                            "{}\n{}",
-                            "❌ Error validating template files".bright_red(),
-                            e.to_string().red()
-                        );
-                    }
-                    ValidateError::RenderError(e) => {
-                        for (templ, e) in e {
-                            eprintln!(
-                                "{}\n{}\n",
-                                format!("❌ Template {} has errors", templ.bright_red().bold())
-                                    .bright_red(),
-                                e.source()
-                                    .map(|e| e.to_string())
-                                    .unwrap_or_default()
-                                    .bright_red()
-                                    .dimmed()
-                            )
-                        }
-                    }
-                }
-
-                exit(1);
-            }
-        },
-        Commands::Info {} => {
-            println!("{}", "slots".truecolor(140, 200, 255).bold());
-
-            (&config.slots).into_iter().for_each(|slot| {
-                println!("{}\n", slot);
-            });
-        }
-        Commands::Fill { entries: data } => {
-            let data_entries = data
-                .iter()
-                .filter_map(|data| match data.split_once('=') {
-                    Some((key, value)) => Some((key.to_string(), value.to_string())),
-                    None => {
-                        eprintln!(
-                            "{} {}",
-                            "❌",
-                            "Invalid data argument, must be key=value. Skipping.".bright_red()
-                        );
-                        None
-                    }
-                })
-                .map(|(key, value)| (key.to_string(), value.to_string()))
-                .collect::<HashMap<String, String>>();
-
-            match slot::validate_data(&data_entries, config.slots) {
-                Ok(()) => {}
-                Err(e) => {
-                    eprintln!(
-                        "❌ {}\n{}",
-                        "Error validating supplied data".bright_red(),
-                        e.to_string().red()
-                    );
-
-                    exit(1);
-                }
-            }
-
-            let start_time = Instant::now();
-
-            match copy::copy(&project_dir, &cli.out, &config.ignore) {
-                Ok(r) => {
-                    println!(
-                        "{} {} {} {}",
-                        "🖨️  Copied",
-                        r.copied_count,
-                        "files",
-                        format!("in {:?}", start_time.elapsed()).dimmed()
-                    );
-
-                    if r.skipped_count > 0 {
-                        println!(
-                            "{}",
-                            format!(
-                                "{} {} {}",
-                                "  Ignored", r.skipped_count, "files/directories"
-                            )
-                            .to_string()
-                            .dimmed()
-                        );
-                    }
-
-                    println!();
-                }
-                Err(e) => {
-                    std::fs::remove_dir_all(&cli.out).unwrap();
-
-                    eprintln!(
-                        "❌ {}\n{}\n{}",
-                        "Could not copy project".bright_red(),
-                        e.path.to_string_lossy().red(),
-                        e.to_string().red(),
-                    );
-
-                    exit(1);
-                }
-            }
-
-            let start_time = Instant::now();
-
-            match template::fill(&project_dir, &data_entries, &PathBuf::from(&cli.out)) {
-                Ok(r) => {
-                    println!(
-                        "{} {} {} {} {}\n",
-                        "⛽ Processed",
-                        r.len(),
-                        "files",
-                        "in".dimmed(),
-                        format!("{:?}", start_time.elapsed()).dimmed()
-                    );
-
-                    for result in r {
-                        match result {
-                            Ok(f) => {
-                                if cli.verbose {
-                                    println!(
-                                        "📄 Processed {} {} {}\n",
-                                        f.path.to_string_lossy().bold(),
-                                        "in".dimmed(),
-                                        format!("{:?}", f.elapsed).dimmed()
-                                    );
-
-                                    println!(
-                                        "{}\n",
-                                        f.contents
-                                            .lines()
-                                            .map(|line| format!("  {}", line))
-                                            .collect::<Vec<String>>()
-                                            .join("\n")
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!(
-                                    "{} {}\n{}\n",
-                                    "⚠️ Could not process file".bright_yellow(),
-                                    e.file.bright_yellow().bold(),
-                                    format!("{}\n{}", e.kind, e.source.source().unwrap())
-                                        .bright_yellow()
-                                        .dimmed(),
-                                );
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    std::fs::remove_dir_all(&cli.out).unwrap();
-
-                    eprintln!(
-                        "❌ {}\n{}",
-                        "Could not fill project".bright_red(),
-                        e.to_string().red(),
-                    );
-                }
-            }
-
-            match hook::run_hooks(config.hooks, &cli.out, data_entries) {
-                Ok(_) => {
-                    println!("🪝  Hooks executed successfully");
-                }
-                Err(e) => {
-                    std::fs::remove_dir_all(&cli.out).unwrap();
-
-                    eprintln!(
-                        "❌ {} {}\n{}",
-                        "Error running hook".bright_red(),
-                        e.hook.name.bright_red().bold(),
-                        e.error.to_string().red()
-                    );
-
-                    exit(1);
-                }
-            }
+        Commands::Check => check::run(&project_dir, &config),
+        Commands::Info {} => info::run(&config),
+        Commands::Fill { slot, hook } => {
+            fill::run(slot, hook, &project_dir, &cli.out, &config, &cli)
         }
     }
 }

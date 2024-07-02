@@ -62,19 +62,36 @@ impl Display for ErrorKind {
 ///
 /// The `dir` argument is the directory to run the hooks in.
 ///
-/// The `data` argument is a map of key-value pairs to be used in the hooks.
+/// The `data` argument is a map of key-value pairs to be used in the hook's conditional logic (if).
 pub fn run_hooks_async(
-    hooks: Vec<Hook>,
+    hooks: &Vec<Hook>,
     dir: impl AsRef<Path>,
-    data: HashMap<String, String>,
+    slot_data: HashMap<String, String>,
+    hook_data: &HashMap<String, bool>,
 ) -> Result<impl Stream<Item = HookUpdate>, Error> {
-    let mut skipped_hooks: Vec<Hook> = Vec::new();
+    let mut skipped_hooks = Vec::new();
+
+    // Filter out hooks that the user has disabled
+    let mut user_valid_hooks = Vec::new();
+    for hook in hooks {
+        // If the hooks is optional and the user has not enabled it (if they haven't provided configuration refer to the hook default), skip it.
+        if let Some(optional) = &hook.optional {
+            let enabled = hook_data.get(&hook.key).unwrap_or(&optional.default);
+            if !*enabled {
+                skipped_hooks.push(hook);
+            } else {
+                user_valid_hooks.push(hook);
+            }
+        } else {
+            user_valid_hooks.push(hook);
+        }
+    }
 
     // Filter out hooks that have an r#if condition that evaluates to false
-    let mut valid_hooks = Vec::new();
-    for hook in hooks {
+    let mut valid_hooks: Vec<&Hook> = Vec::new();
+    for hook in user_valid_hooks {
         if let Some(r#if) = hook.clone().r#if {
-            let context = Context::from_serialize(data.clone()).map_err(|e| Error {
+            let context = Context::from_serialize(slot_data.clone()).map_err(|e| Error {
                 hook: hook.clone(),
                 error: ErrorKind::ErrorRenderingConditional(e),
             })?;
@@ -108,7 +125,7 @@ pub fn run_hooks_async(
             .spawn();
 
         match child {
-            Ok(child) => children.push((hook, child)),
+            Ok(child) => children.push((hook.clone(), child)),
             Err(e) => {
                 return Err(Error {
                     hook: hook.clone(),
@@ -121,7 +138,9 @@ pub fn run_hooks_async(
     let skipped_stream = stream::iter(
         skipped_hooks
             .into_iter()
-            .map(|hook| HookUpdate::HookDone(HookResult::Skipped(hook))),
+            .map(|hook| hook.clone())
+            .map(|hook| HookUpdate::HookDone(HookResult::Skipped(hook)))
+            .collect::<Vec<HookUpdate>>(),
     );
 
     let children_stream = stream::unfold(children.into_iter(), |mut children| async move {
@@ -157,15 +176,16 @@ pub fn run_hooks_async(
     Ok(skipped_stream.chain(children_stream))
 }
 
-/// Run a set of hooks, returning an error if any of the hooks fail. Returns a list of hooks that were skipped.
+/// Run a set of hooks, returning an error if any of the hooks fail before executing.
 ///
 /// The `dir` argument is the directory to run the hooks in.
 pub fn run_hooks(
-    hooks: Vec<Hook>,
+    hooks: &Vec<Hook>,
     dir: impl AsRef<Path>,
-    data: HashMap<String, String>,
+    slot_data: HashMap<String, String>,
+    hook_data: &HashMap<String, bool>,
 ) -> Result<Vec<HookResult>, Error> {
-    let stream = run_hooks_async(hooks, dir, data)?;
+    let stream = run_hooks_async(hooks, dir, slot_data, hook_data)?;
     pin_mut!(stream);
 
     let mut results = Vec::new();
