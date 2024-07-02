@@ -58,13 +58,13 @@ pub struct RenderedFile {
 
 pub fn fill(
     project_dir: &PathBuf,
-    data: &HashMap<String, String>,
     out_dir: &PathBuf,
+    slot_data: &HashMap<String, String>,
 ) -> Result<Vec<Result<RenderedFile, FileError>>, tera::Error> {
     let glob = project_dir.join("**").join("*".to_owned() + TEMPLATE_EXT);
 
     let tera = Tera::new(&glob.to_string_lossy())?;
-    let context = Context::from_serialize(data)?;
+    let context = Context::from_serialize(slot_data)?;
 
     let template_names = tera.get_template_names().collect::<Vec<_>>();
     let rendered_templates = template_names.iter().map(|template_name| {
