@@ -7,7 +7,9 @@ use std::{fmt::Display, fs, io, path::PathBuf};
 pub struct Config {
     #[serde(default)]
     pub ignore: Vec<String>,
+    #[serde(default)]
     pub slots: Vec<Slot>,
+    #[serde(default)]
     pub hooks: Vec<Hook>,
 }
 

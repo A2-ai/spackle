@@ -5,3 +5,5 @@ setup:
 run *args="":
     cargo run -p spackle-cli {{args}}
  
+install:
+    cargo install --path=cli
