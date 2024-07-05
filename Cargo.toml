@@ -15,7 +15,8 @@ cargo-dist-version = "0.16.0"
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
-installers = ["shell", "homebrew"]
+# installers = ["shell", "homebrew"] TODO re-add homebrew after creating tap
+installers = ["shell"]
 # A GitHub repo to push Homebrew formulas to
 tap = "a2-ai/spackle"
 # Target platforms to build apps for (Rust target-triple syntax)
