@@ -13,3 +13,4 @@ clap = { version = "4.5.4", features = ["derive"] }
 colored = "2.1.0"
 rocket = { version = "0.5.1", features = ["json"] }
 rust-embed = "8.4.0"
+tera = "1.20.0"
