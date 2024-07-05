@@ -17,7 +17,6 @@ pub struct Config {
 pub struct Hook {
     pub key: String,
     pub command: Vec<String>,
-    pub requires: Option<String>,
     pub r#if: Option<String>,
     pub optional: Option<HookConfigOptional>,
     pub name: Option<String>,
