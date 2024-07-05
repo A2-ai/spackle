@@ -1,87 +1,112 @@
-use spackle::core::{config::Hook, hook};
+use spackle::core::{
+    config::{Hook, HookConfigOptional},
+    hook::{self, HookResult},
+};
 use std::collections::HashMap;
 
 #[test]
 fn basic() {
     let hooks = vec![Hook {
-        name: "hello world".to_string(),
+        key: "hello world".to_string(),
         command: vec!["echo".to_string(), "hello world".to_string()],
         r#if: None,
+        optional: None,
+        name: None,
+        description: None,
     }];
 
-    assert!(hook::run_hooks(hooks, ".", HashMap::new()).is_ok());
+    assert!(hook::run_hooks(&hooks, ".", HashMap::new(), &HashMap::new()).is_ok());
 }
 
 #[test]
 fn exec_error() {
     let hooks = vec![
         Hook {
-            name: "hello world".to_string(),
+            key: "hello world".to_string(),
             command: vec!["echo".to_string(), "hello world".to_string()],
             r#if: None,
+            optional: None,
+            name: None,
+            description: None,
         },
         Hook {
-            name: "fail".to_string(),
+            key: "fail".to_string(),
             command: vec!["false".to_string()],
             r#if: None,
+            optional: None,
+            name: None,
+            description: None,
         },
     ];
 
-    let err = hook::run_hooks(hooks, ".", HashMap::new()).unwrap_err();
-
-    if let hook::ErrorKind::ErrorExecuting(_) = err.error {
-    } else {
-        panic!("expected ErrorExecuting, got {:?}", err);
-    }
-
-    assert_eq!(err.hook.name, "fail".to_string());
+    let result = hook::run_hooks(&hooks, ".", HashMap::new(), &HashMap::new()).unwrap_err();
+    assert_eq!(result.hook.key, "fail".to_string());
 }
 
 #[test]
 fn conditional() {
     let hooks = vec![
         Hook {
-            name: "1".to_string(),
+            key: "1".to_string(),
             command: vec!["echo".to_string(), "hello world".to_string()],
             r#if: Some("true".to_string()),
+            optional: None,
+            name: None,
+            description: None,
         },
         Hook {
-            name: "2".to_string(),
+            key: "2".to_string(),
             command: vec!["echo".to_string(), "hello world".to_string()],
             r#if: Some("false".to_string()),
+            optional: None,
+            name: None,
+            description: None,
         },
         Hook {
-            name: "3".to_string(),
+            key: "3".to_string(),
             command: vec!["echo".to_string(), "hello world".to_string()],
             r#if: None,
+            optional: None,
+            name: None,
+            description: None,
         },
     ];
 
-    let result = hook::run_hooks(hooks, ".", HashMap::new()).unwrap();
+    let results = hook::run_hooks(&hooks, ".", HashMap::new(), &HashMap::new()).unwrap();
 
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0].name, "2".to_string());
+    let skipped_hooks: Vec<_> = results
+        .iter()
+        .filter(|r| matches!(r, HookResult::Skipped(_)))
+        .collect();
+    assert_eq!(skipped_hooks.len(), 1);
 }
 
 #[test]
 fn bad_conditional_template() {
     let hooks = vec![
         Hook {
-            name: "1".to_string(),
+            key: "1".to_string(),
             command: vec!["echo".to_string(), "hello world".to_string()],
             r#if: Some("{{ good_var }}".to_string()),
+            optional: None,
+            name: None,
+            description: None,
         },
         Hook {
-            name: "2".to_string(),
+            key: "2".to_string(),
             command: vec!["echo".to_string(), "hello world".to_string()],
             r#if: Some("{{ bad_var }}".to_string()),
+            optional: None,
+            name: None,
+            description: None,
         },
     ];
 
     assert!(hook::run_hooks(
-        hooks,
+        &hooks,
         ".",
-        HashMap::from([("good_var".to_string(), "true".to_string())])
+        HashMap::from([("good_var".to_string(), "true".to_string())]),
+        &HashMap::new()
     )
     .is_err());
 }
@@ -89,15 +114,69 @@ fn bad_conditional_template() {
 #[test]
 fn bad_conditional_value() {
     let hooks = vec![Hook {
-        name: "1".to_string(),
+        key: "1".to_string(),
         command: vec!["echo".to_string(), "hello world".to_string()],
         r#if: Some("lorem ipsum".to_string()),
+        optional: None,
+        name: None,
+        description: None,
     }];
 
     assert!(hook::run_hooks(
-        hooks,
+        &hooks,
         ".",
-        HashMap::from([("".to_string(), "".to_string())])
+        HashMap::from([("".to_string(), "".to_string())]),
+        &HashMap::new()
     )
     .is_err());
+}
+
+#[test]
+fn optional() {
+    let hooks = vec![
+        Hook {
+            key: "1".to_string(),
+            command: vec!["echo".to_string(), "hello world".to_string()],
+            r#if: None,
+            optional: None,
+            name: None,
+            description: None,
+        },
+        Hook {
+            key: "2".to_string(),
+            command: vec!["echo".to_string(), "hello world".to_string()],
+            r#if: None,
+            optional: Some(HookConfigOptional { default: false }),
+            name: None,
+            description: None,
+        },
+    ];
+
+    let results = hook::run_hooks(&hooks, ".", HashMap::new(), &HashMap::new()).unwrap();
+
+    assert!(
+        results
+            .iter()
+            .filter(|r| {
+                match r {
+                    HookResult::Skipped(hook) => hook.key == "2".to_string(),
+                    _ => false,
+                }
+            })
+            .count()
+            == 1
+    );
+
+    assert!(
+        results
+            .iter()
+            .filter(|r| {
+                match r {
+                    HookResult::Completed { hook, .. } => hook.key == "1".to_string(),
+                    _ => false,
+                }
+            })
+            .count()
+            == 1
+    );
 }

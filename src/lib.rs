@@ -1,6 +1,7 @@
 use core::{
-    config::{self, Hook},
-    hook, template,
+    config::{self},
+    hook::{self, HookResult, HookUpdate},
+    template,
 };
 use std::{collections::HashMap, path::PathBuf};
 
@@ -49,9 +50,10 @@ impl std::error::Error for Error {
 /// out_dir is the path to what will become the filled directory
 pub fn generate_stream(
     project_dir: &PathBuf,
-    data: &HashMap<String, String>,
     out_dir: &PathBuf,
-) -> Result<(impl Stream<Item = hook::CommandResult>, Vec<Hook>), Error> {
+    slot_data: &HashMap<String, String>,
+    hook_data: &HashMap<String, bool>,
+) -> Result<impl Stream<Item = HookUpdate>, Error> {
     if out_dir.exists() {
         return Err(Error::AlreadyExists(out_dir.clone()));
     }
@@ -64,16 +66,17 @@ pub fn generate_stream(
     copy::copy(project_dir, &out_dir, &config.ignore, context).map_err(Error::CopyError)?;
 
     // Render template files to the output directory
-    let results =
-        template::fill(project_dir, data, out_dir).map_err(|e| Error::TemplateError(e.into()))?;
+    let results = template::fill(project_dir, out_dir, slot_data)
+        .map_err(|e| Error::TemplateError(e.into()))?;
     for result in results {
         if let Err(e) = result {
             return Err(Error::TemplateError(e.into()));
         }
     }
 
-    let hook_stream = hook::run_hooks_async(config.hooks, out_dir.clone(), data.clone())
-        .map_err(Error::HookFailed)?;
+    let hook_stream =
+        hook::run_hooks_async(&config.hooks, out_dir.clone(), slot_data.clone(), hook_data)
+            .map_err(Error::HookFailed)?;
 
     Ok(hook_stream)
 }
@@ -83,9 +86,10 @@ pub fn generate_stream(
 /// out_dir is the path to what will become the filled directory
 pub fn generate(
     project_dir: &PathBuf,
-    data: &HashMap<String, String>,
     out_dir: &PathBuf,
-) -> Result<Vec<Hook>, Error> {
+    slot_data: &HashMap<String, String>,
+    hook_data: &HashMap<String, bool>,
+) -> Result<Vec<HookResult>, Error> {
     if out_dir.exists() {
         return Err(Error::AlreadyExists(out_dir.clone()));
     }
@@ -98,8 +102,8 @@ pub fn generate(
     copy::copy(project_dir, &out_dir, &config.ignore, context).map_err(Error::CopyError)?;
 
     // Render template files to the output directory
-    let results =
-        template::fill(project_dir, data, out_dir).map_err(|e| Error::TemplateError(e.into()))?;
+    let results = template::fill(project_dir, out_dir, slot_data)
+        .map_err(|e| Error::TemplateError(e.into()))?;
     for result in results {
         if let Err(e) = result {
             return Err(Error::TemplateError(e.into()));
@@ -107,8 +111,8 @@ pub fn generate(
     }
 
     // Run post-template hooks in the output directory
-    let skipped_hooks =
-        hook::run_hooks(config.hooks, out_dir, data.clone()).map_err(Error::HookFailed)?;
+    let results = hook::run_hooks(&config.hooks, out_dir, slot_data.clone(), hook_data)
+        .map_err(Error::HookFailed)?;
 
-    Ok(skipped_hooks)
+    Ok(results)
 }

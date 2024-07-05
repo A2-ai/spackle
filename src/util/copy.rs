@@ -1,4 +1,4 @@
-use std::{fmt::Display, fs, path::{Path, PathBuf}};
+use std::{fmt::Display, fs, path::PathBuf};
 
 use tera::{Context, Tera};
 use walkdir::WalkDir;
@@ -28,7 +28,12 @@ pub struct CopyResult {
     pub skipped_count: usize,
 }
 
-pub fn copy(src: &PathBuf, dest: &PathBuf, skip: &Vec<String>, context: &Context) -> Result<CopyResult, Error> {
+pub fn copy(
+    src: &PathBuf,
+    dest: &PathBuf,
+    skip: &Vec<String>,
+    context: &Context,
+) -> Result<CopyResult, Error> {
     let mut copied_count = 0;
     let mut skipped_count = 0;
 
@@ -79,7 +84,9 @@ pub fn copy(src: &PathBuf, dest: &PathBuf, skip: &Vec<String>, context: &Context
             // TODO: fixup unwrap - not sure what situations this could panic in
             // assuming without need for escaping this should just replace a template
             // if it exists but otherwise will just carry on forward.
-        ).unwrap().into();
+        )
+        .unwrap()
+        .into();
 
         if entry.file_type().is_dir() {
             fs::create_dir_all(&dst_path).map_err(|e| Error {
