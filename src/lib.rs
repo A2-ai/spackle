@@ -99,12 +99,7 @@ pub fn generate(
     let mut slot_data = slot_data.clone();
     slot_data.insert(
         "project_name".to_string(),
-        project_dir
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string(),
+        project_dir.file_name().unwrap().to_string_lossy().into(),
     );
 
     // Copy all non-template files to the output directory

@@ -80,6 +80,12 @@ pub fn run(
 
     let start_time = Instant::now();
 
+    let mut slot_data = slot_data.clone();
+    slot_data.insert(
+        "project_name".to_string(),
+        project_dir.file_name().unwrap().to_string_lossy().into(),
+    );
+
     // CR(devin): when looking at the below code, this likely should be pushed
     // into the spackle lib itself, there are too many implementation details
     // in the CLi that would also need to be replicated in any api/other client
