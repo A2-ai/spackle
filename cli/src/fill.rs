@@ -78,6 +78,8 @@ pub fn run(
         })
         .collect::<HashMap<String, bool>>();
 
+    // TODO validate hook data
+
     let start_time = Instant::now();
 
     let mut slot_data = slot_data.clone();
@@ -197,7 +199,7 @@ pub fn run(
 
     match hook::run_hooks(&config.hooks, out, &slot_data, &hook_data) {
         Ok(results) => {
-            println!("🪝  Executed {} hooks", results.len());
+            println!("🪝  Evaluated {} hooks", results.len());
 
             if cli.verbose {
                 for result in results {
