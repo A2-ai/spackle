@@ -1,10 +1,7 @@
-use std::{collections::HashMap, fmt::Display, path::Path, str::ParseBoolError};
+use std::{collections::HashMap, fmt::Display, path::Path};
 
-use async_process::{Command, Stdio};
-use futures::{executor, pin_mut, stream, Stream, StreamExt};
+use std::process::{Command, Stdio};
 use tera::{Context, Tera};
-
-use crate::core::hook;
 
 use super::config::Hook;
 
@@ -16,17 +13,30 @@ pub enum HookUpdate {
 
 #[derive(Debug, Clone)]
 pub enum HookResult {
-    Skipped(Hook),
-    Errored {
+    Skipped {
         hook: Hook,
-        error: String,
+        reason: SkipReason,
     },
     Completed {
         hook: Hook,
         stdout: String,
         stderr: String,
-        success: bool,
     },
+}
+
+#[derive(Debug, Clone)]
+pub enum SkipReason {
+    UserDisabled,
+    FalseConditional,
+}
+
+impl Display for SkipReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SkipReason::UserDisabled => write!(f, "user disabled"),
+            SkipReason::FalseConditional => write!(f, "false conditional"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -38,85 +48,55 @@ pub struct Error {
 #[derive(Debug)]
 pub enum ErrorKind {
     ErrorRenderingTemplate(tera::Error),
-    ErrorParsingConditional(ParseBoolError),
-    ErrorSpawning(Box<dyn std::error::Error>),
-    ErrorExecuting(String),
+    InvalidConditional(ConditionalError),
+    ErrorExecuting(std::io::Error),
+    CommandFailed(String),
 }
 
 impl Display for ErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ErrorKind::ErrorRenderingTemplate(e) => {
-                write!(f, "Error rendering conditional\n{}", e)
+                write!(f, "error rendering conditional\n{}", e)
             }
-            ErrorKind::ErrorParsingConditional(e) => {
-                write!(f, "Error parsing conditional\n{}", e)
+            ErrorKind::InvalidConditional(e) => {
+                write!(f, "invalid conditional\n{}", e)
             }
-            ErrorKind::ErrorSpawning(e) => write!(f, "Error spawning\n{}", e),
-            ErrorKind::ErrorExecuting(e) => write!(f, "Error executing\n{}", e),
+            ErrorKind::ErrorExecuting(e) => write!(f, "error executing\n{}", e),
+            ErrorKind::CommandFailed(e) => write!(f, "command failed\n{}", e),
         }
     }
 }
 
-/// Run a set of hooks asynchronously and returns a stream of their execution results.
+/// Run a set of hooks, returning their execution results.
 ///
 /// The `dir` argument is the directory to run the hooks in.
 ///
 /// The `data` argument is a map of key-value pairs to be used in the hook's conditional logic (if).
-pub fn run_hooks_async(
+pub fn run_hooks(
     hooks: &Vec<Hook>,
     dir: impl AsRef<Path>,
-    slot_data: HashMap<String, String>,
+    slot_data: &HashMap<String, String>,
     hook_data: &HashMap<String, bool>,
-) -> Result<impl Stream<Item = HookUpdate>, Error> {
+) -> Result<Vec<HookResult>, Error> {
     let mut skipped_hooks = Vec::new();
+    let mut queued_hooks = Vec::new();
 
-    // Filter out hooks that the user has disabled
-    let mut user_valid_hooks = Vec::new();
     for hook in hooks {
-        // If the hooks is optional and the user has not enabled it (if they haven't provided configuration refer to the hook default), skip it.
-        if let Some(optional) = &hook.optional {
-            let enabled = hook_data.get(&hook.key).unwrap_or(&optional.default);
-            if !*enabled {
-                skipped_hooks.push(hook);
-            } else {
-                user_valid_hooks.push(hook);
-            }
+        let enabled = match &hook.optional {
+            Some(optional) => hook_data.get(&hook.key).unwrap_or(&optional.default),
+            None => &true,
+        };
+        if *enabled {
+            queued_hooks.push(hook.clone());
         } else {
-            user_valid_hooks.push(hook);
+            skipped_hooks.push((hook.clone(), SkipReason::UserDisabled));
         }
     }
 
-    // Filter out hooks that have an if condition that evaluates to false
-    let mut valid_hooks: Vec<&Hook> = Vec::new();
-    for hook in user_valid_hooks {
-        if let Some(r#if) = hook.clone().r#if {
-            let context = Context::from_serialize(slot_data.clone()).map_err(|e| Error {
-                hook: hook.clone(),
-                error: ErrorKind::ErrorRenderingTemplate(e),
-            })?;
-
-            let condition = Tera::one_off(&r#if, &context, false).map_err(|e| Error {
-                hook: hook.clone(),
-                error: ErrorKind::ErrorRenderingTemplate(e),
-            })?;
-
-            if condition.trim().parse::<bool>().map_err(|e| Error {
-                hook: hook.clone(),
-                error: ErrorKind::ErrorParsingConditional(e),
-            })? {
-                valid_hooks.push(hook);
-            } else {
-                skipped_hooks.push(hook);
-            }
-        } else {
-            valid_hooks.push(hook);
-        }
-    }
-
-    // Render the hook command field with the slot data
+    // Apply template to command
     let mut templated_hooks = Vec::new();
-    for hook in valid_hooks {
+    for hook in queued_hooks {
         let context = Context::from_serialize(slot_data.clone()).map_err(|e| Error {
             hook: hook.clone(),
             error: ErrorKind::ErrorRenderingTemplate(e),
@@ -139,106 +119,102 @@ pub fn run_hooks_async(
         });
     }
 
-    let mut children = Vec::new();
-    for hook in templated_hooks {
-        let child = Command::new(&hook.command[0])
+    let mut ran_hooks: Vec<(&Hook, std::process::Output)> = Vec::new();
+    for hook in &templated_hooks {
+        // Evaluate conditional
+        // also add to the context the run status of all hooks so far
+        let mut cond_context = slot_data.clone();
+        for hook in hooks {
+            cond_context.insert(format!("hook_ran_{}", hook.key), "false".to_string());
+        }
+        for (hook, _) in ran_hooks.clone() {
+            cond_context.insert(format!("hook_ran_{}", hook.key), "true".to_string());
+        }
+        let condition = evaluate_conditional(&hook, &cond_context).map_err(|e| Error {
+            hook: hook.clone(),
+            error: ErrorKind::InvalidConditional(e),
+        })?;
+
+        if !condition {
+            skipped_hooks.push((hook.clone(), SkipReason::FalseConditional));
+            continue;
+        }
+
+        let output = Command::new(&hook.command[0])
             .args(&hook.command[1..])
             .current_dir(dir.as_ref())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn();
+            .output()
+            .map_err(|e| Error {
+                hook: hook.clone(),
+                error: ErrorKind::ErrorExecuting(e),
+            })?;
 
-        match child {
-            Ok(child) => children.push((hook.clone(), child)),
-            Err(e) => {
-                return Err(Error {
-                    hook: hook.clone(),
-                    error: ErrorKind::ErrorSpawning(Box::new(e)),
-                });
-            }
+        if !output.status.success() {
+            return Err(Error {
+                hook: hook.clone(),
+                error: ErrorKind::CommandFailed(output.status.to_string()),
+            });
         }
+
+        ran_hooks.push((hook, output));
     }
 
-    let skipped_stream = stream::iter(
-        skipped_hooks
-            .into_iter()
-            .map(|hook| hook.clone())
-            .map(|hook| HookUpdate::HookDone(HookResult::Skipped(hook)))
-            .collect::<Vec<HookUpdate>>(),
-    );
+    let hook_results = ran_hooks
+        .iter()
+        .map(|(hook, output)| HookResult::Completed {
+            hook: (*hook).clone(),
+            stdout: String::from_utf8_lossy(&output.stdout).into(),
+            stderr: String::from_utf8_lossy(&output.stderr).into(),
+        });
 
-    let children_stream = stream::unfold(children.into_iter(), |mut children| async move {
-        match children.next() {
-            Some((hook, child)) => {
-                let output = match child.output().await {
-                    Ok(output) => output,
-                    Err(e) => {
-                        return Some((
-                            HookUpdate::HookDone(HookResult::Errored {
-                                hook: hook.clone(),
-                                error: e.to_string(),
-                            }),
-                            children,
-                        ));
-                    }
-                };
+    let skipped_hook_results = skipped_hooks
+        .iter()
+        .map(|(hook, reason)| HookResult::Skipped {
+            hook: hook.clone(),
+            reason: reason.clone(),
+        });
 
-                Some((
-                    HookUpdate::HookDone(HookResult::Completed {
-                        hook: hook.clone(),
-                        stdout: String::from_utf8_lossy(&output.stdout).into(),
-                        stderr: String::from_utf8_lossy(&output.stderr).into(),
-                        success: output.status.success(),
-                    }),
-                    children,
-                ))
-            }
-            None => None,
-        }
-    });
-
-    Ok(skipped_stream.chain(children_stream))
+    Ok(hook_results.chain(skipped_hook_results).collect())
 }
 
-/// Run a set of hooks, returning an error if any of the hooks fail before executing.
-///
-/// The `dir` argument is the directory to run the hooks in.
-pub fn run_hooks(
-    hooks: &Vec<Hook>,
-    dir: impl AsRef<Path>,
-    slot_data: HashMap<String, String>,
-    hook_data: &HashMap<String, bool>,
-) -> Result<Vec<HookResult>, Error> {
-    let stream = run_hooks_async(hooks, dir, slot_data, hook_data)?;
-    pin_mut!(stream);
+#[derive(Debug)]
+pub enum ConditionalError {
+    InvalidContext(tera::Error),
+    InvalidTemplate(tera::Error),
+    NotBoolean(String),
+}
 
-    let mut results = Vec::new();
-
-    while let Some(status) = executor::block_on(stream.next()) {
-        match status {
-            hook::HookUpdate::HookDone(r) => match r.clone() {
-                HookResult::Errored { hook, error } => {
-                    return Err(Error {
-                        hook,
-                        error: ErrorKind::ErrorExecuting(error),
-                    });
-                }
-                HookResult::Completed {
-                    hook,
-                    stderr,
-                    success,
-                    ..
-                } if !success => {
-                    return Err(Error {
-                        hook: hook.clone(),
-                        error: ErrorKind::ErrorExecuting(stderr.to_string()),
-                    });
-                }
-                _ => results.push(r),
-            },
-            hook::HookUpdate::AllHooksDone => break,
+impl Display for ConditionalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConditionalError::InvalidContext(e) => write!(f, "invalid context\n{}", e),
+            ConditionalError::InvalidTemplate(e) => write!(f, "invalid template\n{}", e),
+            ConditionalError::NotBoolean(e) => write!(f, "not a boolean\n{}", e),
         }
     }
+}
 
-    Ok(results)
+fn evaluate_conditional(
+    hook: &Hook,
+    context: &HashMap<String, String>,
+) -> Result<bool, ConditionalError> {
+    let conditional = match hook.clone().r#if {
+        Some(conditional) => conditional,
+        None => return Ok(true),
+    };
+
+    let context =
+        Context::from_serialize(context).map_err(|e| ConditionalError::InvalidContext(e))?;
+
+    let condition_str = Tera::one_off(&conditional, &context, false)
+        .map_err(|e| ConditionalError::InvalidTemplate(e))?;
+
+    let condition = condition_str
+        .trim()
+        .parse::<bool>()
+        .map_err(|e| ConditionalError::NotBoolean(e.to_string()))?;
+
+    Ok(condition)
 }

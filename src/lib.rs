@@ -1,11 +1,10 @@
 use core::{
     config::{self},
-    hook::{self, HookResult, HookUpdate},
+    hook::{self, HookResult},
     template,
 };
 use std::{collections::HashMap, path::PathBuf};
 
-use futures::Stream;
 use tera::Context;
 use util::copy;
 
@@ -48,42 +47,6 @@ impl std::error::Error for Error {
 /// Generates a filled directory from the specified spackle project.
 ///
 /// out_dir is the path to what will become the filled directory
-pub fn generate_stream(
-    project_dir: &PathBuf,
-    out_dir: &PathBuf,
-    slot_data: &HashMap<String, String>,
-    hook_data: &HashMap<String, bool>,
-) -> Result<impl Stream<Item = HookUpdate>, Error> {
-    if out_dir.exists() {
-        return Err(Error::AlreadyExists(out_dir.clone()));
-    }
-
-    let config = config::load(project_dir).map_err(Error::ConfigError)?;
-
-    // Copy all non-template files to the output directory
-    // TODO: must actually pass in context
-    let context = &Context::new();
-    copy::copy(project_dir, &out_dir, &config.ignore, context).map_err(Error::CopyError)?;
-
-    // Render template files to the output directory
-    let results = template::fill(project_dir, out_dir, slot_data)
-        .map_err(|e| Error::TemplateError(e.into()))?;
-    for result in results {
-        if let Err(e) = result {
-            return Err(Error::TemplateError(e.into()));
-        }
-    }
-
-    let hook_stream =
-        hook::run_hooks_async(&config.hooks, out_dir.clone(), slot_data.clone(), hook_data)
-            .map_err(Error::HookFailed)?;
-
-    Ok(hook_stream)
-}
-
-/// Generates a filled directory from the specified spackle project.
-///
-/// out_dir is the path to what will become the filled directory
 pub fn generate(
     project_dir: &PathBuf,
     out_dir: &PathBuf,
@@ -117,7 +80,7 @@ pub fn generate(
     }
 
     // Run post-template hooks in the output directory
-    let results = hook::run_hooks(&config.hooks, out_dir, slot_data.clone(), hook_data)
+    let results = hook::run_hooks(&config.hooks, out_dir, &slot_data, hook_data)
         .map_err(Error::HookFailed)?;
 
     Ok(results)

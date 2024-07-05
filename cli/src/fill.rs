@@ -78,6 +78,8 @@ pub fn run(
         })
         .collect::<HashMap<String, bool>>();
 
+    // TODO validate hook data
+
     let start_time = Instant::now();
 
     let mut slot_data = slot_data.clone();
@@ -195,22 +197,19 @@ pub fn run(
         }
     }
 
-    match hook::run_hooks(&config.hooks, out, slot_data, &hook_data) {
+    match hook::run_hooks(&config.hooks, out, &slot_data, &hook_data) {
         Ok(results) => {
-            println!("🪝  Executed {} hooks", results.len());
+            println!("🪝  Evaluated {} hooks", results.len());
 
             if cli.verbose {
                 for result in results {
                     match result {
-                        HookResult::Skipped(hook) => {
-                            println!("\n  {} {}", "⏩︎ Skipped".dimmed(), hook.key.bold().dimmed());
-                        }
-                        HookResult::Errored { hook, error } => {
+                        HookResult::Skipped { hook, reason } => {
                             println!(
-                                "\n  {} {} {}",
-                                "❌",
-                                hook.key.bold().red(),
-                                error.to_string().red()
+                                "\n  {} {}\n{}",
+                                "⏩︎ Skipped".dimmed(),
+                                hook.key.bold().dimmed(),
+                                reason.to_string().dimmed()
                             );
                         }
                         HookResult::Completed { hook, stdout, .. } => {

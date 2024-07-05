@@ -1,0 +1,9 @@
+[[hooks]]
+key = "hook_1"
+command = ["echo", "Ran hook_1"]
+optional = { default = true }
+
+[[hooks]]
+key = "hook_2"
+command = ["echo", "Ran hook_2"]
+if = "{{ hook_ran_hook_1 }}"

@@ -15,11 +15,11 @@ fn basic() {
         description: None,
     }];
 
-    assert!(hook::run_hooks(&hooks, ".", HashMap::new(), &HashMap::new()).is_ok());
+    assert!(hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new()).is_ok());
 }
 
 #[test]
-fn exec_error() {
+fn command_fail() {
     let hooks = vec![
         Hook {
             key: "hello world".to_string(),
@@ -30,7 +30,7 @@ fn exec_error() {
             description: None,
         },
         Hook {
-            key: "fail".to_string(),
+            key: "error".to_string(),
             command: vec!["false".to_string()],
             r#if: None,
             optional: None,
@@ -39,8 +39,43 @@ fn exec_error() {
         },
     ];
 
-    let result = hook::run_hooks(&hooks, ".", HashMap::new(), &HashMap::new()).unwrap_err();
-    assert_eq!(result.hook.key, "fail".to_string());
+    let result = hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new())
+        .expect_err("run_hooks succeeded, should have failed");
+
+    match result.error {
+        ErrorKind::CommandFailed(_) => {}
+        _ => panic!("Expected CommandFailed error, got {:?}", result.error),
+    }
+}
+
+#[test]
+fn error_executing() {
+    let hooks = vec![
+        Hook {
+            key: "hello world".to_string(),
+            command: vec!["echo".to_string(), "hello world".to_string()],
+            r#if: None,
+            optional: None,
+            name: None,
+            description: None,
+        },
+        Hook {
+            key: "error".to_string(),
+            command: vec!["invalid_cmd".to_string()],
+            r#if: None,
+            optional: None,
+            name: None,
+            description: None,
+        },
+    ];
+
+    let result = hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new())
+        .expect_err("run_hooks succeeded, should have failed");
+
+    match result.error {
+        ErrorKind::ErrorExecuting(_) => {}
+        _ => panic!("Expected ErrorExecuting error, got {:?}", result.error),
+    }
 }
 
 #[test]
@@ -70,13 +105,22 @@ fn conditional() {
             name: None,
             description: None,
         },
+        Hook {
+            key: "4".to_string(),
+            command: vec!["echo".to_string(), "hello world".to_string()],
+            r#if: Some("{{ hook_ran_1 }}".to_string()),
+            optional: None,
+            name: None,
+            description: None,
+        },
     ];
 
-    let results = hook::run_hooks(&hooks, ".", HashMap::new(), &HashMap::new()).unwrap();
+    let results = hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new())
+        .expect("run_hooks failed, should have succeeded");
 
     let skipped_hooks: Vec<_> = results
         .iter()
-        .filter(|r| matches!(r, HookResult::Skipped(_)))
+        .filter(|r| matches!(r, HookResult::Skipped { .. }))
         .collect();
     assert_eq!(skipped_hooks.len(), 1);
 }
@@ -105,7 +149,7 @@ fn bad_conditional_template() {
     assert!(hook::run_hooks(
         &hooks,
         ".",
-        HashMap::from([("good_var".to_string(), "true".to_string())]),
+        &HashMap::from([("good_var".to_string(), "true".to_string())]),
         &HashMap::new()
     )
     .is_err());
@@ -125,7 +169,7 @@ fn bad_conditional_value() {
     assert!(hook::run_hooks(
         &hooks,
         ".",
-        HashMap::from([("".to_string(), "".to_string())]),
+        &HashMap::from([("".to_string(), "".to_string())]),
         &HashMap::new()
     )
     .is_err());
@@ -152,14 +196,14 @@ fn optional() {
         },
     ];
 
-    let results = hook::run_hooks(&hooks, ".", HashMap::new(), &HashMap::new()).unwrap();
+    let results = hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new()).unwrap();
 
     assert!(
         results
             .iter()
             .filter(|r| {
                 match r {
-                    HookResult::Skipped(hook) => hook.key == "2".to_string(),
+                    HookResult::Skipped { hook, .. } => hook.key == "2".to_string(),
                     _ => false,
                 }
             })
@@ -205,7 +249,7 @@ fn templated_cmd() {
     let results = hook::run_hooks(
         &hooks,
         ".",
-        HashMap::from([
+        &HashMap::from([
             ("field_1".to_string(), "echo".to_string()),
             ("field_2".to_string(), "out1".to_string()),
         ]),
@@ -237,13 +281,14 @@ fn invalid_templated_cmd() {
     let results = hook::run_hooks(
         &hooks,
         ".",
-        HashMap::from([("field_1".to_string(), "echo".to_string())]),
+        &HashMap::from([("field_1".to_string(), "echo".to_string())]),
         &HashMap::new(),
     )
     .expect_err("run_hooks succeeded, should have failed");
 
-    assert!(matches!(
-        results.error,
-        ErrorKind::ErrorRenderingTemplate(_)
-    ));
+    assert!(
+        matches!(results.error, ErrorKind::ErrorRenderingTemplate(_)),
+        "Expected ErrorRenderingTemplate, got {:?}",
+        results.error
+    );
 }

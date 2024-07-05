@@ -125,6 +125,14 @@ The condition to execute the hook. Accepts values from slots.
 if = "{{ foo }} != 'bar'"
 ```
 
+#### Dependencies on other hooks
+
+If you want to run a hook only if another hook has already been run, you can use the `hook_ran_{hook_key}` variable.
+
+```toml
+if = "{{ hook_ran_other_hook }}"
+```
+
 ### name `string`
 
 The name of the hook.
