@@ -1,10 +1,8 @@
 use std::{collections::HashMap, fmt::Display, path::Path, str::ParseBoolError};
 
-use async_process::{Command, Stdio};
-use futures::{executor, pin_mut, stream, Stream, StreamExt};
+use futures::{stream, StreamExt};
+use std::process::{Command, Stdio};
 use tera::{Context, Tera};
-
-use crate::core::hook;
 
 use super::config::Hook;
 
@@ -58,17 +56,17 @@ impl Display for ErrorKind {
     }
 }
 
-/// Run a set of hooks asynchronously and returns a stream of their execution results.
+/// Run a set of hooks, returning their execution results.
 ///
 /// The `dir` argument is the directory to run the hooks in.
 ///
 /// The `data` argument is a map of key-value pairs to be used in the hook's conditional logic (if).
-pub fn run_hooks_async(
+pub fn run_hooks(
     hooks: &Vec<Hook>,
     dir: impl AsRef<Path>,
     slot_data: HashMap<String, String>,
     hook_data: &HashMap<String, bool>,
-) -> Result<impl Stream<Item = HookUpdate>, Error> {
+) -> Result<Vec<HookResult>, Error> {
     let mut skipped_hooks = Vec::new();
 
     // Filter out hooks that the user has disabled
@@ -114,107 +112,60 @@ pub fn run_hooks_async(
         }
     }
 
-    let mut children = Vec::new();
+    let mut children: Vec<(Hook, std::process::Child)> = Vec::new();
 
-    for hook in valid_hooks {
-        let child = Command::new(&hook.command[0])
-            .args(&hook.command[1..])
-            .current_dir(dir.as_ref())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn();
+    let outputs = valid_hooks
+        .iter()
+        .map(|hook| {
+            let output = Command::new(&hook.command[0])
+                .args(&hook.command[1..])
+                .current_dir(dir.as_ref())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output();
 
-        match child {
-            Ok(child) => children.push((hook.clone(), child)),
-            Err(e) => {
-                return Err(Error {
+            (**hook, output)
+        })
+        .collect::<Vec<_>>();
+
+    match children.next() {
+        Some((hook, child)) => {
+            let output = match child.output().await {
+                Ok(output) => output,
+                Err(e) => {
+                    return Some((
+                        HookUpdate::HookDone(HookResult::Errored {
+                            hook: hook.clone(),
+                            error: e.to_string(),
+                        }),
+                        children,
+                    ));
+                }
+            };
+
+            Some((
+                HookUpdate::HookDone(HookResult::Completed {
                     hook: hook.clone(),
-                    error: ErrorKind::ErrorSpawning(Box::new(e)),
-                });
-            }
+                    stdout: String::from_utf8_lossy(&output.stdout).into(),
+                    stderr: String::from_utf8_lossy(&output.stderr).into(),
+                    success: output.status.success(),
+                }),
+                children,
+            ))
         }
+        None => None,
     }
 
-    let skipped_stream = stream::iter(
-        skipped_hooks
-            .into_iter()
-            .map(|hook| hook.clone())
-            .map(|hook| HookUpdate::HookDone(HookResult::Skipped(hook)))
-            .collect::<Vec<HookUpdate>>(),
-    );
-
-    let children_stream = stream::unfold(children.into_iter(), |mut children| async move {
-        match children.next() {
-            Some((hook, child)) => {
-                let output = match child.output().await {
-                    Ok(output) => output,
-                    Err(e) => {
-                        return Some((
-                            HookUpdate::HookDone(HookResult::Errored {
-                                hook: hook.clone(),
-                                error: e.to_string(),
-                            }),
-                            children,
-                        ));
-                    }
-                };
-
-                Some((
-                    HookUpdate::HookDone(HookResult::Completed {
-                        hook: hook.clone(),
-                        stdout: String::from_utf8_lossy(&output.stdout).into(),
-                        stderr: String::from_utf8_lossy(&output.stderr).into(),
-                        success: output.status.success(),
-                    }),
-                    children,
-                ))
-            }
-            None => None,
-        }
+    let results = outputs.iter().map(|(hook, output)| match output {
+        Ok(output) => HookResult::Errored {
+            hook: hook.clone(),
+            error: e.to_string(),
+        },
+        Err(e) => HookResult::Errored {
+            hook: hook.clone(),
+            error: e.to_string(),
+        },
     });
-
-    Ok(skipped_stream.chain(children_stream))
-}
-
-/// Run a set of hooks, returning an error if any of the hooks fail before executing.
-///
-/// The `dir` argument is the directory to run the hooks in.
-pub fn run_hooks(
-    hooks: &Vec<Hook>,
-    dir: impl AsRef<Path>,
-    slot_data: HashMap<String, String>,
-    hook_data: &HashMap<String, bool>,
-) -> Result<Vec<HookResult>, Error> {
-    let stream = run_hooks_async(hooks, dir, slot_data, hook_data)?;
-    pin_mut!(stream);
-
-    let mut results = Vec::new();
-
-    while let Some(status) = executor::block_on(stream.next()) {
-        match status {
-            hook::HookUpdate::HookDone(r) => match r.clone() {
-                HookResult::Errored { hook, error } => {
-                    return Err(Error {
-                        hook,
-                        error: ErrorKind::ErrorExecuting(error),
-                    });
-                }
-                HookResult::Completed {
-                    hook,
-                    stderr,
-                    success,
-                    ..
-                } if !success => {
-                    return Err(Error {
-                        hook: hook.clone(),
-                        error: ErrorKind::ErrorExecuting(stderr.to_string()),
-                    });
-                }
-                _ => results.push(r),
-            },
-            hook::HookUpdate::AllHooksDone => break,
-        }
-    }
 
     Ok(results)
 }
