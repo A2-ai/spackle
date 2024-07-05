@@ -2,9 +2,37 @@
 name = "spackle"
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/a2-ai/spackle"
+description = "A frictionless project templating tool."
 
 [workspace]
 members = ["cli"]
+
+# Config for 'cargo dist'
+[workspace.metadata.dist]
+# The preferred cargo-dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.16.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+# installers = ["shell", "homebrew"] TODO re-add homebrew after creating tap
+installers = ["shell"]
+# A GitHub repo to push Homebrew formulas to
+tap = "a2-ai/spackle"
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+# Publish jobs to run in CI
+publish-jobs = ["homebrew"]
+# Publish jobs to run in CI
+pr-run-mode = "plan"
+# Whether to install an updater program
+install-updater = true
 
 [dependencies]
 async-process = "2.2.3"
@@ -19,3 +47,11 @@ toml = "0.8.13"
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
 walkdir = "2.5.0"
+
+# The profile that 'cargo dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+[workspace.metadata.dist.github-custom-runners]
+aarch64-unknown-linux-gnu = "ubuntu-arm-22.04"

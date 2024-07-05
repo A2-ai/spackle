@@ -54,7 +54,6 @@ impl Display for Hook {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HookConfigOptional {
-    /// Whether the hook is enabled by default.
     pub default: bool,
 }
 

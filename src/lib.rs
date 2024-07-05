@@ -5,6 +5,7 @@ use core::{
 };
 use std::{collections::HashMap, path::PathBuf};
 
+use tera::Context;
 use util::copy;
 
 pub mod core;
@@ -58,11 +59,19 @@ pub fn generate(
 
     let config = config::load(project_dir).map_err(Error::ConfigError)?;
 
+    let mut slot_data = slot_data.clone();
+    slot_data.insert(
+        "project_name".to_string(),
+        project_dir.file_name().unwrap().to_string_lossy().into(),
+    );
+
     // Copy all non-template files to the output directory
-    copy::copy(project_dir, &out_dir, &config.ignore).map_err(Error::CopyError)?;
+    // TODO: must actually pass in context
+    let context = &Context::new();
+    copy::copy(project_dir, &out_dir, &config.ignore, context).map_err(Error::CopyError)?;
 
     // Render template files to the output directory
-    let results = template::fill(project_dir, out_dir, slot_data)
+    let results = template::fill(project_dir, out_dir, &slot_data)
         .map_err(|e| Error::TemplateError(e.into()))?;
     for result in results {
         if let Err(e) = result {

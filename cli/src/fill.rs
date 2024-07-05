@@ -9,6 +9,7 @@ use spackle::{
     },
     util::copy,
 };
+use tera::Context;
 
 use crate::Cli;
 
@@ -79,7 +80,26 @@ pub fn run(
 
     let start_time = Instant::now();
 
-    match copy::copy(&project_dir, out, &config.ignore) {
+    let mut slot_data = slot_data.clone();
+    slot_data.insert(
+        "project_name".to_string(),
+        project_dir.file_name().unwrap().to_string_lossy().into(),
+    );
+
+    // CR(devin): when looking at the below code, this likely should be pushed
+    // into the spackle lib itself, there are too many implementation details
+    // in the CLi that would also need to be replicated in any api/other client
+    // when by the time you get to actually rendering the template
+    // the fact this is touching like a util related module shows its
+    // breaking the ideal implementation boundaries.
+
+    // TODO: refactor the data_entries and context boundaries after considering
+    // the api surface area
+    let mut context = Context::new();
+    slot_data.iter().for_each(|(key, value)| {
+        context.insert(key, value);
+    });
+    match copy::copy(&project_dir, out, &config.ignore, &context) {
         Ok(r) => {
             println!(
                 "{} {} {} {}",
