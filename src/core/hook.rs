@@ -37,7 +37,7 @@ pub struct Error {
 
 #[derive(Debug)]
 pub enum ErrorKind {
-    ErrorRenderingConditional(tera::Error),
+    ErrorRenderingTemplate(tera::Error),
     ErrorParsingConditional(ParseBoolError),
     ErrorSpawning(Box<dyn std::error::Error>),
     ErrorExecuting(String),
@@ -46,7 +46,7 @@ pub enum ErrorKind {
 impl Display for ErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ErrorKind::ErrorRenderingConditional(e) => {
+            ErrorKind::ErrorRenderingTemplate(e) => {
                 write!(f, "Error rendering conditional\n{}", e)
             }
             ErrorKind::ErrorParsingConditional(e) => {
@@ -87,18 +87,18 @@ pub fn run_hooks_async(
         }
     }
 
-    // Filter out hooks that have an r#if condition that evaluates to false
+    // Filter out hooks that have an if condition that evaluates to false
     let mut valid_hooks: Vec<&Hook> = Vec::new();
     for hook in user_valid_hooks {
         if let Some(r#if) = hook.clone().r#if {
             let context = Context::from_serialize(slot_data.clone()).map_err(|e| Error {
                 hook: hook.clone(),
-                error: ErrorKind::ErrorRenderingConditional(e),
+                error: ErrorKind::ErrorRenderingTemplate(e),
             })?;
 
             let condition = Tera::one_off(&r#if, &context, false).map_err(|e| Error {
                 hook: hook.clone(),
-                error: ErrorKind::ErrorRenderingConditional(e),
+                error: ErrorKind::ErrorRenderingTemplate(e),
             })?;
 
             if condition.trim().parse::<bool>().map_err(|e| Error {
@@ -114,9 +114,33 @@ pub fn run_hooks_async(
         }
     }
 
-    let mut children = Vec::new();
-
+    // Render the hook command field with the slot data
+    let mut templated_hooks = Vec::new();
     for hook in valid_hooks {
+        let context = Context::from_serialize(slot_data.clone()).map_err(|e| Error {
+            hook: hook.clone(),
+            error: ErrorKind::ErrorRenderingTemplate(e),
+        })?;
+
+        let command = hook
+            .command
+            .iter()
+            .map(|arg| {
+                Tera::one_off(arg, &context, false).map_err(|e| Error {
+                    hook: hook.clone(),
+                    error: ErrorKind::ErrorRenderingTemplate(e),
+                })
+            })
+            .collect::<Result<Vec<String>, Error>>()?;
+
+        templated_hooks.push(Hook {
+            command,
+            ..hook.clone()
+        });
+    }
+
+    let mut children = Vec::new();
+    for hook in templated_hooks {
         let child = Command::new(&hook.command[0])
             .args(&hook.command[1..])
             .current_dir(dir.as_ref())

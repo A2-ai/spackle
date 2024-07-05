@@ -1,6 +1,6 @@
 use spackle::core::{
     config::{Hook, HookConfigOptional},
-    hook::{self, HookResult},
+    hook::{self, ErrorKind, HookResult},
 };
 use std::collections::HashMap;
 
@@ -179,4 +179,71 @@ fn optional() {
             .count()
             == 1
     );
+}
+
+#[test]
+fn templated_cmd() {
+    let hooks = vec![
+        Hook {
+            key: "1".to_string(),
+            command: vec!["{{ field_1 }}".to_string(), "{{ field_2 }}".to_string()],
+            r#if: None,
+            optional: None,
+            name: None,
+            description: None,
+        },
+        Hook {
+            key: "2".to_string(),
+            command: vec!["echo".to_string(), "out2".to_string()],
+            r#if: None,
+            optional: None,
+            name: None,
+            description: None,
+        },
+    ];
+
+    let results = hook::run_hooks(
+        &hooks,
+        ".",
+        HashMap::from([
+            ("field_1".to_string(), "echo".to_string()),
+            ("field_2".to_string(), "out1".to_string()),
+        ]),
+        &HashMap::new(),
+    )
+    .expect("run_hooks failed, should have succeeded");
+
+    assert_eq!(
+        if let HookResult::Completed { stdout, .. } = &results[0] {
+            stdout
+        } else {
+            panic!("Expected HookResult::Completed, got {:?}", results[0]);
+        },
+        "out1\n"
+    );
+}
+
+#[test]
+fn invalid_templated_cmd() {
+    let hooks = vec![Hook {
+        key: "1".to_string(),
+        command: vec!["{{ field_1 }}".to_string(), "{{ field_2 }}".to_string()],
+        r#if: None,
+        optional: None,
+        name: None,
+        description: None,
+    }];
+
+    let results = hook::run_hooks(
+        &hooks,
+        ".",
+        HashMap::from([("field_1".to_string(), "echo".to_string())]),
+        &HashMap::new(),
+    )
+    .expect_err("run_hooks succeeded, should have failed");
+
+    assert!(matches!(
+        results.error,
+        ErrorKind::ErrorRenderingTemplate(_)
+    ));
 }

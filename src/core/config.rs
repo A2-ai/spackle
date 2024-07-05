@@ -18,7 +18,6 @@ pub struct Hook {
     pub key: String,
     pub command: Vec<String>,
     pub r#if: Option<String>,
-    /// Should hook be user-toggleable?
     pub optional: Option<HookConfigOptional>,
     pub name: Option<String>,
     pub description: Option<String>,
@@ -55,7 +54,6 @@ impl Display for Hook {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HookConfigOptional {
-    /// Whether the hook is enabled by default.
     pub default: bool,
 }
 
