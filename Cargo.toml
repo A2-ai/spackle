@@ -28,7 +28,7 @@ targets = [
     "x86_64-pc-windows-msvc",
 ]
 # Publish jobs to run in CI
-publish-jobs = ["homebrew"]
+# publish-jobs = ["homebrew"] TODO re-add homebrew after creating tap
 # Publish jobs to run in CI
 pr-run-mode = "plan"
 # Whether to install an updater program
