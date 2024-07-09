@@ -1,4 +1,4 @@
-use std::{fmt::Display, fs, path::PathBuf};
+use std::{collections::HashMap, fmt::Display, fs, path::PathBuf};
 
 use tera::{Context, Tera};
 use walkdir::WalkDir;
@@ -32,7 +32,7 @@ pub fn copy(
     src: &PathBuf,
     dest: &PathBuf,
     skip: &Vec<String>,
-    context: &Context,
+    slot_data: &HashMap<String, String>,
 ) -> Result<CopyResult, Error> {
     let mut copied_count = 0;
     let mut skipped_count = 0;
@@ -77,9 +77,13 @@ pub fn copy(
         })?;
         let dst_path_maybe_template = dest.join(relative_path);
 
+        let context = Context::from_serialize(slot_data).map_err(|e| Error {
+            source: e.into(),
+            path: src_path.to_path_buf(),
+        })?;
         let dst_path: PathBuf = Tera::one_off(
             &dst_path_maybe_template.to_string_lossy(),
-            context,
+            &context,
             false,
             // TODO: fixup unwrap - not sure what situations this could panic in
             // assuming without need for escaping this should just replace a template

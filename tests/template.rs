@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, fs::remove_dir_all, path::PathBuf};
 
 use spackle::core::{
     slot::{Slot, SlotType},
@@ -23,6 +23,8 @@ fn fill_proj1() {
     println!("{:?}", result);
 
     assert!(result.is_ok());
+
+    remove_dir_all(&dir).unwrap();
 }
 
 #[test]

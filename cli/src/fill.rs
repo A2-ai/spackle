@@ -97,11 +97,7 @@ pub fn run(
 
     // TODO: refactor the data_entries and context boundaries after considering
     // the api surface area
-    let mut context = Context::new();
-    slot_data.iter().for_each(|(key, value)| {
-        context.insert(key, value);
-    });
-    match copy::copy(&project_dir, out, &config.ignore, &context) {
+    match copy::copy(&project_dir, out, &config.ignore, &slot_data) {
         Ok(r) => {
             println!(
                 "{} {} {} {}",

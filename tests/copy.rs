@@ -1,4 +1,4 @@
-use std::fs;
+use std::{collections::HashMap, fs};
 
 use spackle::util::copy;
 use tempdir::TempDir;
@@ -17,9 +17,13 @@ fn ignore_one() {
         .unwrap();
     }
 
-    let mut context = Context::new();
-    context.insert("foo", &"bar");
-    copy::copy(&src_dir, &dst_dir, &vec!["file-0.txt".to_string()], &context).unwrap();
+    copy::copy(
+        &src_dir,
+        &dst_dir,
+        &vec!["file-0.txt".to_string()],
+        &HashMap::from([("foo".to_string(), "bar".to_string())]),
+    )
+    .unwrap();
 
     for i in 0..3 {
         if i == 0 {
@@ -48,9 +52,13 @@ fn ignore_subdir() {
 
     fs::write(subdir.join("file-0.txt"), "file-0.txt").unwrap();
 
-    let mut context = Context::new();
-    context.insert("foo", &"bar");
-    copy::copy(&src_dir, &dst_dir, &vec!["file-0.txt".to_string()], &context).unwrap();
+    copy::copy(
+        &src_dir,
+        &dst_dir,
+        &vec!["file-0.txt".to_string()],
+        &HashMap::from([("foo".to_string(), "bar".to_string())]),
+    )
+    .unwrap();
 
     assert!(!dst_dir.join("subdir").join("file-0.txt").exists());
 
@@ -80,10 +88,19 @@ fn replace_file_name() {
     .unwrap();
     assert!(src_dir.join("{{template_name}}.tmpl").exists());
 
-    let mut context = Context::new();
-    context.insert("template_name", &"template");
-    context.insert("project_name", &"foo");
-    copy::copy(&src_dir, &dst_dir, &vec![], &context).unwrap();
+    copy::copy(
+        &src_dir,
+        &dst_dir,
+        &vec![],
+        &HashMap::from([
+            ("template_name".to_string(), "template".to_string()),
+            ("project_name".to_string(), "foo".to_string()),
+        ]),
+    )
+    .unwrap();
 
-    assert!(dst_dir.join("template.tmpl").exists(), "template.tmpl does not exist");
+    assert!(
+        dst_dir.join("template.tmpl").exists(),
+        "template.tmpl does not exist"
+    );
 }

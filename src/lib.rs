@@ -5,7 +5,6 @@ use core::{
 };
 use std::{collections::HashMap, path::PathBuf};
 
-use tera::Context;
 use util::copy;
 
 pub mod core;
@@ -66,9 +65,7 @@ pub fn generate(
     );
 
     // Copy all non-template files to the output directory
-    // TODO: must actually pass in context
-    let context = &Context::new();
-    copy::copy(project_dir, &out_dir, &config.ignore, context).map_err(Error::CopyError)?;
+    copy::copy(project_dir, &out_dir, &config.ignore, &slot_data).map_err(Error::CopyError)?;
 
     // Render template files to the output directory
     let results = template::fill(project_dir, out_dir, &slot_data)
