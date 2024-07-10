@@ -1,0 +1,24 @@
+# This is a sample R script
+
+# Printing a vector
+x <- c(1, 2, 3)
+print(x)
+
+# Defining a function
+my_function <- function(a, b) {
+    return(a + b)
+}
+
+# Calling the function
+result <- my_function(1, 2)
+print(result)
+
+# Creating a data frame
+my_data <- data.frame(
+    name = c("Alice", "Bob", "Charlie", "{{ person_name }}"),
+    age = c(25, 30, 35, {{ person_age }})
+)
+
+# Printing the data frame
+print(my_data)
+

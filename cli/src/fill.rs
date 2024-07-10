@@ -9,6 +9,7 @@ use spackle::{
     },
     util::copy,
 };
+use tera::Context;
 
 use crate::Cli;
 
@@ -192,7 +193,7 @@ pub fn run(
         }
     }
 
-    match hook::run_hooks(&config.hooks, out, &slot_data, &hook_data, None) {
+    match hook::run_hooks(&config.hooks, out, &slot_data, &hook_data) {
         Ok(results) => {
             println!("🪝  Evaluated {} hooks", results.len());
 

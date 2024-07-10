@@ -15,7 +15,7 @@ fn basic() {
         description: None,
     }];
 
-    assert!(hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None).is_ok());
+    assert!(hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new()).is_ok());
 }
 
 #[test]
@@ -39,7 +39,7 @@ fn command_fail() {
         },
     ];
 
-    let result = hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None)
+    let result = hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new())
         .expect_err("run_hooks succeeded, should have failed");
 
     match result.error {
@@ -69,7 +69,7 @@ fn error_executing() {
         },
     ];
 
-    let result = hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None)
+    let result = hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new())
         .expect_err("run_hooks succeeded, should have failed");
 
     match result.error {
@@ -115,7 +115,7 @@ fn conditional() {
         },
     ];
 
-    let results = hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None)
+    let results = hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new())
         .expect("run_hooks failed, should have succeeded");
 
     let skipped_hooks: Vec<_> = results
@@ -150,8 +150,7 @@ fn bad_conditional_template() {
         &hooks,
         ".",
         &HashMap::from([("good_var".to_string(), "true".to_string())]),
-        &HashMap::new(),
-        None,
+        &HashMap::new()
     )
     .is_err());
 }
@@ -171,8 +170,7 @@ fn bad_conditional_value() {
         &hooks,
         ".",
         &HashMap::from([("".to_string(), "".to_string())]),
-        &HashMap::new(),
-        None,
+        &HashMap::new()
     )
     .is_err());
 }
@@ -198,7 +196,7 @@ fn optional() {
         },
     ];
 
-    let results = hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None).unwrap();
+    let results = hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new()).unwrap();
 
     assert!(
         results
@@ -256,7 +254,6 @@ fn templated_cmd() {
             ("field_2".to_string(), "out1".to_string()),
         ]),
         &HashMap::new(),
-        None,
     )
     .expect("run_hooks failed, should have succeeded");
 
@@ -286,7 +283,6 @@ fn invalid_templated_cmd() {
         ".",
         &HashMap::from([("field_1".to_string(), "echo".to_string())]),
         &HashMap::new(),
-        None,
     )
     .expect_err("run_hooks succeeded, should have failed");
 

@@ -2,6 +2,7 @@ use std::{collections::HashMap, fs};
 
 use spackle::util::copy;
 use tempdir::TempDir;
+use tera::Context;
 
 #[test]
 fn ignore_one() {

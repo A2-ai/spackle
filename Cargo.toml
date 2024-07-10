@@ -39,7 +39,6 @@ async-process = "2.2.3"
 colored = "2.1.0"
 futures = "0.3.30"
 getrandom = { version = "0.2.15", features = ["js"] }
-polyjuice = { git = "https://github.com/A2-ai/polyjuice" }
 serde = { version = "1.0.202", features = ["derive"] }
 strum_macros = "0.26.2"
 tempdir = "0.3.7"
@@ -53,9 +52,6 @@ walkdir = "2.5.0"
 [profile.dist]
 inherits = "release"
 lto = "thin"
-
-[workspace.metadata.dist.dependencies.apt]
-libpam0g-dev = "*"
 
 [workspace.metadata.dist.github-custom-runners]
 aarch64-unknown-linux-gnu = "ubuntu-arm-22.04"
