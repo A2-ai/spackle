@@ -1,22 +1,22 @@
 [[slots]]
-key = "file_name"
+key = "slot_1"
 type = "String"
-name = "File name"
-description = "The name of the R file (without the extension)"
 
 [[slots]]
-key = "person_name"
-
-[[slots]]
-key = "person_age"
+key = "slot_2"
 type = "Number"
-description = "Person age"
+
+[[slots]]
+key = "slot_3"
+type = "Boolean"
 
 [[hooks]]
 key = "hook_1"
-command = ["echo", "Hello, world!"]
+command = ["echo", "hook_1 output"]
+optional = { default = false }
 
 [[hooks]]
 key = "hook_2"
-command = ["touch", "2"]
-optional = { default = false }
+command = ["echo", "hook_2 output"]
+optional = { default = true }
+if = "{{hook_ran_hook_1}}"
