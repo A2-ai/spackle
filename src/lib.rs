@@ -51,6 +51,7 @@ pub fn generate(
     out_dir: &PathBuf,
     slot_data: &HashMap<String, String>,
     hook_data: &HashMap<String, bool>,
+    run_as_user: Option<String>,
 ) -> Result<Vec<HookResult>, Error> {
     if out_dir.exists() {
         return Err(Error::AlreadyExists(out_dir.clone()));
@@ -77,7 +78,7 @@ pub fn generate(
     }
 
     // Run post-template hooks in the output directory
-    let results = hook::run_hooks(&config.hooks, out_dir, &slot_data, hook_data)
+    let results = hook::run_hooks(&config.hooks, out_dir, &slot_data, hook_data, run_as_user)
         .map_err(Error::HookFailed)?;
 
     Ok(results)

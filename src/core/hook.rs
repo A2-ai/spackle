@@ -78,6 +78,7 @@ pub fn run_hooks(
     dir: impl AsRef<Path>,
     slot_data: &HashMap<String, String>,
     hook_data: &HashMap<String, bool>,
+    run_as_user: Option<String>,
 ) -> Result<Vec<HookResult>, Error> {
     let mut skipped_hooks = Vec::new();
     let mut queued_hooks = Vec::new();
@@ -140,7 +141,20 @@ pub fn run_hooks(
             continue;
         }
 
-        let output = Command::new(&hook.command[0])
+        let mut cmd = match run_as_user {
+            Some(ref user) => match polyjuice::cmd_as_user(&hook.command[0], user.clone()) {
+                Ok(cmd) => cmd,
+                Err(e) => {
+                    return Err(Error {
+                        hook: hook.clone(),
+                        error: ErrorKind::CommandFailed(e.to_string()),
+                    })
+                }
+            },
+            None => Command::new(&hook.command[0]),
+        };
+
+        let output = cmd
             .args(&hook.command[1..])
             .current_dir(dir.as_ref())
             .stdout(Stdio::piped())
