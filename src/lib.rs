@@ -3,9 +3,11 @@ use core::{
     hook::{self, HookResult},
     template,
 };
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, os::unix, path::PathBuf};
 
+use users::User;
 use util::copy;
+use walkdir::WalkDir;
 
 pub mod core;
 pub mod util;
@@ -17,6 +19,7 @@ pub enum Error {
     CopyError(copy::Error),
     TemplateError(Box<dyn std::error::Error>),
     HookFailed(hook::Error),
+    Other(String),
 }
 
 impl std::fmt::Display for Error {
@@ -27,6 +30,7 @@ impl std::fmt::Display for Error {
             Error::TemplateError(e) => write!(f, "Error rendering template: {}", e),
             Error::CopyError(e) => write!(f, "Error copying files: {}", e),
             Error::HookFailed(e) => write!(f, "Hook failed: {}", e),
+            Error::Other(e) => write!(f, "{}", e),
         }
     }
 }
@@ -39,6 +43,7 @@ impl std::error::Error for Error {
             Error::TemplateError(e) => Some(e.as_ref()),
             Error::CopyError(e) => Some(e),
             Error::HookFailed(_) => None,
+            Error::Other(_) => None,
         }
     }
 }
@@ -51,7 +56,7 @@ pub fn generate(
     out_dir: &PathBuf,
     slot_data: &HashMap<String, String>,
     hook_data: &HashMap<String, bool>,
-    run_as_user: Option<String>,
+    run_as_user: Option<User>,
 ) -> Result<Vec<HookResult>, Error> {
     if out_dir.exists() {
         return Err(Error::AlreadyExists(out_dir.clone()));
@@ -77,9 +82,29 @@ pub fn generate(
         }
     }
 
+    // Change ownership of created directories to user
+    if let Some(ref user) = run_as_user {
+        let walker = WalkDir::new(&out_dir).into_iter().filter_map(|e| e.ok());
+        for entry in walker {
+            if let Err(e) = unix::fs::chown(
+                entry.path(),
+                Some(user.uid()),
+                Some(user.primary_group_id()),
+            ) {
+                return Err(Error::Other(e.to_string()));
+            }
+        }
+    }
+
     // Run post-template hooks in the output directory
-    let results = hook::run_hooks(&config.hooks, out_dir, &slot_data, hook_data, run_as_user)
-        .map_err(Error::HookFailed)?;
+    let results = hook::run_hooks(
+        &config.hooks,
+        out_dir,
+        &slot_data,
+        hook_data,
+        run_as_user.clone(),
+    )
+    .map_err(Error::HookFailed)?;
 
     Ok(results)
 }

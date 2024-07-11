@@ -5,6 +5,7 @@ use std::process::{Command, Stdio};
 use tera::{Context, Tera};
 
 use super::config::Hook;
+use users::User;
 
 #[derive(Debug)]
 pub enum HookUpdate {
@@ -85,7 +86,7 @@ pub fn run_hooks(
     dir: impl AsRef<Path>,
     slot_data: &HashMap<String, String>,
     hook_data: &HashMap<String, bool>,
-    run_as_user: Option<String>,
+    run_as_user: Option<User>,
 ) -> Result<Vec<HookResult>, Error> {
     let mut skipped_hooks = Vec::new();
     let mut queued_hooks = Vec::new();

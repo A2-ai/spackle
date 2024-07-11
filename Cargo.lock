@@ -1372,7 +1372,7 @@ dependencies = [
 [[package]]
 name = "polyjuice"
 version = "0.1.0"
-source = "git+https://github.com/A2-ai/polyjuice#07d37cc5c7a45f29581f7a9a428f0d4dd0d939c8"
+source = "git+https://github.com/A2-ai/polyjuice#fa8d59b618a77ee9320345420940ac60646d47ba"
 dependencies = [
  "users",
 ]
@@ -1863,6 +1863,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "users",
  "walkdir",
 ]
 
