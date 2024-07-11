@@ -43,7 +43,7 @@ fn command_fail() {
         .expect_err("run_hooks succeeded, should have failed");
 
     match result.error {
-        ErrorKind::CommandFailed(_) => {}
+        ErrorKind::RunFailed(_) => {}
         _ => panic!("Expected CommandFailed error, got {:?}", result.error),
     }
 }
@@ -73,7 +73,7 @@ fn error_executing() {
         .expect_err("run_hooks succeeded, should have failed");
 
     match result.error {
-        ErrorKind::ErrorExecuting(_) => {}
+        ErrorKind::SetupFailed(_) => {}
         _ => panic!("Expected ErrorExecuting error, got {:?}", result.error),
     }
 }

@@ -226,6 +226,15 @@ pub fn run(
                 e.error.to_string().red()
             );
 
+            if cli.verbose {
+                match e.error {
+                    hook::ErrorKind::RunFailed(e) => {
+                        eprintln!("\n{}", e.to_string().dimmed());
+                    }
+                    _ => {}
+                }
+            }
+
             exit(1);
         }
     }

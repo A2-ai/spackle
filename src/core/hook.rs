@@ -1,3 +1,4 @@
+use std::io;
 use std::{collections::HashMap, fmt::Display, path::Path};
 
 use std::process::{Command, Stdio};
@@ -49,8 +50,8 @@ pub struct Error {
 pub enum ErrorKind {
     ErrorRenderingTemplate(tera::Error),
     InvalidConditional(ConditionalError),
-    ErrorExecuting(std::io::Error),
-    CommandFailed(String),
+    SetupFailed(std::io::Error),
+    RunFailed(String),
 }
 
 impl Display for Error {
@@ -68,8 +69,8 @@ impl Display for ErrorKind {
             ErrorKind::InvalidConditional(e) => {
                 write!(f, "invalid conditional\n{}", e)
             }
-            ErrorKind::ErrorExecuting(e) => write!(f, "error executing\n{}", e),
-            ErrorKind::CommandFailed(e) => write!(f, "command failed\n{}", e),
+            ErrorKind::SetupFailed(e) => write!(f, "setup failed\n{}", e),
+            ErrorKind::RunFailed(_) => write!(f, "run failed"),
         }
     }
 }
@@ -153,8 +154,11 @@ pub fn run_hooks(
                 Err(e) => {
                     return Err(Error {
                         hook: hook.clone(),
-                        error: ErrorKind::CommandFailed(e.to_string()),
-                    })
+                        error: ErrorKind::SetupFailed(io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!("Failed to run command as user: {}", e),
+                        )), //TODO we probably want a different error type here
+                    });
                 }
             },
             None => Command::new(&hook.command[0]),
@@ -168,13 +172,13 @@ pub fn run_hooks(
             .output()
             .map_err(|e| Error {
                 hook: hook.clone(),
-                error: ErrorKind::ErrorExecuting(e),
+                error: ErrorKind::SetupFailed(e),
             })?;
 
         if !output.status.success() {
             return Err(Error {
                 hook: hook.clone(),
-                error: ErrorKind::CommandFailed(output.status.to_string()),
+                error: ErrorKind::RunFailed(String::from_utf8_lossy(&output.stderr).to_string()),
             });
         }
 
