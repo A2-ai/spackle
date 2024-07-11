@@ -26,7 +26,7 @@ impl std::fmt::Display for Error {
             Error::ConfigError(e) => write!(f, "Error loading config: {}", e),
             Error::TemplateError(e) => write!(f, "Error rendering template: {}", e),
             Error::CopyError(e) => write!(f, "Error copying files: {}", e),
-            Error::HookFailed(e) => write!(f, "Error running hooks: {:?}", e),
+            Error::HookFailed(e) => write!(f, "Hook failed: {}", e),
         }
     }
 }
