@@ -23,7 +23,7 @@ impl Display for Slot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} {}\n{}",
+            "{} {}{}",
             self.key.bold(),
             ("[".to_owned() + &self.r#type.to_string() + "]")
                 .to_string()
@@ -31,7 +31,8 @@ impl Display for Slot {
                 .truecolor(128, 128, 128),
             self.description
                 .clone()
-                .unwrap_or("no description".to_string())
+                .map(|s| format!("\n{}", s))
+                .unwrap_or_default()
                 .truecolor(180, 180, 180),
         )
     }

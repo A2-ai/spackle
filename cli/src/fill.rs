@@ -212,6 +212,20 @@ pub fn run(
 
                             println!("\n{}", stdout.trim());
                         }
+                        HookResult::Failed {
+                            hook,
+                            output: error,
+                        } => {
+                            eprintln!(
+                                "\n  {} {}",
+                                "❌ Failed".bright_red(),
+                                hook.key.bold().bright_red(),
+                            );
+
+                            if cli.verbose {
+                                eprintln!("\n{}", error.to_string().dimmed());
+                            }
+                        }
                     }
                 }
             }
@@ -220,20 +234,10 @@ pub fn run(
             std::fs::remove_dir_all(out).unwrap();
 
             eprintln!(
-                "❌ {} {}\n{}",
-                "Error running hook".bright_red(),
-                e.hook.key.bright_red().bold(),
-                e.error.to_string().red()
+                "❌ {}\n{}",
+                "Error evaluating hooks".bright_red(),
+                e.to_string().red()
             );
-
-            if cli.verbose {
-                match e.error {
-                    hook::ErrorKind::RunFailed(e) => {
-                        eprintln!("\n{}", e.to_string().dimmed());
-                    }
-                    _ => {}
-                }
-            }
 
             exit(1);
         }

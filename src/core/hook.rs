@@ -1,8 +1,11 @@
-use std::io;
 use std::{collections::HashMap, fmt::Display, path::Path};
+use std::{io, process};
 
-use std::process::{Command, Stdio};
+use async_process::Stdio;
+use async_stream::stream;
 use tera::{Context, Tera};
+use tokio::pin;
+use tokio_stream::{Stream, StreamExt};
 
 use super::config::Hook;
 use users::User;
@@ -24,6 +27,10 @@ pub enum HookResult {
         stdout: String,
         stderr: String,
     },
+    Failed {
+        hook: Hook,
+        output: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -42,52 +49,44 @@ impl Display for SkipReason {
 }
 
 #[derive(Debug)]
-pub struct Error {
-    pub hook: Hook,
-    pub error: ErrorKind,
-}
-
-#[derive(Debug)]
-pub enum ErrorKind {
-    ErrorRenderingTemplate(tera::Error),
-    InvalidConditional(ConditionalError),
-    SetupFailed(std::io::Error),
-    RunFailed(String),
+pub enum Error {
+    ErrorInitializingRuntime(io::Error),
+    ErrorRenderingTemplate(Hook, tera::Error),
+    InvalidConditional(Hook, ConditionalError),
+    SetupFailed(Hook, io::Error),
 }
 
 impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.hook.key, self.error)
-    }
-}
-
-impl Display for ErrorKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ErrorKind::ErrorRenderingTemplate(e) => {
-                write!(f, "error rendering conditional\n{}", e)
+            Error::ErrorInitializingRuntime(e) => {
+                write!(f, "error initializing runtime: {}", e)
             }
-            ErrorKind::InvalidConditional(e) => {
-                write!(f, "invalid conditional\n{}", e)
+            Error::ErrorRenderingTemplate(hook, e) => {
+                write!(f, "error rendering template for hook {}: {}", hook.key, e)
             }
-            ErrorKind::SetupFailed(e) => write!(f, "setup failed\n{}", e),
-            ErrorKind::RunFailed(_) => write!(f, "run failed"),
+            Error::InvalidConditional(hook, e) => {
+                write!(f, "invalid conditional for hook {}: {}", hook.key, e)
+            }
+            Error::SetupFailed(hook, e) => {
+                write!(f, "setup failed for hook {}: {}", hook.key, e)
+            }
         }
     }
 }
 
-/// Run a set of hooks, returning their execution results.
-///
-/// The `dir` argument is the directory to run the hooks in.
-///
-/// The `data` argument is a map of key-value pairs to be used in the hook's conditional logic (if).
-pub fn run_hooks(
+pub enum HookStreamResult {
+    HookStarted(Hook),
+    HookDone(HookResult),
+}
+
+pub fn run_hooks_stream(
     hooks: &Vec<Hook>,
     dir: impl AsRef<Path>,
     slot_data: &HashMap<String, String>,
     hook_data: &HashMap<String, bool>,
     run_as_user: Option<User>,
-) -> Result<Vec<HookResult>, Error> {
+) -> Result<impl Stream<Item = HookStreamResult>, Error> {
     let mut skipped_hooks = Vec::new();
     let mut queued_hooks = Vec::new();
 
@@ -106,19 +105,15 @@ pub fn run_hooks(
     // Apply template to command
     let mut templated_hooks = Vec::new();
     for hook in queued_hooks {
-        let context = Context::from_serialize(slot_data.clone()).map_err(|e| Error {
-            hook: hook.clone(),
-            error: ErrorKind::ErrorRenderingTemplate(e),
-        })?;
+        let context = Context::from_serialize(slot_data.clone())
+            .map_err(|e| Error::ErrorRenderingTemplate(hook.clone(), e))?;
 
         let command = hook
             .command
             .iter()
             .map(|arg| {
-                Tera::one_off(arg, &context, false).map_err(|e| Error {
-                    hook: hook.clone(),
-                    error: ErrorKind::ErrorRenderingTemplate(e),
-                })
+                Tera::one_off(arg, &context, false)
+                    .map_err(|e| Error::ErrorRenderingTemplate(hook.clone(), e))
             })
             .collect::<Result<Vec<String>, Error>>()?;
 
@@ -128,80 +123,137 @@ pub fn run_hooks(
         });
     }
 
-    let mut ran_hooks: Vec<(&Hook, std::process::Output)> = Vec::new();
-    for hook in &templated_hooks {
-        // Evaluate conditional
-        // also add to the context the run status of all hooks so far
-        let mut cond_context = slot_data.clone();
-        for hook in hooks {
-            cond_context.insert(format!("hook_ran_{}", hook.key), "false".to_string());
-        }
-        for (hook, _) in ran_hooks.clone() {
-            cond_context.insert(format!("hook_ran_{}", hook.key), "true".to_string());
-        }
-        let condition = evaluate_conditional(&hook, &cond_context).map_err(|e| Error {
-            hook: hook.clone(),
-            error: ErrorKind::InvalidConditional(e),
-        })?;
-
-        if !condition {
-            skipped_hooks.push((hook.clone(), SkipReason::FalseConditional));
-            continue;
-        }
-
-        let mut cmd = match run_as_user {
+    let mut commands = Vec::new();
+    for hook in templated_hooks {
+        let cmd = match run_as_user {
             Some(ref user) => match polyjuice::cmd_as_user(&hook.command[0], user.clone()) {
                 Ok(cmd) => cmd,
                 Err(e) => {
-                    return Err(Error {
-                        hook: hook.clone(),
-                        error: ErrorKind::SetupFailed(io::Error::new(
+                    return Err(Error::SetupFailed(
+                        hook.clone(),
+                        io::Error::new(
                             std::io::ErrorKind::Other,
                             format!("Failed to run command as user: {}", e),
-                        )), //TODO we probably want a different error type here
-                    });
+                        ),
+                    )); //TODO we probably want a different error type here
                 }
             },
-            None => Command::new(&hook.command[0]),
+            None => process::Command::new(&hook.command[0]),
         };
 
-        let output = cmd
-            .args(&hook.command[1..])
-            .current_dir(dir.as_ref())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| Error {
-                hook: hook.clone(),
-                error: ErrorKind::SetupFailed(e),
-            })?;
+        commands.push((hook, async_process::Command::from(cmd)));
+    }
 
-        if !output.status.success() {
-            return Err(Error {
-                hook: hook.clone(),
-                error: ErrorKind::RunFailed(String::from_utf8_lossy(&output.stderr).to_string()),
+    let slot_data_owned = slot_data.clone();
+    let hook_keys = hooks.iter().map(|h| h.key.clone()).collect::<Vec<String>>();
+
+    Ok(stream! {
+        for hook in skipped_hooks {
+            yield HookStreamResult::HookDone(HookResult::Skipped {
+                hook: hook.0,
+                reason: hook.1,
             });
         }
 
-        ran_hooks.push((hook, output));
-    }
+        let mut ran_hooks = Vec::new();
+        for (hook, mut cmd) in commands {
+            // Evaluate conditional
+            // also add to the context the run status of all hooks so far
+            // TODO this can be evaluated outside of stream once "needs" is implemented
+            let mut cond_context = slot_data_owned.clone();
+            for hook in &hook_keys {
+                cond_context.insert(format!("hook_ran_{}", hook), "false".to_string());
+            }
+            for hook in ran_hooks.clone() {
+                cond_context.insert(format!("hook_ran_{}", hook), "true".to_string());
+            }
 
-    let hook_results = ran_hooks
-        .iter()
-        .map(|(hook, output)| HookResult::Completed {
-            hook: (*hook).clone(),
-            stdout: String::from_utf8_lossy(&output.stdout).into(),
-            stderr: String::from_utf8_lossy(&output.stderr).into(),
-        });
+            let condition = match evaluate_conditional(&hook, &slot_data_owned) {
+                Ok(condition) => condition,
+                Err(e) => {
+                    yield HookStreamResult::HookDone(HookResult::Failed {
+                        hook: hook.clone(),
+                        output: e.to_string(),
+                    });
+                    continue;
+                }
+            };
 
-    let skipped_hook_results = skipped_hooks
-        .iter()
-        .map(|(hook, reason)| HookResult::Skipped {
-            hook: hook.clone(),
-            reason: reason.clone(),
-        });
+            if !condition {
+                yield HookStreamResult::HookDone(HookResult::Skipped {
+                    hook: hook.clone(),
+                    reason: SkipReason::FalseConditional,
+                });
+                continue;
+            }
 
-    Ok(hook_results.chain(skipped_hook_results).collect())
+            let cmd_result = cmd.args(&hook.command[1..])
+                .current_dir(dir.as_ref())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output().await;
+
+            let output = match cmd_result {
+                Ok(output) => output,
+                Err(e) => {
+                    yield HookStreamResult::HookDone(HookResult::Failed {
+                        hook: hook.clone(),
+                        output: e.to_string(),
+                    });
+                    continue;
+                }
+            };
+
+            if !output.status.success() {
+                yield HookStreamResult::HookDone(HookResult::Failed {
+                    hook: hook.clone(),
+                    output: String::from_utf8_lossy(&output.stderr).to_string(),
+                });
+                continue;
+            }
+
+            ran_hooks.push(hook.key.clone());
+
+            yield HookStreamResult::HookDone(HookResult::Completed {
+                hook: hook.clone(),
+                stdout: String::from_utf8_lossy(&output.stdout).into(),
+                stderr: String::from_utf8_lossy(&output.stderr).into(),
+            });
+        }
+    })
+}
+
+pub fn run_hooks(
+    hooks: &Vec<Hook>,
+    dir: impl AsRef<Path>,
+    slot_data: &HashMap<String, String>,
+    hook_data: &HashMap<String, bool>,
+    run_as_user: Option<User>,
+) -> Result<Vec<HookResult>, Error> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| Error::ErrorInitializingRuntime(e))?;
+
+    let results = runtime.block_on(async {
+        let stream = run_hooks_stream(hooks, dir, slot_data, hook_data, run_as_user)?;
+        pin!(stream);
+
+        let mut hook_results = Vec::new();
+
+        while let Some(result) = stream.next().await {
+            match result {
+                HookStreamResult::HookStarted(_) => {}
+                HookStreamResult::HookDone(hook_result) => {
+                    hook_results.push(hook_result);
+                }
+            }
+        }
+
+        Ok(hook_results)
+    })?;
+
+    Ok(results)
 }
 
 #[derive(Debug)]

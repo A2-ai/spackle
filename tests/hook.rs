@@ -1,6 +1,6 @@
 use spackle::core::{
     config::{Hook, HookConfigOptional},
-    hook::{self, ErrorKind, HookResult},
+    hook::{self, Error, HookResult},
 };
 use std::collections::HashMap;
 
@@ -40,19 +40,18 @@ fn command_fail() {
     ];
 
     let result = hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None)
-        .expect_err("run_hooks succeeded, should have failed");
+        .expect("run_hooks failed, should have succeeded");
 
-    match result.error {
-        ErrorKind::RunFailed(_) => {}
-        _ => panic!("Expected CommandFailed error, got {:?}", result.error),
-    }
+    assert_eq!(result.len(), 2, "Expected 2 results, got {:?}", result);
+
+    assert!(matches!(result[0], HookResult::Completed { .. }));
 }
 
 #[test]
 fn error_executing() {
     let hooks = vec![
         Hook {
-            key: "hello world".to_string(),
+            key: "1".to_string(),
             command: vec!["echo".to_string(), "hello world".to_string()],
             r#if: None,
             optional: None,
@@ -60,7 +59,7 @@ fn error_executing() {
             description: None,
         },
         Hook {
-            key: "error".to_string(),
+            key: "2".to_string(),
             command: vec!["invalid_cmd".to_string()],
             r#if: None,
             optional: None,
@@ -69,13 +68,16 @@ fn error_executing() {
         },
     ];
 
-    let result = hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None)
-        .expect_err("run_hooks succeeded, should have failed");
+    let results = hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None)
+        .expect("run_hooks failed, should have succeeded");
 
-    match result.error {
-        ErrorKind::SetupFailed(_) => {}
-        _ => panic!("Expected ErrorExecuting error, got {:?}", result.error),
-    }
+    assert!(results
+        .iter()
+        .any(|x| matches!(x, HookResult::Completed { hook, .. } if hook.key == "1")));
+
+    assert!(results
+        .iter()
+        .any(|x| matches!(x, HookResult::Failed { hook, .. } if hook.key == "2")));
 }
 
 #[test]
@@ -146,14 +148,22 @@ fn bad_conditional_template() {
         },
     ];
 
-    assert!(hook::run_hooks(
+    let results = hook::run_hooks(
         &hooks,
         ".",
         &HashMap::from([("good_var".to_string(), "true".to_string())]),
         &HashMap::new(),
         None,
     )
-    .is_err());
+    .expect("run_hooks failed, should have succeeded");
+
+    assert!(results
+        .iter()
+        .any(|x| matches!(x, HookResult::Completed { hook, .. } if hook.key == "1")));
+
+    assert!(results
+        .iter()
+        .any(|x| matches!(x, HookResult::Failed { hook, .. } if hook.key == "2")));
 }
 
 #[test]
@@ -167,14 +177,18 @@ fn bad_conditional_value() {
         description: None,
     }];
 
-    assert!(hook::run_hooks(
+    let results = hook::run_hooks(
         &hooks,
         ".",
         &HashMap::from([("".to_string(), "".to_string())]),
         &HashMap::new(),
         None,
     )
-    .is_err());
+    .expect("run_hooks failed, should have succeeded");
+
+    assert!(results
+        .iter()
+        .any(|x| matches!(x, HookResult::Failed { hook, .. } if hook.key == "1")));
 }
 
 #[test]
@@ -196,35 +210,43 @@ fn optional() {
             name: None,
             description: None,
         },
+        Hook {
+            key: "3".to_string(),
+            command: vec!["echo".to_string(), "hello world".to_string()],
+            r#if: None,
+            optional: Some(HookConfigOptional { default: false }),
+            name: None,
+            description: None,
+        },
     ];
 
-    let results = hook::run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None).unwrap();
+    let results = hook::run_hooks(
+        &hooks,
+        ".",
+        &HashMap::new(),
+        &HashMap::from([("3".to_string(), true)]),
+        None,
+    )
+    .expect("run_hooks failed, should have succeeded");
 
-    assert!(
-        results
-            .iter()
-            .filter(|r| {
-                match r {
-                    HookResult::Skipped { hook, .. } => hook.key == "2".to_string(),
-                    _ => false,
-                }
-            })
-            .count()
-            == 1
+    assert_eq!(
+        results.len(),
+        3,
+        "Expected 3 results, got {:?}",
+        results.len()
     );
 
-    assert!(
-        results
-            .iter()
-            .filter(|r| {
-                match r {
-                    HookResult::Completed { hook, .. } => hook.key == "1".to_string(),
-                    _ => false,
-                }
-            })
-            .count()
-            == 1
-    );
+    assert!(results
+        .iter()
+        .any(|x| matches!(x, HookResult::Completed { hook, .. } if hook.key == "1")));
+
+    assert!(results
+        .iter()
+        .any(|x| matches!(x, HookResult::Skipped { hook, .. } if hook.key == "2")));
+
+    assert!(results
+        .iter()
+        .any(|x| matches!(x, HookResult::Completed { hook, .. } if hook.key == "3")));
 }
 
 #[test]
@@ -290,9 +312,8 @@ fn invalid_templated_cmd() {
     )
     .expect_err("run_hooks succeeded, should have failed");
 
-    assert!(
-        matches!(results.error, ErrorKind::ErrorRenderingTemplate(_)),
-        "Expected ErrorRenderingTemplate, got {:?}",
-        results.error
-    );
+    match results {
+        Error::ErrorRenderingTemplate(_, _) => {}
+        _ => panic!("Expected Error::ErrorRenderingTemplate, got {:?}", results),
+    }
 }
