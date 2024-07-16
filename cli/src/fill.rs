@@ -171,9 +171,7 @@ pub fn run(
                             "{} {}\n{}\n",
                             "⚠️ Could not process file".bright_yellow(),
                             e.file.bright_yellow().bold(),
-                            format!("{}\n{}", e.kind, e.source.source().unwrap())
-                                .bright_yellow()
-                                .dimmed(),
+                            format!("{}", e.kind).bright_yellow().dimmed(),
                         );
                     }
                 }

@@ -1,48 +1,39 @@
 use core::{
-    config::{self},
-    copy,
-    hook::{self, HookResult},
-    template,
+    config, copy,
+    template::{self, RenderedFile},
 };
-use std::{collections::HashMap, os::unix, path::PathBuf};
-
-use users::User;
-use walkdir::WalkDir;
+use std::{collections::HashMap, fmt::Display, path::PathBuf};
 
 pub mod core;
 
 #[derive(Debug)]
-pub enum Error {
+pub enum GenerateError {
     AlreadyExists(PathBuf),
-    ConfigError(config::Error),
+    BadConfig(config::Error),
     CopyError(copy::Error),
-    TemplateError(Box<dyn std::error::Error>),
-    HookFailed(hook::Error),
-    Other(String),
+    TemplateError,
 }
 
-impl std::fmt::Display for Error {
+impl Display for GenerateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::AlreadyExists(dir) => write!(f, "Directory already exists: {}", dir.display()),
-            Error::ConfigError(e) => write!(f, "Error loading config: {}", e),
-            Error::TemplateError(e) => write!(f, "Error rendering template: {}", e),
-            Error::CopyError(e) => write!(f, "Error copying files: {}", e),
-            Error::HookFailed(e) => write!(f, "Hook failed: {}", e),
-            Error::Other(e) => write!(f, "{}", e),
+            GenerateError::AlreadyExists(dir) => {
+                write!(f, "Directory already exists: {}", dir.display())
+            }
+            GenerateError::BadConfig(e) => write!(f, "Error loading config: {}", e),
+            GenerateError::TemplateError => write!(f, "Error rendering template"),
+            GenerateError::CopyError(e) => write!(f, "Error copying files: {}", e),
         }
     }
 }
 
-impl std::error::Error for Error {
+impl std::error::Error for GenerateError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::AlreadyExists(_) => None,
-            Error::ConfigError(_) => None,
-            Error::TemplateError(e) => Some(e.as_ref()),
-            Error::CopyError(e) => Some(e),
-            Error::HookFailed(_) => None,
-            Error::Other(_) => None,
+            GenerateError::AlreadyExists(_) => None,
+            GenerateError::BadConfig(_) => None,
+            GenerateError::TemplateError => None,
+            GenerateError::CopyError(e) => Some(e),
         }
     }
 }
@@ -54,14 +45,12 @@ pub fn generate(
     project_dir: &PathBuf,
     out_dir: &PathBuf,
     slot_data: &HashMap<String, String>,
-    hook_data: &HashMap<String, bool>,
-    run_as_user: Option<User>,
-) -> Result<Vec<HookResult>, Error> {
+) -> Result<Vec<RenderedFile>, GenerateError> {
     if out_dir.exists() {
-        return Err(Error::AlreadyExists(out_dir.clone()));
+        return Err(GenerateError::AlreadyExists(out_dir.clone()));
     }
 
-    let config = config::load(project_dir).map_err(Error::ConfigError)?;
+    let config = config::load(project_dir).map_err(GenerateError::BadConfig)?;
 
     let mut slot_data = slot_data.clone();
     slot_data.insert(
@@ -70,40 +59,17 @@ pub fn generate(
     );
 
     // Copy all non-template files to the output directory
-    copy::copy(project_dir, &out_dir, &config.ignore, &slot_data).map_err(Error::CopyError)?;
+    copy::copy(project_dir, &out_dir, &config.ignore, &slot_data)
+        .map_err(GenerateError::CopyError)?;
 
     // Render template files to the output directory
+    // TODO improve returned error type here
     let results = template::fill(project_dir, out_dir, &slot_data)
-        .map_err(|e| Error::TemplateError(e.into()))?;
-    for result in results {
-        if let Err(e) = result {
-            return Err(Error::TemplateError(e.into()));
-        }
+        .map_err(|_| GenerateError::TemplateError)?;
+
+    if results.iter().any(|r| r.is_err()) {
+        return Err(GenerateError::TemplateError);
     }
 
-    // Change ownership of created directories to user
-    if let Some(ref user) = run_as_user {
-        let walker = WalkDir::new(&out_dir).into_iter().filter_map(|e| e.ok());
-        for entry in walker {
-            if let Err(e) = unix::fs::chown(
-                entry.path(),
-                Some(user.uid()),
-                Some(user.primary_group_id()),
-            ) {
-                return Err(Error::Other(e.to_string()));
-            }
-        }
-    }
-
-    // Run post-template hooks in the output directory
-    let results = hook::run_hooks(
-        &config.hooks,
-        out_dir,
-        &slot_data,
-        hook_data,
-        run_as_user.clone(),
-    )
-    .map_err(Error::HookFailed)?;
-
-    Ok(results)
+    Ok(results.into_iter().filter_map(|r| r.ok()).collect())
 }

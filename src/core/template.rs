@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fmt::{Debug, Display},
-    fs,
+    fs, io,
     path::PathBuf,
     time::Duration,
 };
@@ -15,41 +15,38 @@ pub const TEMPLATE_EXT: &str = ".j2";
 pub struct FileError {
     pub kind: FileErrorKind,
     pub file: String,
-    pub source: Box<dyn std::error::Error>,
+}
+
+impl Display for FileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.file, self.kind)
+    }
 }
 
 #[derive(Debug)]
 pub enum FileErrorKind {
-    ErrorRenderingContents,
-    ErrorRenderingName,
-    ErrorCreatingDest,
-    ErrorWritingToDest,
+    ErrorRenderingContents(tera::Error),
+    ErrorRenderingName(tera::Error),
+    ErrorCreatingDest(io::ErrorKind),
+    ErrorWritingToDest(io::Error),
 }
 
 impl Display for FileErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FileErrorKind::ErrorRenderingContents => write!(f, "error rendering template contents"),
-            FileErrorKind::ErrorRenderingName => write!(f, "error rendering template name"),
-            FileErrorKind::ErrorCreatingDest => write!(f, "error creating directory"),
-            FileErrorKind::ErrorWritingToDest => write!(f, "error writing file"),
+            FileErrorKind::ErrorRenderingContents(e) => {
+                write!(f, "error rendering template contents: {}", e)
+            }
+            FileErrorKind::ErrorRenderingName(e) => {
+                write!(f, "error rendering template name: {}", e)
+            }
+            FileErrorKind::ErrorCreatingDest(e) => write!(f, "error creating directory: {}", e),
+            FileErrorKind::ErrorWritingToDest(e) => write!(f, "error writing file: {}", e),
         }
     }
 }
 
-impl Display for FileError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} for {}", self.kind, self.file)
-    }
-}
-
-impl std::error::Error for FileError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&*self.source)
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RenderedFile {
     pub path: PathBuf,
     pub contents: String,
@@ -75,9 +72,8 @@ pub fn fill(
             Ok(o) => o,
             Err(e) => {
                 return Err(FileError {
-                    kind: FileErrorKind::ErrorRenderingContents,
+                    kind: FileErrorKind::ErrorRenderingContents(e),
                     file: template_name.to_string(),
-                    source: Box::new(e),
                 });
             }
         };
@@ -90,9 +86,8 @@ pub fn fill(
                 Ok(s) => s,
                 Err(e) => {
                     return Err(FileError {
-                        kind: FileErrorKind::ErrorRenderingName,
+                        kind: FileErrorKind::ErrorRenderingName(e),
                         file: template_name.to_string(),
-                        source: Box::new(e),
                     });
                 }
             };
@@ -110,20 +105,18 @@ pub fn fill(
             Ok(_) => (),
             Err(e) => match e.kind() {
                 std::io::ErrorKind::AlreadyExists => (),
-                _ => {
+                e => {
                     return Err(FileError {
-                        kind: FileErrorKind::ErrorCreatingDest,
+                        kind: FileErrorKind::ErrorCreatingDest(e),
                         file: template_name.to_string(),
-                        source: Box::new(e),
                     })
                 }
             },
         }
 
         fs::write(&output_dir, output.clone()).map_err(|e| FileError {
-            kind: FileErrorKind::ErrorWritingToDest,
+            kind: FileErrorKind::ErrorWritingToDest(e),
             file: template_name.to_string(),
-            source: Box::new(e),
         })?;
 
         Ok(RenderedFile {
@@ -168,4 +161,62 @@ pub fn validate(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), ValidateError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use tempdir::TempDir;
+
+    use crate::core::slot::SlotType;
+
+    use super::*;
+
+    #[test]
+    fn fill_proj1() {
+        let dir = TempDir::new("spackle").unwrap().into_path();
+
+        let result = fill(
+            &PathBuf::from("tests/data/proj1"),
+            &dir.join("proj1_filled"),
+            &HashMap::from([
+                ("person_name".to_string(), "Joe Bloggs".to_string()),
+                ("person_age".to_string(), "42".to_string()),
+                ("file_name".to_string(), "main".to_string()),
+            ]),
+        );
+
+        println!("{:?}", result);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_dir_proj1() {
+        let result = validate(
+            &PathBuf::from("tests/data/proj1"),
+            &vec![Slot {
+                key: "defined_field".to_string(),
+                r#type: SlotType::String,
+                name: None,
+                description: None,
+            }],
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_dir_proj2() {
+        let result = validate(
+            &PathBuf::from("tests/data/proj2"),
+            &vec![Slot {
+                key: "defined_field".to_string(),
+                r#type: SlotType::String,
+                name: None,
+                description: None,
+            }],
+        );
+
+        assert!(result.is_ok());
+    }
 }
