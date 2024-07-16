@@ -1,13 +1,11 @@
 use std::{collections::HashMap, path::PathBuf, process::exit, time::Instant};
 
 use colored::Colorize;
-use spackle::{
-    core::{
-        config::Config,
-        hook::{self, HookResult},
-        slot, template,
-    },
-    util::copy,
+use spackle::core::{
+    config::Config,
+    copy,
+    hook::{self, HookResult},
+    slot, template,
 };
 
 use crate::Cli;

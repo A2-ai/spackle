@@ -1,16 +1,15 @@
 use core::{
     config::{self},
+    copy,
     hook::{self, HookResult},
     template,
 };
 use std::{collections::HashMap, os::unix, path::PathBuf};
 
 use users::User;
-use util::copy;
 use walkdir::WalkDir;
 
 pub mod core;
-pub mod util;
 
 #[derive(Debug)]
 pub enum Error {

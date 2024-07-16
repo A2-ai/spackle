@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs};
 
-use spackle::util::copy;
+use spackle::core::copy;
 use tempdir::TempDir;
 
 #[test]
