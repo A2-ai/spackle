@@ -72,7 +72,7 @@ impl Display for Error {
 
 #[derive(Serialize, Debug, Clone)]
 pub enum HookStreamResult {
-    HookStarted(Hook),
+    HookStarted(String),
     HookDone(HookResult),
 }
 
@@ -153,6 +153,8 @@ pub fn run_hooks_stream(
 
         let mut ran_hooks = Vec::new();
         for (hook, mut cmd) in commands {
+            yield HookStreamResult::HookStarted(hook.key.clone());
+
             // Evaluate conditional
             // also add to the context the run status of all hooks so far
             // TODO this can be evaluated outside of stream once "needs" is implemented
