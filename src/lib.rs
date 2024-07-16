@@ -1,8 +1,12 @@
 use core::{
     config, copy,
+    hook::{self, HookResult, HookStreamResult},
     template::{self, RenderedFile},
 };
 use std::{collections::HashMap, fmt::Display, path::PathBuf};
+
+use tokio_stream::Stream;
+use users::User;
 
 pub mod core;
 
@@ -72,4 +76,67 @@ pub fn generate(
     }
 
     Ok(results.into_iter().filter_map(|r| r.ok()).collect())
+}
+
+#[derive(Debug)]
+pub enum RunHooksError {
+    BadConfig(config::Error),
+    HookError(hook::Error),
+}
+
+impl Display for RunHooksError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunHooksError::BadConfig(e) => write!(f, "Error loading config: {}", e),
+            RunHooksError::HookError(e) => write!(f, "Error running hook: {}", e),
+        }
+    }
+}
+
+/// Runs the hooks in the generated spackle project.
+///
+/// out_dir is the path to the filled directory
+pub fn run_hooks_stream(
+    project_dir: &PathBuf,
+    out_dir: PathBuf,
+    slot_data: &HashMap<String, String>,
+    hook_data: &HashMap<String, bool>,
+    run_as_user: Option<User>,
+) -> Result<impl Stream<Item = HookStreamResult>, RunHooksError> {
+    let config = config::load(project_dir).map_err(RunHooksError::BadConfig)?;
+
+    let result = hook::run_hooks_stream(
+        &config.hooks,
+        out_dir,
+        &slot_data,
+        hook_data,
+        run_as_user.clone(),
+    )
+    .map_err(RunHooksError::HookError)?;
+
+    Ok(result)
+}
+
+/// Runs the hooks in the generated spackle project.
+///
+/// out_dir is the path to the filled directory
+pub fn run_hooks(
+    project_dir: &PathBuf,
+    out_dir: &PathBuf,
+    slot_data: &HashMap<String, String>,
+    hook_data: &HashMap<String, bool>,
+    run_as_user: Option<User>,
+) -> Result<Vec<HookResult>, RunHooksError> {
+    let config = config::load(project_dir).map_err(RunHooksError::BadConfig)?;
+
+    let result = hook::run_hooks(
+        &config.hooks,
+        out_dir.to_owned(),
+        &slot_data,
+        hook_data,
+        run_as_user.clone(),
+    )
+    .map_err(RunHooksError::HookError)?;
+
+    Ok(result)
 }
