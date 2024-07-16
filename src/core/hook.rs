@@ -3,6 +3,7 @@ use std::{io, process};
 
 use async_process::Stdio;
 use async_stream::stream;
+use serde::Serialize;
 use tera::{Context, Tera};
 use tokio::pin;
 use tokio_stream::{Stream, StreamExt};
@@ -10,13 +11,7 @@ use tokio_stream::{Stream, StreamExt};
 use super::config::Hook;
 use users::User;
 
-#[derive(Debug)]
-pub enum HookUpdate {
-    HookDone(HookResult),
-    AllHooksDone,
-}
-
-#[derive(Debug, Clone)]
+#[derive(Serialize, Debug, Clone)]
 pub enum HookResult {
     Skipped {
         hook: Hook,
@@ -33,7 +28,7 @@ pub enum HookResult {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Serialize, Debug, Clone)]
 pub enum SkipReason {
     UserDisabled,
     FalseConditional,
@@ -75,6 +70,7 @@ impl Display for Error {
     }
 }
 
+#[derive(Serialize, Debug, Clone)]
 pub enum HookStreamResult {
     HookStarted(Hook),
     HookDone(HookResult),
