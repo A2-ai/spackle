@@ -1,10 +1,10 @@
-use std::{collections::HashMap, path::PathBuf, process::exit, time::Instant};
+use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant};
 
 use colored::Colorize;
 use spackle::core::{
     config::Config,
     copy,
-    hook::{self, HookResult},
+    hook::{self, HookError, HookResult, HookResultKind},
     slot, template,
 };
 
@@ -188,49 +188,48 @@ pub fn run(
         }
     }
 
-    match hook::run_hooks(&config.hooks, out, &slot_data, &hook_data, None) {
-        Ok(results) => {
-            println!("🪝  Evaluated {} hooks", results.len());
-
-            if cli.verbose {
-                for result in results {
-                    match result {
-                        HookResult::Skipped { hook, reason } => {
-                            println!(
-                                "\n  {} {}\n{}",
-                                "⏩︎ Skipped".dimmed(),
-                                hook.key.bold().dimmed(),
-                                reason.to_string().dimmed()
-                            );
-                        }
-                        HookResult::Completed { hook, stdout, .. } => {
-                            println!("\n  {} {}", "✅ Completed".green(), hook.key.bold().green());
-
-                            println!("\n{}", stdout.trim());
-                        }
-                        HookResult::Failed { hook, error } => {
-                            eprintln!(
-                                "\n  {} {}",
-                                "❌ Failed".bright_red(),
-                                hook.key.bold().bright_red(),
-                            );
-
-                            if cli.verbose {
-                                eprintln!("\n{}", error.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    let hook_results = match hook::run_hooks(&config.hooks, out, &slot_data, &hook_data, None) {
+        Ok(results) => results,
         Err(e) => {
-            std::fs::remove_dir_all(out).unwrap();
+            fs::remove_dir_all(out).unwrap();
 
             eprintln!(
                 "❌ {}\n{}",
                 "Error evaluating hooks".bright_red(),
                 e.to_string().red()
             );
+
+            exit(1);
+        }
+    };
+
+    if let Some(result) = hook_results.iter().find(|result| {
+        matches!(
+            result,
+            HookResult {
+                kind: HookResultKind::Failed { .. },
+                ..
+            }
+        )
+    }) {
+        if let HookResult {
+            kind: HookResultKind::Failed(error),
+            hook,
+        } = result
+        {
+            fs::remove_dir_all(out).unwrap();
+
+            eprintln!(
+                "❌ {}\n{}",
+                format!("Hook {} failed", hook.key.bold()).bright_red(),
+                error.to_string().red()
+            );
+
+            if cli.verbose {
+                if let HookError::CommandExited { stderr, .. } = error {
+                    eprintln!("{}", stderr);
+                }
+            }
 
             exit(1);
         }

@@ -12,27 +12,35 @@ use super::config::Hook;
 use users::User;
 
 #[derive(Serialize, Debug)]
-pub enum HookResult {
-    Skipped {
-        hook: Hook,
-        reason: SkipReason,
-    },
-    Completed {
-        hook: Hook,
-        stdout: String,
-        stderr: String,
-    },
-    Failed {
-        hook: Hook,
-        error: HookError,
-    },
+pub struct HookResult {
+    pub hook: Hook,
+    pub kind: HookResultKind,
+}
+
+#[derive(Serialize, Debug)]
+pub enum HookResultKind {
+    Skipped(SkipReason),
+    Completed { stdout: String, stderr: String },
+    Failed(HookError),
+}
+
+impl Display for HookResultKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HookResultKind::Skipped(reason) => write!(f, "skipped: {}", reason),
+            HookResultKind::Completed { .. } => {
+                write!(f, "completed")
+            }
+            HookResultKind::Failed(e) => write!(f, "failed: {}", e),
+        }
+    }
 }
 
 #[derive(Serialize, Debug)]
 pub enum HookError {
     ConditionalFailed(ConditionalError),
     CommandLaunchFailed(#[serde(skip)] io::Error),
-    CommandExited(String),
+    CommandExited { stderr: String },
 }
 
 impl Display for HookError {
@@ -40,7 +48,10 @@ impl Display for HookError {
         match self {
             HookError::ConditionalFailed(e) => write!(f, "conditional failed: {}", e),
             HookError::CommandLaunchFailed(e) => write!(f, "command launch failed: {}", e),
-            HookError::CommandExited(e) => write!(f, "command exited: {}", e),
+            HookError::CommandExited { .. } => {
+                // skip printing stdout and stderr, they can be printed conditionally
+                write!(f, "command exited")
+            }
         }
     }
 }
@@ -170,10 +181,10 @@ pub fn run_hooks_stream(
     let hook_keys = hooks.iter().map(|h| h.key.clone()).collect::<Vec<String>>();
 
     Ok(stream! {
-        for hook in skipped_hooks {
-            yield HookStreamResult::HookDone(HookResult::Skipped {
-                hook: hook.0,
-                reason: hook.1,
+        for (hook, reason) in skipped_hooks {
+            yield HookStreamResult::HookDone(HookResult {
+                hook: hook.clone(),
+                kind: HookResultKind::Skipped(reason),
             });
         }
 
@@ -195,18 +206,18 @@ pub fn run_hooks_stream(
             let condition = match evaluate_conditional(&hook, &slot_data_owned) {
                 Ok(condition) => condition,
                 Err(e) => {
-                    yield HookStreamResult::HookDone(HookResult::Failed {
+                    yield HookStreamResult::HookDone(HookResult {
                         hook: hook.clone(),
-                        error: HookError::ConditionalFailed(e),
+                        kind: HookResultKind::Failed(HookError::ConditionalFailed(e)),
                     });
                     continue;
                 }
             };
 
             if !condition {
-                yield HookStreamResult::HookDone(HookResult::Skipped {
+                yield HookStreamResult::HookDone(HookResult {
                     hook: hook.clone(),
-                    reason: SkipReason::FalseConditional,
+                    kind: HookResultKind::Skipped(SkipReason::FalseConditional),
                 });
                 continue;
             }
@@ -220,29 +231,32 @@ pub fn run_hooks_stream(
             let output = match cmd_result {
                 Ok(output) => output,
                 Err(e) => {
-                    yield HookStreamResult::HookDone(HookResult::Failed {
+                    yield HookStreamResult::HookDone(HookResult {
                         hook: hook.clone(),
-                        error: HookError::CommandLaunchFailed(e),
+                        kind: HookResultKind::Failed(HookError::CommandLaunchFailed(e)),
                     });
                     continue;
                 }
             };
 
             if !output.status.success() {
-                yield HookStreamResult::HookDone(HookResult::Failed {
+                yield HookStreamResult::HookDone(HookResult {
                     hook: hook.clone(),
-                    error: HookError::CommandExited(String::from_utf8_lossy(&output.stderr).to_string()),
+                    kind: HookResultKind::Failed(HookError::CommandExited {
+                        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                    }),
                 });
                 continue;
             }
 
             ran_hooks.push(hook.key.clone());
 
-            yield HookStreamResult::HookDone(HookResult::Completed {
+            yield HookStreamResult::HookDone(HookResult {
                 hook: hook.clone(),
-                stdout: String::from_utf8_lossy(&output.stdout).into(),
+                kind: HookResultKind::Completed {
+                    stdout: String::from_utf8_lossy(&output.stdout).into(),
                 stderr: String::from_utf8_lossy(&output.stderr).into(),
-            });
+            }});
         }
     })
 }
@@ -366,7 +380,13 @@ mod tests {
 
         assert_eq!(result.len(), 2, "Expected 2 results, got {:?}", result);
 
-        assert!(matches!(result[0], HookResult::Completed { .. }));
+        assert!(matches!(
+            result[0],
+            HookResult {
+                kind: HookResultKind::Completed { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -393,13 +413,17 @@ mod tests {
         let results = run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None)
             .expect("run_hooks failed, should have succeeded");
 
-        assert!(results
-            .iter()
-            .any(|x| matches!(x, HookResult::Completed { hook, .. } if hook.key == "1")));
+        assert!(results.iter().any(|x| matches!(x, HookResult {
+                hook,
+                kind: HookResultKind::Completed { .. },
+                ..
+            } if hook.key == "1")));
 
-        assert!(results
-            .iter()
-            .any(|x| matches!(x, HookResult::Failed { hook, .. } if hook.key == "2")));
+        assert!(results.iter().any(|x| matches!(x, HookResult {
+                hook,
+                kind: HookResultKind::Failed { .. },
+                ..
+            } if hook.key == "2")));
     }
 
     #[test]
@@ -444,7 +468,15 @@ mod tests {
 
         let skipped_hooks: Vec<_> = results
             .iter()
-            .filter(|r| matches!(r, HookResult::Skipped { .. }))
+            .filter(|r| {
+                matches!(
+                    r,
+                    HookResult {
+                        kind: HookResultKind::Skipped { .. },
+                        ..
+                    }
+                )
+            })
             .collect();
         assert_eq!(skipped_hooks.len(), 1);
     }
@@ -479,13 +511,17 @@ mod tests {
         )
         .expect("run_hooks failed, should have succeeded");
 
-        assert!(results
-            .iter()
-            .any(|x| matches!(x, HookResult::Completed { hook, .. } if hook.key == "1")));
+        assert!(results.iter().any(|x| matches!(x, HookResult {
+                hook,
+                kind: HookResultKind::Completed { .. },
+                ..
+            } if hook.key == "1")));
 
-        assert!(results
-            .iter()
-            .any(|x| matches!(x, HookResult::Failed { hook, .. } if hook.key == "2")));
+        assert!(results.iter().any(|x| matches!(x, HookResult {
+                hook,
+                kind: HookResultKind::Failed { .. },
+                ..
+            } if hook.key == "2")));
     }
 
     #[test]
@@ -508,9 +544,11 @@ mod tests {
         )
         .expect("run_hooks failed, should have succeeded");
 
-        assert!(results
-            .iter()
-            .any(|x| matches!(x, HookResult::Failed { hook, .. } if hook.key == "1")));
+        assert!(results.iter().any(|x| matches!(x, HookResult {
+                hook,
+                kind: HookResultKind::Failed { .. },
+                ..
+            } if hook.key == "1")));
     }
 
     #[test]
@@ -558,17 +596,23 @@ mod tests {
             results.len()
         );
 
-        assert!(results
-            .iter()
-            .any(|x| matches!(x, HookResult::Completed { hook, .. } if hook.key == "1")));
+        assert!(results.iter().any(|x| matches!(x, HookResult {
+                hook,
+                kind: HookResultKind::Completed { .. },
+                ..
+            } if hook.key == "1")));
 
-        assert!(results
-            .iter()
-            .any(|x| matches!(x, HookResult::Skipped { hook, .. } if hook.key == "2")));
+        assert!(results.iter().any(|x| matches!(x, HookResult {
+                hook,
+                kind: HookResultKind::Skipped { .. },
+                ..
+            } if hook.key == "2")));
 
-        assert!(results
-            .iter()
-            .any(|x| matches!(x, HookResult::Completed { hook, .. } if hook.key == "3")));
+        assert!(results.iter().any(|x| matches!(x, HookResult {
+                hook,
+                kind: HookResultKind::Completed { .. },
+                ..
+            } if hook.key == "3")));
     }
 
     #[test]
@@ -605,9 +649,13 @@ mod tests {
         .expect("run_hooks failed, should have succeeded");
 
         assert!(
-            results
-                .iter()
-                .all(|x| matches!(x, HookResult::Completed { .. })),
+            results.iter().all(|x| matches!(
+                x,
+                HookResult {
+                    kind: HookResultKind::Completed { .. },
+                    ..
+                }
+            )),
             "Expected all hooks to be completed, but got: {:?}",
             results
         );
@@ -615,9 +663,11 @@ mod tests {
         // Assert that hook 2 outputs "."
         assert!(
             results.iter().any(|x| match x {
-                HookResult::Completed { hook, stdout, .. } if hook.key == "2" => {
-                    stdout.trim() == "."
-                }
+                HookResult {
+                    hook,
+                    kind: HookResultKind::Completed { stdout, .. },
+                    ..
+                } if hook.key == "2" => stdout.trim() == ".",
                 _ => false,
             }),
             "Hook 2 should output '.'"
