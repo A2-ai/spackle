@@ -83,6 +83,15 @@ pub fn run_hooks_stream(
     hook_data: &HashMap<String, bool>,
     run_as_user: Option<User>,
 ) -> Result<impl Stream<Item = HookStreamResult>, Error> {
+    let mut slot_data = slot_data.clone();
+    slot_data.insert(
+        "project_name".to_string(),
+        dir.as_ref()
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or(".".to_string()),
+    );
+
     let mut skipped_hooks = Vec::new();
     let mut queued_hooks = Vec::new();
 
@@ -558,7 +567,7 @@ mod tests {
             },
             Hook {
                 key: "2".to_string(),
-                command: vec!["echo".to_string(), "out2".to_string()],
+                command: vec!["echo".to_string(), "{{ project_name }}".to_string()],
                 r#if: None,
                 optional: None,
                 name: None,
@@ -578,13 +587,23 @@ mod tests {
         )
         .expect("run_hooks failed, should have succeeded");
 
-        assert_eq!(
-            if let HookResult::Completed { stdout, .. } = &results[0] {
-                stdout
-            } else {
-                panic!("Expected HookResult::Completed, got {:?}", results[0]);
-            },
-            "out1\n"
+        assert!(
+            results
+                .iter()
+                .all(|x| matches!(x, HookResult::Completed { .. })),
+            "Expected all hooks to be completed, but got: {:?}",
+            results
+        );
+
+        // Assert that hook 2 outputs "."
+        assert!(
+            results.iter().any(|x| match x {
+                HookResult::Completed { hook, stdout, .. } if hook.key == "2" => {
+                    stdout.trim() == "."
+                }
+                _ => false,
+            }),
+            "Hook 2 should output '.'"
         );
     }
 
