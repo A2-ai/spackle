@@ -208,10 +208,7 @@ pub fn run(
 
                             println!("\n{}", stdout.trim());
                         }
-                        HookResult::Failed {
-                            hook,
-                            output: error,
-                        } => {
+                        HookResult::Failed { hook, error } => {
                             eprintln!(
                                 "\n  {} {}",
                                 "❌ Failed".bright_red(),
@@ -219,7 +216,7 @@ pub fn run(
                             );
 
                             if cli.verbose {
-                                eprintln!("\n{}", error.to_string().dimmed());
+                                eprintln!("\n{}", error.to_string());
                             }
                         }
                     }

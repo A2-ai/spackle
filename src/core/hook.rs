@@ -11,7 +11,7 @@ use tokio_stream::{Stream, StreamExt};
 use super::config::Hook;
 use users::User;
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug)]
 pub enum HookResult {
     Skipped {
         hook: Hook,
@@ -24,11 +24,28 @@ pub enum HookResult {
     },
     Failed {
         hook: Hook,
-        output: String,
+        error: HookError,
     },
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug)]
+pub enum HookError {
+    ConditionalFailed(ConditionalError),
+    CommandLaunchFailed(#[serde(skip)] io::Error),
+    CommandExited(String),
+}
+
+impl Display for HookError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HookError::ConditionalFailed(e) => write!(f, "conditional failed: {}", e),
+            HookError::CommandLaunchFailed(e) => write!(f, "command launch failed: {}", e),
+            HookError::CommandExited(e) => write!(f, "command exited: {}", e),
+        }
+    }
+}
+
+#[derive(Serialize, Debug)]
 pub enum SkipReason {
     UserDisabled,
     FalseConditional,
@@ -70,7 +87,7 @@ impl Display for Error {
     }
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug)]
 pub enum HookStreamResult {
     HookStarted(String),
     HookDone(HookResult),
@@ -180,7 +197,7 @@ pub fn run_hooks_stream(
                 Err(e) => {
                     yield HookStreamResult::HookDone(HookResult::Failed {
                         hook: hook.clone(),
-                        output: e.to_string(),
+                        error: HookError::ConditionalFailed(e),
                     });
                     continue;
                 }
@@ -205,7 +222,7 @@ pub fn run_hooks_stream(
                 Err(e) => {
                     yield HookStreamResult::HookDone(HookResult::Failed {
                         hook: hook.clone(),
-                        output: e.to_string(),
+                        error: HookError::CommandLaunchFailed(e),
                     });
                     continue;
                 }
@@ -214,7 +231,7 @@ pub fn run_hooks_stream(
             if !output.status.success() {
                 yield HookStreamResult::HookDone(HookResult::Failed {
                     hook: hook.clone(),
-                    output: String::from_utf8_lossy(&output.stderr).to_string(),
+                    error: HookError::CommandExited(String::from_utf8_lossy(&output.stderr).to_string()),
                 });
                 continue;
             }
@@ -263,10 +280,10 @@ pub fn run_hooks(
     Ok(results)
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Debug)]
 pub enum ConditionalError {
-    InvalidContext(tera::Error),
-    InvalidTemplate(tera::Error),
+    InvalidContext(#[serde(skip)] tera::Error),
+    InvalidTemplate(#[serde(skip)] tera::Error),
     NotBoolean(String),
 }
 
