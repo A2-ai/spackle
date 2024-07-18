@@ -203,7 +203,7 @@ pub fn run_hooks_stream(
                 cond_context.insert(format!("hook_ran_{}", hook), "true".to_string());
             }
 
-            let condition = match evaluate_conditional(&hook, &slot_data_owned) {
+            let condition = match evaluate_conditional(&hook, &cond_context) {
                 Ok(condition) => condition,
                 Err(e) => {
                     yield HookStreamResult::HookDone(HookResult {
@@ -479,6 +479,16 @@ mod tests {
             })
             .collect();
         assert_eq!(skipped_hooks.len(), 1);
+
+        assert!(
+            results.iter().any(|x| matches!(x, HookResult {
+            hook,
+            kind: HookResultKind::Completed { .. },
+            ..
+        } if hook.key == "4")),
+            "Expected hook 4 to be completed, got {:?}",
+            results
+        );
     }
 
     #[test]
