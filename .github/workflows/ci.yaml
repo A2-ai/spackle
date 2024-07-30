@@ -11,6 +11,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-arm
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
