@@ -40,7 +40,7 @@ impl Display for HookResultKind {
 pub enum HookError {
     ConditionalFailed(ConditionalError),
     CommandLaunchFailed(#[serde(skip)] io::Error),
-    CommandExited { stderr: String },
+    CommandExited { stdout: String, stderr: String },
 }
 
 impl Display for HookError {
@@ -243,6 +243,7 @@ pub fn run_hooks_stream(
                 yield HookStreamResult::HookDone(HookResult {
                     hook: hook.clone(),
                     kind: HookResultKind::Failed(HookError::CommandExited {
+                        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
                         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
                     }),
                 });
@@ -255,8 +256,9 @@ pub fn run_hooks_stream(
                 hook: hook.clone(),
                 kind: HookResultKind::Completed {
                     stdout: String::from_utf8_lossy(&output.stdout).into(),
-                stderr: String::from_utf8_lossy(&output.stderr).into(),
-            }});
+                    stderr: String::from_utf8_lossy(&output.stderr).into(),
+                }
+            });
         }
     })
 }
