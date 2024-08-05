@@ -13,3 +13,9 @@ command = [
     "-c",
     "echo 'This is logged to stdout'; echo 'This is logged to stderr' >&2",
 ]
+
+
+[[hooks]]
+key = "hook_3"
+command = ["true"]
+optional = { default = false }

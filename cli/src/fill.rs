@@ -272,7 +272,7 @@ pub fn run(
                         kind: HookResultKind::Skipped(reason),
                         ..
                     } => {
-                        println!("    {}\n{}\n", "  ⏩︎ skipped".yellow(), reason);
+                        println!("    ⏩︎ skipping {}\n", reason.to_string().dimmed());
                     }
                 },
                 HookStreamResult::HookStarted(hook) => {
