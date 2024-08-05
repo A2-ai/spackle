@@ -1,6 +1,6 @@
 use clap::{command, Parser, Subcommand};
 use colored::Colorize;
-use spackle::core::config;
+use spackle::core::config::{self, Config};
 use std::{path::PathBuf, process::exit};
 
 mod check;
@@ -85,12 +85,7 @@ fn main() {
         }
     };
 
-    println!(
-        "📂 {} {} {}\n",
-        "Using project",
-        project_dir.to_string_lossy().bold(),
-        format!("with {} {}", config.slots.len(), "slots").dimmed()
-    );
+    print_project_info(&project_dir, &config);
 
     match &cli.command {
         Commands::Check => check::run(&project_dir, &config),
@@ -99,4 +94,32 @@ fn main() {
             fill::run(slot, hook, &project_dir, &cli.out, &config, &cli)
         }
     }
+}
+
+fn print_project_info(project_dir: &PathBuf, config: &Config) {
+    println!(
+        "📂 {} {}\n{}\n{}\n",
+        "Using project",
+        project_dir.to_string_lossy().bold(),
+        format!(
+            "  🕳️  {} {}",
+            config.slots.len(),
+            if config.slots.len() == 1 {
+                "slot"
+            } else {
+                "slots"
+            }
+        )
+        .dimmed(),
+        format!(
+            "  🪝  {} {}",
+            config.hooks.len(),
+            if config.hooks.len() == 1 {
+                "hook"
+            } else {
+                "hooks"
+            }
+        )
+        .dimmed()
+    );
 }

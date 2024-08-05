@@ -1,5 +1,0 @@
-[[projects]]
-id = "proj11"
-name = "Project 1"
-description = "Description of project 1"
-dir = "tests/data/proj1"
