@@ -230,6 +230,9 @@ pub fn run(
 
         while let Some(result) = stream.next().await {
             match result {
+                HookStreamResult::HookStarted(hook) => {
+                    println!("  🚀 {}", hook);
+                }
                 HookStreamResult::HookDone(r) => match r {
                     HookResult {
                         hook,
@@ -275,9 +278,6 @@ pub fn run(
                         println!("    ⏩︎ skipping {}\n", reason.to_string().dimmed());
                     }
                 },
-                HookStreamResult::HookStarted(hook) => {
-                    println!("  🚀 {}\n", hook);
-                }
             };
 
             start_time = Instant::now();
