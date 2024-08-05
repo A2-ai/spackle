@@ -40,7 +40,11 @@ impl Display for HookResultKind {
 pub enum HookError {
     ConditionalFailed(ConditionalError),
     CommandLaunchFailed(#[serde(skip)] io::Error),
-    CommandExited { stdout: String, stderr: String },
+    CommandExited {
+        exit_code: i32,
+        stdout: String,
+        stderr: String,
+    },
 }
 
 impl Display for HookError {
@@ -48,9 +52,8 @@ impl Display for HookError {
         match self {
             HookError::ConditionalFailed(e) => write!(f, "conditional failed: {}", e),
             HookError::CommandLaunchFailed(e) => write!(f, "command launch failed: {}", e),
-            HookError::CommandExited { .. } => {
-                // skip printing stdout and stderr, they can be printed conditionally
-                write!(f, "command exited")
+            HookError::CommandExited { exit_code, .. } => {
+                write!(f, "command exited with code {}", exit_code)
             }
         }
     }
@@ -243,6 +246,7 @@ pub fn run_hooks_stream(
                 yield HookStreamResult::HookDone(HookResult {
                     hook: hook.clone(),
                     kind: HookResultKind::Failed(HookError::CommandExited {
+                        exit_code: output.status.code().unwrap_or(1),
                         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
                         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
                     }),
