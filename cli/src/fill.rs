@@ -107,7 +107,7 @@ pub fn run(
                 "{} {} {} {}",
                 "🖨️  Copied",
                 r.copied_count,
-                "files",
+                if r.copied_count == 1 { "file" } else { "files" },
                 format!("in {:?}", start_time.elapsed()).dimmed()
             );
 
@@ -116,7 +116,13 @@ pub fn run(
                     "{}",
                     format!(
                         "{} {} {}",
-                        "  Ignored", r.skipped_count, "files/directories"
+                        "  Ignored",
+                        r.skipped_count,
+                        if r.skipped_count == 1 {
+                            "entry"
+                        } else {
+                            "entries"
+                        }
                     )
                     .to_string()
                     .dimmed()
@@ -147,7 +153,7 @@ pub fn run(
                 "{} {} {} {} {}\n",
                 "⛽ Processed",
                 r.len(),
-                "files",
+                if r.len() == 1 { "file" } else { "files" },
                 "in".dimmed(),
                 format!("{:?}", start_time.elapsed()).dimmed()
             );
