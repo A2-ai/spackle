@@ -10,7 +10,7 @@ pub fn run(config: &Config) {
     });
 
     // Print hook info
-    println!("🪝 {}", "hooks".truecolor(140, 200, 255).bold());
+    println!("🪝  {}", "hooks".truecolor(140, 200, 255).bold());
 
     (&config.hooks).into_iter().for_each(|hook| {
         println!("{}\n", hook);

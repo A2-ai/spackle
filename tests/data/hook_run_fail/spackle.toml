@@ -1,0 +1,7 @@
+[[hooks]]
+key = "hook_1"
+command = [
+    "bash",
+    "-c",
+    "echo 'This is logged to stdout'; echo 'This is logged to stderr' >&2; exit 1",
+]

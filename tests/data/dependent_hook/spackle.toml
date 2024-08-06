@@ -1,9 +1,20 @@
 [[hooks]]
 key = "hook_1"
-command = ["echo", "Ran hook_1"]
+command = ["true"]
 optional = { default = true }
 
 [[hooks]]
 key = "hook_2"
-command = ["echo", "Ran hook_2"]
+command = ["true"]
+optional = { default = false }
+
+
+[[hooks]]
+key = "dep_hook_should_run"
+command = ["true"]
 if = "{{ hook_ran_hook_1 }}"
+
+[[hooks]]
+key = "dep_hook_should_not_run"
+command = ["true"]
+if = "{{ hook_ran_hook_2 }}"

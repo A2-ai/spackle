@@ -185,6 +185,7 @@ pub fn run_hooks_stream(
 
     Ok(stream! {
         for (hook, reason) in skipped_hooks {
+            yield HookStreamResult::HookStarted(hook.key.clone());
             yield HookStreamResult::HookDone(HookResult {
                 hook: hook.clone(),
                 kind: HookResultKind::Skipped(reason),

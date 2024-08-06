@@ -1,0 +1,21 @@
+[[hooks]]
+key = "hook_1"
+command = [
+    "bash",
+    "-c",
+    "echo 'This is logged to stdout'; echo 'This is logged to stderr' >&2",
+]
+
+[[hooks]]
+key = "hook_2"
+command = [
+    "bash",
+    "-c",
+    "echo 'This is logged to stdout'; echo 'This is logged to stderr' >&2",
+]
+
+
+[[hooks]]
+key = "hook_3"
+command = ["true"]
+optional = { default = false }

@@ -1,14 +1,16 @@
 use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant};
 
 use colored::Colorize;
+use rocket::{futures::StreamExt, tokio};
 use spackle::core::{
     config::Config,
     copy,
-    hook::{self, HookError, HookResult, HookResultKind},
+    hook::{self, HookError, HookResult, HookResultKind, HookStreamResult},
     slot, template,
 };
+use tokio::pin;
 
-use crate::Cli;
+use crate::{check, Cli};
 
 pub fn run(
     slot: &Vec<String>,
@@ -18,6 +20,11 @@ pub fn run(
     config: &Config,
     cli: &Cli,
 ) {
+    // First, run spackle check
+    check::run(project_dir, config);
+
+    println!("");
+
     let slot_data = slot
         .iter()
         .filter_map(|data| match data.split_once('=') {
@@ -39,8 +46,8 @@ pub fn run(
         Ok(()) => {}
         Err(e) => {
             eprintln!(
-                "❌ {}\n{}",
-                "Error validating supplied data".bright_red(),
+                "{}\n{}",
+                "❌ Error with supplied data".bright_red(),
                 e.to_string().red()
             );
 
@@ -100,7 +107,7 @@ pub fn run(
                 "{} {} {} {}",
                 "🖨️  Copied",
                 r.copied_count,
-                "files",
+                if r.copied_count == 1 { "file" } else { "files" },
                 format!("in {:?}", start_time.elapsed()).dimmed()
             );
 
@@ -109,7 +116,13 @@ pub fn run(
                     "{}",
                     format!(
                         "{} {} {}",
-                        "  Ignored", r.skipped_count, "files/directories"
+                        "  Ignored",
+                        r.skipped_count,
+                        if r.skipped_count == 1 {
+                            "entry"
+                        } else {
+                            "entries"
+                        }
                     )
                     .to_string()
                     .dimmed()
@@ -140,7 +153,7 @@ pub fn run(
                 "{} {} {} {} {}\n",
                 "⛽ Processed",
                 r.len(),
-                "files",
+                if r.len() == 1 { "file" } else { "files" },
                 "in".dimmed(),
                 format!("{:?}", start_time.elapsed()).dimmed()
             );
@@ -188,50 +201,92 @@ pub fn run(
         }
     }
 
-    let hook_results = match hook::run_hooks(&config.hooks, out, &slot_data, &hook_data, None) {
-        Ok(results) => results,
+    println!("🪝  Running hooks...\n");
+
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
         Err(e) => {
-            fs::remove_dir_all(out).unwrap();
-
-            eprintln!(
-                "❌ {}\n{}",
-                "Error evaluating hooks".bright_red(),
-                e.to_string().red()
-            );
-
+            eprintln!("{}", e.to_string().red());
             exit(1);
         }
     };
 
-    if let Some(result) = hook_results.iter().find(|result| {
-        matches!(
-            result,
-            HookResult {
-                kind: HookResultKind::Failed { .. },
-                ..
-            }
-        )
-    }) {
-        if let HookResult {
-            kind: HookResultKind::Failed(error),
-            hook,
-        } = result
+    runtime.block_on(async {
+        let stream = match hook::run_hooks_stream(&config.hooks, out, &slot_data, &hook_data, None)
         {
-            fs::remove_dir_all(out).unwrap();
+            Ok(stream) => stream,
+            Err(e) => {
+                fs::remove_dir_all(out).unwrap();
 
-            eprintln!(
-                "❌ {}\n{}",
-                format!("Hook {} failed", hook.key.bold()).bright_red(),
-                error.to_string().red()
-            );
+                eprintln!(
+                    "  ❌ {}\n  {}",
+                    "Error evaluating hooks".bright_red(),
+                    e.to_string().red()
+                );
 
-            if cli.verbose {
-                if let HookError::CommandExited { stderr, .. } = error {
-                    eprintln!("{}", stderr);
-                }
+                exit(1);
             }
+        };
+        pin!(stream);
 
-            exit(1);
+        let mut start_time = Instant::now();
+
+        while let Some(result) = stream.next().await {
+            match result {
+                HookStreamResult::HookStarted(hook) => {
+                    println!("  🚀 {}", hook);
+                }
+                HookStreamResult::HookDone(r) => match r {
+                    HookResult {
+                        hook,
+                        kind: HookResultKind::Failed(error),
+                        ..
+                    } => {
+                        fs::remove_dir_all(out).unwrap();
+
+                        eprintln!(
+                            "    ❌ {}\n    {}",
+                            format!("Hook {} failed", hook.key.bold()).bright_red(),
+                            error.to_string().red()
+                        );
+
+                        if cli.verbose {
+                            if let HookError::CommandExited { stdout, stderr, .. } = error {
+                                eprintln!("\n    {}\n{}", "stdout".bold().dimmed(), stdout);
+                                eprintln!("    {}\n{}", "stderr".bold().dimmed(), stderr);
+                            }
+                        }
+
+                        exit(1);
+                    }
+                    HookResult {
+                        kind: HookResultKind::Completed { stdout, stderr },
+                        ..
+                    } => {
+                        println!(
+                            "{} {}\n",
+                            "    ✅ done",
+                            format!("in {:?}", start_time.elapsed()).dimmed()
+                        );
+
+                        if cli.verbose {
+                            println!("    {}\n{}", "stdout".bold().dimmed(), stdout);
+                            println!("    {}\n{}", "stderr".bold().dimmed(), stderr);
+                        }
+                    }
+                    HookResult {
+                        kind: HookResultKind::Skipped(reason),
+                        ..
+                    } => {
+                        println!("    ⏩︎ skipping {}\n", reason.to_string().dimmed());
+                    }
+                },
+            };
+
+            start_time = Instant::now();
         }
-    }
+    });
 }

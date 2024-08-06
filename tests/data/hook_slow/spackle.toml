@@ -1,0 +1,20 @@
+[[hooks]]
+key = "hook_1"
+command = [
+    "bash",
+    "-c",
+    "sleep 0.3; echo 'This is logged to stdout'; echo 'This is logged to stderr' >&2",
+]
+
+[[hooks]]
+key = "hook_2"
+command = [
+    "bash",
+    "-c",
+    "sleep 0.3; echo 'This is logged to stdout'; echo 'This is logged to stderr' >&2",
+]
+
+[[hooks]]
+key = "hook_3_should_skip"
+command = ["false"]
+if = "{{ false }}"
