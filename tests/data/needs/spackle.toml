@@ -1,0 +1,17 @@
+[[slots]]
+key = "slot_1"
+type = "String"
+
+[[hooks]]
+key = "hook_1"
+command = ["true"]
+
+[[hooks]]
+key = "dep_hook_should_run"
+command = ["true"]
+needs = ["hook_1"]
+
+[[hooks]]
+key = "dep_hook_should_skip"
+command = ["true"]
+needs = ["slot_1"]
