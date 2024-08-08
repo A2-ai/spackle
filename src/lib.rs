@@ -1,5 +1,6 @@
 use core::{
-    config, copy,
+    config::{self},
+    copy,
     hook::{self, HookResult, HookStreamResult},
     template::{self, RenderedFile},
 };
@@ -9,6 +10,15 @@ use tokio_stream::Stream;
 use users::User;
 
 pub mod core;
+
+// Loads the config from the project directory and validates it
+pub fn load(project_dir: &PathBuf) -> Result<config::Config, config::Error> {
+    let config = config::load(project_dir)?;
+
+    config.validate()?;
+
+    Ok(config)
+}
 
 #[derive(Debug)]
 pub enum GenerateError {

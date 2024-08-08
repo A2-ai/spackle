@@ -1,0 +1,6 @@
+[[hooks]]
+key = "test"
+command = ["false"]
+
+[[slots]]
+key = "test"

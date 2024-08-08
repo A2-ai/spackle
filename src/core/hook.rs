@@ -11,6 +11,66 @@ use tokio_stream::{Stream, StreamExt};
 use super::config::Hook;
 use users::User;
 
+impl Hook {
+    fn evaluate_conditional(
+        &self,
+        context: &HashMap<String, String>,
+    ) -> Result<bool, ConditionalError> {
+        let conditional = match &self.r#if {
+            Some(conditional) => conditional,
+            None => return Ok(true),
+        };
+
+        let context =
+            Context::from_serialize(context).map_err(|e| ConditionalError::InvalidContext(e))?;
+
+        let condition_str = Tera::one_off(&conditional, &context, false)
+            .map_err(|e| ConditionalError::InvalidTemplate(e))?;
+
+        let condition = condition_str
+            .trim()
+            .parse::<bool>()
+            .map_err(|e| ConditionalError::NotBoolean(e.to_string()))?;
+
+        Ok(condition)
+    }
+
+    fn is_enabled(&self, hook_data: &HashMap<String, bool>) -> bool {
+        match &self.optional {
+            Some(optional) => *hook_data.get(&self.key).unwrap_or(&optional.default),
+            None => true,
+        }
+    }
+
+    /// Returns true if all entries in *needs* are satisfied given the provided user inputs
+    /// Needy slots are satisfied if they are not set to a non-falsy value (e.g. "false", "0", "")
+    /// Needy hooks are satisfied if they are enabled (either by the user or by default) and their needs are satisfied
+    /// Needy hooks are not checked for recursion, so be careful with circular dependencies
+    fn is_satisfied(
+        &self,
+        hooks: &Vec<Hook>,
+        slot_data: &HashMap<String, String>,
+        hook_data: &HashMap<String, bool>,
+    ) -> bool {
+        match &self.needs {
+            Some(needs) => needs
+                .iter()
+                .all(|key| match hooks.iter().find(|h| h.key == *key) {
+                    Some(hook) => {
+                        hook.is_satisfied(hooks, slot_data, hook_data) && hook.is_enabled(hook_data)
+                    }
+                    None => slot_data
+                        .get(key)
+                        .map(|value| {
+                            !value.is_empty() && value != "0" && value.to_lowercase() != "false"
+                        })
+                        .unwrap_or(false),
+                }),
+            None => true,
+        }
+    }
+}
+
 #[derive(Serialize, Debug)]
 pub struct HookResult {
     pub hook: Hook,
@@ -127,11 +187,7 @@ pub fn run_hooks_stream(
     let mut queued_hooks = Vec::new();
 
     for hook in hooks {
-        let enabled = match &hook.optional {
-            Some(optional) => hook_data.get(&hook.key).unwrap_or(&optional.default),
-            None => &true,
-        };
-        if *enabled {
+        if hook.is_enabled(hook_data) && hook.is_satisfied(hooks, &slot_data, hook_data) {
             queued_hooks.push(hook.clone());
         } else {
             skipped_hooks.push((hook.clone(), SkipReason::UserDisabled));
@@ -207,7 +263,7 @@ pub fn run_hooks_stream(
                 cond_context.insert(format!("hook_ran_{}", hook), "true".to_string());
             }
 
-            let condition = match evaluate_conditional(&hook, &cond_context) {
+            let condition = match hook.evaluate_conditional(&cond_context) {
                 Ok(condition) => condition,
                 Err(e) => {
                     yield HookStreamResult::HookDone(HookResult {
@@ -318,29 +374,6 @@ impl Display for ConditionalError {
     }
 }
 
-fn evaluate_conditional(
-    hook: &Hook,
-    context: &HashMap<String, String>,
-) -> Result<bool, ConditionalError> {
-    let conditional = match hook.clone().r#if {
-        Some(conditional) => conditional,
-        None => return Ok(true),
-    };
-
-    let context =
-        Context::from_serialize(context).map_err(|e| ConditionalError::InvalidContext(e))?;
-
-    let condition_str = Tera::one_off(&conditional, &context, false)
-        .map_err(|e| ConditionalError::InvalidTemplate(e))?;
-
-    let condition = condition_str
-        .trim()
-        .parse::<bool>()
-        .map_err(|e| ConditionalError::NotBoolean(e.to_string()))?;
-
-    Ok(condition)
-}
-
 #[cfg(test)]
 mod tests {
     use crate::core::config::HookConfigOptional;
@@ -354,6 +387,7 @@ mod tests {
             command: vec!["echo".to_string(), "hello world".to_string()],
             r#if: None,
             optional: None,
+            needs: None,
             name: None,
             description: None,
         }];
@@ -369,6 +403,7 @@ mod tests {
                 command: vec!["echo".to_string(), "hello world".to_string()],
                 r#if: None,
                 optional: None,
+                needs: None,
                 name: None,
                 description: None,
             },
@@ -377,6 +412,7 @@ mod tests {
                 command: vec!["false".to_string()],
                 r#if: None,
                 optional: None,
+                needs: None,
                 name: None,
                 description: None,
             },
@@ -404,6 +440,7 @@ mod tests {
                 command: vec!["echo".to_string(), "hello world".to_string()],
                 r#if: None,
                 optional: None,
+                needs: None,
                 name: None,
                 description: None,
             },
@@ -412,6 +449,7 @@ mod tests {
                 command: vec!["invalid_cmd".to_string()],
                 r#if: None,
                 optional: None,
+                needs: None,
                 name: None,
                 description: None,
             },
@@ -441,6 +479,7 @@ mod tests {
                 command: vec!["echo".to_string(), "hello world".to_string()],
                 r#if: Some("true".to_string()),
                 optional: None,
+                needs: None,
                 name: None,
                 description: None,
             },
@@ -449,6 +488,7 @@ mod tests {
                 command: vec!["echo".to_string(), "hello world".to_string()],
                 r#if: Some("false".to_string()),
                 optional: None,
+                needs: None,
                 name: None,
                 description: None,
             },
@@ -457,6 +497,7 @@ mod tests {
                 command: vec!["echo".to_string(), "hello world".to_string()],
                 r#if: None,
                 optional: None,
+                needs: None,
                 name: None,
                 description: None,
             },
@@ -465,6 +506,7 @@ mod tests {
                 command: vec!["echo".to_string(), "hello world".to_string()],
                 r#if: Some("{{ hook_ran_1 }}".to_string()),
                 optional: None,
+                needs: None,
                 name: None,
                 description: None,
             },
@@ -506,6 +548,7 @@ mod tests {
                 command: vec!["echo".to_string(), "hello world".to_string()],
                 r#if: Some("{{ good_var }}".to_string()),
                 optional: None,
+                needs: None,
                 name: None,
                 description: None,
             },
@@ -514,6 +557,7 @@ mod tests {
                 command: vec!["echo".to_string(), "hello world".to_string()],
                 r#if: Some("{{ bad_var }}".to_string()),
                 optional: None,
+                needs: None,
                 name: None,
                 description: None,
             },
@@ -548,6 +592,7 @@ mod tests {
             command: vec!["echo".to_string(), "hello world".to_string()],
             r#if: Some("lorem ipsum".to_string()),
             optional: None,
+            needs: None,
             name: None,
             description: None,
         }];
@@ -576,6 +621,7 @@ mod tests {
                 command: vec!["echo".to_string(), "hello world".to_string()],
                 r#if: None,
                 optional: None,
+                needs: None,
                 name: None,
                 description: None,
             },
@@ -584,6 +630,7 @@ mod tests {
                 command: vec!["echo".to_string(), "hello world".to_string()],
                 r#if: None,
                 optional: Some(HookConfigOptional { default: false }),
+                needs: None,
                 name: None,
                 description: None,
             },
@@ -592,6 +639,7 @@ mod tests {
                 command: vec!["echo".to_string(), "hello world".to_string()],
                 r#if: None,
                 optional: Some(HookConfigOptional { default: false }),
+                needs: None,
                 name: None,
                 description: None,
             },
@@ -640,6 +688,7 @@ mod tests {
                 command: vec!["{{ field_1 }}".to_string(), "{{ field_2 }}".to_string()],
                 r#if: None,
                 optional: None,
+                needs: None,
                 name: None,
                 description: None,
             },
@@ -648,6 +697,7 @@ mod tests {
                 command: vec!["echo".to_string(), "{{ project_name }}".to_string()],
                 r#if: None,
                 optional: None,
+                needs: None,
                 name: None,
                 description: None,
             },
@@ -698,6 +748,7 @@ mod tests {
             command: vec!["{{ field_1 }}".to_string(), "{{ field_2 }}".to_string()],
             r#if: None,
             optional: None,
+            needs: None,
             name: None,
             description: None,
         }];
@@ -715,5 +766,212 @@ mod tests {
             Error::ErrorRenderingTemplate(_, _) => {}
             _ => panic!("Expected Error::ErrorRenderingTemplate, got {:?}", results),
         }
+    }
+
+    #[test]
+    fn needs_satisfied_multi() {
+        let hooks = vec![
+            Hook {
+                key: "hook".to_string(),
+                command: vec!["true".to_string()],
+                r#if: None,
+                optional: None,
+                needs: None,
+                name: None,
+                description: None,
+            },
+            Hook {
+                key: "needy".to_string(),
+                command: vec!["true".to_string()],
+                r#if: None,
+                optional: None,
+                needs: Some(vec![
+                    "hook".to_string(),
+                    "string_slot".to_string(),
+                    "number_slot".to_string(),
+                    "bool_slot".to_string(),
+                ]),
+                name: None,
+                description: None,
+            },
+        ];
+
+        let results = run_hooks(
+            &hooks,
+            ".",
+            // these should all be considered "satisfying"
+            &HashMap::from([
+                ("string_slot".to_string(), "foo".to_string()),
+                ("number_slot".to_string(), "1".to_string()),
+                ("bool_slot".to_string(), "true".to_string()),
+            ]),
+            &HashMap::new(),
+            None,
+        )
+        .expect("run_hooks failed, should have succeeded");
+
+        assert!(
+            results.iter().any(|x| matches!(x, HookResult {
+            hook,
+            kind: HookResultKind::Completed { .. },
+            ..
+        } if hook.key == "needy")),
+            "Expected hook needy to be completed, got {:?}",
+            results.iter().find(|x| x.hook.key == "needy")
+        );
+    }
+
+    #[test]
+    fn needs_unsatisfied() {
+        let hooks = vec![
+            Hook {
+                key: "hook".to_string(),
+                command: vec!["true".to_string()],
+                r#if: None,
+                optional: Some(HookConfigOptional { default: false }),
+                needs: None,
+                name: None,
+                description: None,
+            },
+            Hook {
+                key: "needy".to_string(),
+                command: vec!["true".to_string()],
+                r#if: None,
+                optional: None,
+                needs: Some(vec!["hook".to_string()]),
+                name: None,
+                description: None,
+            },
+        ];
+
+        let results = run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None)
+            .expect("run_hooks failed, should have succeeded");
+
+        assert!(
+            results.iter().any(|x| matches!(x, HookResult {
+                hook,
+                kind: HookResultKind::Skipped { .. },
+                ..
+            } if hook.key == "needy")),
+            "Expected hook 'needy' to be skipped, got {:?}",
+            results
+        );
+    }
+
+    #[test]
+    fn needs_invalid_key() {
+        let hooks = vec![Hook {
+            key: "hook".to_string(),
+            command: vec!["true".to_string()],
+            r#if: None,
+            optional: None,
+            needs: Some(vec!["invalid_key".to_string()]),
+            name: None,
+            description: None,
+        }];
+
+        let results = run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None)
+            .expect("run_hooks failed, should have succeeded");
+
+        assert!(
+            results.iter().any(|x| matches!(x, HookResult {
+                hook,
+                kind: HookResultKind::Skipped { .. },
+                ..
+            } if hook.key == "hook")),
+            "Expected hook 'hook' to be skipped, got {:?}",
+            results
+        );
+    }
+
+    #[test]
+    fn needs_transitive() {
+        let hooks = vec![
+            Hook {
+                key: "a".to_string(),
+                command: vec!["echo".to_string(), "a".to_string()],
+                r#if: None,
+                optional: None,
+                needs: None,
+                name: None,
+                description: None,
+            },
+            Hook {
+                key: "b".to_string(),
+                command: vec!["echo".to_string(), "b".to_string()],
+                r#if: None,
+                optional: None,
+                needs: Some(vec!["a".to_string()]),
+                name: None,
+                description: None,
+            },
+            Hook {
+                key: "c".to_string(),
+                command: vec!["echo".to_string(), "c".to_string()],
+                r#if: None,
+                optional: None,
+                needs: Some(vec!["b".to_string()]),
+                name: None,
+                description: None,
+            },
+        ];
+
+        let results = run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None)
+            .expect("run_hooks failed, should have succeeded");
+
+        assert!(
+            results.iter().any(|result| {
+                matches!(result, HookResult {
+                hook: Hook { key, .. },
+                kind: HookResultKind::Completed { .. },
+                ..
+            } if key == "c")
+            }),
+            "Expected hook 'c' to be completed, got {:?}",
+            results
+        );
+    }
+
+    #[test]
+    fn needs_transitive_unsatisfied() {
+        let hooks = vec![
+            Hook {
+                key: "hook_a".to_string(),
+                command: vec!["true".to_string()],
+                r#if: None,
+                optional: Some(HookConfigOptional { default: false }),
+                needs: Some(vec!["slot_a".to_string()]),
+                name: None,
+                description: None,
+            },
+            Hook {
+                key: "hook_b".to_string(),
+                command: vec!["true".to_string()],
+                r#if: None,
+                optional: None,
+                needs: Some(vec!["hook_a".to_string()]),
+                name: None,
+                description: None,
+            },
+        ];
+
+        let results = run_hooks(
+            &hooks,
+            ".",
+            &HashMap::from([("slot_a".to_string(), "false".to_string())]),
+            &HashMap::new(),
+            None,
+        )
+        .expect("run_hooks failed, should have succeeded");
+
+        assert!(
+            results.iter().any(|x| matches!(x, HookResult {
+                hook,
+                kind: HookResultKind::Skipped { .. },
+                ..
+            } if hook.key == "hook_b")),
+            "Expected hook 'hook_b' to be skipped, got {:?}",
+            results
+        );
     }
 }

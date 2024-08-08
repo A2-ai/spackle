@@ -1,6 +1,6 @@
 use clap::{command, Parser, Subcommand};
 use colored::Colorize;
-use spackle::core::config::{self, Config};
+use spackle::core::config::Config;
 use std::{path::PathBuf, process::exit};
 
 mod check;
@@ -73,7 +73,7 @@ fn main() {
     }
 
     // Load the config
-    let config = match config::load(&project_dir) {
+    let config = match spackle::load(&project_dir) {
         Ok(config) => config,
         Err(e) => {
             eprintln!(
