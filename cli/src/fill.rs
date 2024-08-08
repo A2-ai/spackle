@@ -2,26 +2,21 @@ use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant}
 
 use colored::Colorize;
 use rocket::{futures::StreamExt, tokio};
-use spackle::core::{
-    config::Config,
-    copy,
-    hook::{self, HookError, HookResult, HookResultKind, HookStreamResult},
-    slot, template,
+use spackle::{
+    core::{
+        copy,
+        hook::{self, HookError, HookResult, HookResultKind, HookStreamResult},
+        slot, template,
+    },
+    Project,
 };
 use tokio::pin;
 
 use crate::{check, Cli};
 
-pub fn run(
-    slot: &Vec<String>,
-    hook: &Vec<String>,
-    project_dir: &PathBuf,
-    out: &PathBuf,
-    config: &Config,
-    cli: &Cli,
-) {
+pub fn run(slot: &Vec<String>, hook: &Vec<String>, project: &Project, out: &PathBuf, cli: &Cli) {
     // First, run spackle check
-    check::run(project_dir, config);
+    check::run(project);
 
     println!("");
 
@@ -42,7 +37,7 @@ pub fn run(
         .map(|(key, value)| (key.to_string(), value.to_string()))
         .collect::<HashMap<String, String>>();
 
-    match slot::validate_data(&slot_data, &config.slots) {
+    match slot::validate_data(&slot_data, &project.config.slots) {
         Ok(()) => {}
         Err(e) => {
             eprintln!(
@@ -89,7 +84,7 @@ pub fn run(
     let mut slot_data = slot_data.clone();
     slot_data.insert(
         "project_name".to_string(),
-        project_dir.file_name().unwrap().to_string_lossy().into(),
+        project.dir.file_name().unwrap().to_string_lossy().into(),
     );
 
     // CR(devin): when looking at the below code, this likely should be pushed
@@ -101,7 +96,7 @@ pub fn run(
 
     // TODO: refactor the data_entries and context boundaries after considering
     // the api surface area
-    match copy::copy(&project_dir, out, &config.ignore, &slot_data) {
+    match copy::copy(&project.dir, out, &project.config.ignore, &slot_data) {
         Ok(r) => {
             println!(
                 "{} {} {} {}",
@@ -147,7 +142,7 @@ pub fn run(
 
     let start_time = Instant::now();
 
-    match template::fill(&project_dir, &PathBuf::from(out), &slot_data) {
+    match template::fill(&project.dir, &PathBuf::from(out), &slot_data) {
         Ok(r) => {
             println!(
                 "{} {} {} {} {}\n",
@@ -215,8 +210,14 @@ pub fn run(
     };
 
     runtime.block_on(async {
-        let stream = match hook::run_hooks_stream(&config.hooks, out, &slot_data, &hook_data, None)
-        {
+        let stream = match hook::run_hooks_stream(
+            &project.config.hooks,
+            out,
+            &Vec::new(),
+            &slot_data,
+            &hook_data,
+            None,
+        ) {
             Ok(stream) => stream,
             Err(e) => {
                 fs::remove_dir_all(out).unwrap();

@@ -197,6 +197,7 @@ mod tests {
             &vec![Slot {
                 key: "defined_field".to_string(),
                 r#type: SlotType::String,
+                needs: None,
                 name: None,
                 description: None,
             }],
@@ -212,6 +213,7 @@ mod tests {
             &vec![Slot {
                 key: "defined_field".to_string(),
                 r#type: SlotType::String,
+                needs: None,
                 name: None,
                 description: None,
             }],

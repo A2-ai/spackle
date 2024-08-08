@@ -1,17 +1,17 @@
-use std::{error::Error, path::PathBuf, process::exit, time::Instant};
+use std::{error::Error, process::exit, time::Instant};
 
 use colored::Colorize;
-use spackle::core::{
-    config::Config,
-    template::{self, ValidateError},
+use spackle::{
+    core::template::{self, ValidateError},
+    Project,
 };
 
-pub fn run(project_dir: &PathBuf, config: &Config) {
+pub fn run(project: &Project) {
     println!("🔍 Validating project configuration...\n");
 
     let start_time = Instant::now();
 
-    match template::validate(&project_dir, &config.slots) {
+    match template::validate(&project.dir, &project.config.slots) {
         Ok(()) => {
             println!("  👌 {}\n", "Template files are valid".bright_green());
         }

@@ -9,6 +9,7 @@ use tokio::pin;
 use tokio_stream::{Stream, StreamExt};
 
 use super::config::Hook;
+use super::slot::Slot;
 use users::User;
 
 impl Hook {
@@ -49,23 +50,32 @@ impl Hook {
     fn is_satisfied(
         &self,
         hooks: &Vec<Hook>,
+        slots: &Vec<Slot>,
         slot_data: &HashMap<String, String>,
         hook_data: &HashMap<String, bool>,
     ) -> bool {
         match &self.needs {
-            Some(needs) => needs
-                .iter()
-                .all(|key| match hooks.iter().find(|h| h.key == *key) {
+            Some(needs) => needs.iter().all(|key| {
+                let hook_satisfied = match hooks.iter().find(|h| h.key == *key) {
                     Some(hook) => {
-                        hook.is_satisfied(hooks, slot_data, hook_data) && hook.is_enabled(hook_data)
+                        hook.is_satisfied(hooks, slots, slot_data, hook_data)
+                            && hook.is_enabled(hook_data)
                     }
-                    None => slot_data
-                        .get(key)
-                        .map(|value| {
-                            !value.is_empty() && value != "0" && value.to_lowercase() != "false"
-                        })
-                        .unwrap_or(false),
-                }),
+                    None => false,
+                };
+
+                let slot_satisfied = match slots.iter().find(|s| s.key == *key) {
+                    Some(slot) => slot.is_non_default(slot_data),
+                    None => false,
+                };
+
+                println!(
+                    "hook_satisfied: {}, slot_satisfied: {}, key: {}",
+                    hook_satisfied, slot_satisfied, key
+                );
+
+                hook_satisfied || slot_satisfied
+            }),
             None => true,
         }
     }
@@ -170,6 +180,7 @@ pub enum HookStreamResult {
 pub fn run_hooks_stream(
     hooks: &Vec<Hook>,
     dir: impl AsRef<Path>,
+    slots: &Vec<Slot>,
     slot_data: &HashMap<String, String>,
     hook_data: &HashMap<String, bool>,
     run_as_user: Option<User>,
@@ -187,7 +198,7 @@ pub fn run_hooks_stream(
     let mut queued_hooks = Vec::new();
 
     for hook in hooks {
-        if hook.is_enabled(hook_data) && hook.is_satisfied(hooks, &slot_data, hook_data) {
+        if hook.is_enabled(hook_data) && hook.is_satisfied(hooks, slots, &slot_data, hook_data) {
             queued_hooks.push(hook.clone());
         } else if hook.is_enabled(hook_data) {
             skipped_hooks.push((hook.clone(), SkipReason::FalseConditional));
@@ -329,6 +340,7 @@ pub fn run_hooks_stream(
 pub fn run_hooks(
     hooks: &Vec<Hook>,
     dir: impl AsRef<Path>,
+    slots: &Vec<Slot>,
     slot_data: &HashMap<String, String>,
     hook_data: &HashMap<String, bool>,
     run_as_user: Option<User>,
@@ -339,7 +351,7 @@ pub fn run_hooks(
         .map_err(|e| Error::ErrorInitializingRuntime(e))?;
 
     let results = runtime.block_on(async {
-        let stream = run_hooks_stream(hooks, dir, slot_data, hook_data, run_as_user)?;
+        let stream = run_hooks_stream(hooks, dir, slots, slot_data, hook_data, run_as_user)?;
         pin!(stream);
 
         let mut hook_results = Vec::new();
@@ -378,7 +390,7 @@ impl Display for ConditionalError {
 
 #[cfg(test)]
 mod tests {
-    use crate::core::config::HookConfigOptional;
+    use crate::core::{config::HookConfigOptional, slot::SlotType};
 
     use super::*;
 
@@ -394,7 +406,15 @@ mod tests {
             description: None,
         }];
 
-        assert!(run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None).is_ok());
+        assert!(run_hooks(
+            &hooks,
+            ".",
+            &Vec::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None
+        )
+        .is_ok());
     }
 
     #[test]
@@ -420,8 +440,15 @@ mod tests {
             },
         ];
 
-        let result = run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None)
-            .expect("run_hooks failed, should have succeeded");
+        let result = run_hooks(
+            &hooks,
+            ".",
+            &Vec::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+        )
+        .expect("run_hooks failed, should have succeeded");
 
         assert_eq!(result.len(), 2, "Expected 2 results, got {:?}", result);
 
@@ -457,8 +484,15 @@ mod tests {
             },
         ];
 
-        let results = run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None)
-            .expect("run_hooks failed, should have succeeded");
+        let results = run_hooks(
+            &hooks,
+            ".",
+            &Vec::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+        )
+        .expect("run_hooks failed, should have succeeded");
 
         assert!(results.iter().any(|x| matches!(x, HookResult {
                 hook,
@@ -514,8 +548,15 @@ mod tests {
             },
         ];
 
-        let results = run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None)
-            .expect("run_hooks failed, should have succeeded");
+        let results = run_hooks(
+            &hooks,
+            ".",
+            &Vec::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+        )
+        .expect("run_hooks failed, should have succeeded");
 
         let skipped_hooks: Vec<_> = results
             .iter()
@@ -568,6 +609,7 @@ mod tests {
         let results = run_hooks(
             &hooks,
             ".",
+            &Vec::new(),
             &HashMap::from([("good_var".to_string(), "true".to_string())]),
             &HashMap::new(),
             None,
@@ -602,6 +644,7 @@ mod tests {
         let results = run_hooks(
             &hooks,
             ".",
+            &Vec::new(),
             &HashMap::from([("".to_string(), "".to_string())]),
             &HashMap::new(),
             None,
@@ -650,6 +693,7 @@ mod tests {
         let results = run_hooks(
             &hooks,
             ".",
+            &Vec::new(),
             &HashMap::new(),
             &HashMap::from([("3".to_string(), true)]),
             None,
@@ -708,6 +752,7 @@ mod tests {
         let results = run_hooks(
             &hooks,
             ".",
+            &Vec::new(),
             &HashMap::from([
                 ("field_1".to_string(), "echo".to_string()),
                 ("field_2".to_string(), "out1".to_string()),
@@ -758,6 +803,7 @@ mod tests {
         let results = run_hooks(
             &hooks,
             ".",
+            &Vec::new(),
             &HashMap::from([("field_1".to_string(), "echo".to_string())]),
             &HashMap::new(),
             None,
@@ -801,7 +847,29 @@ mod tests {
         let results = run_hooks(
             &hooks,
             ".",
-            // these should all be considered "satisfying"
+            &Vec::from([
+                Slot {
+                    key: "string_slot".to_string(),
+                    r#type: SlotType::String,
+                    needs: None,
+                    name: None,
+                    description: None,
+                },
+                Slot {
+                    key: "number_slot".to_string(),
+                    r#type: SlotType::Number,
+                    needs: None,
+                    name: None,
+                    description: None,
+                },
+                Slot {
+                    key: "bool_slot".to_string(),
+                    r#type: SlotType::Boolean,
+                    needs: None,
+                    name: None,
+                    description: None,
+                },
+            ]),
             &HashMap::from([
                 ("string_slot".to_string(), "foo".to_string()),
                 ("number_slot".to_string(), "1".to_string()),
@@ -818,7 +886,7 @@ mod tests {
             kind: HookResultKind::Completed { .. },
             ..
         } if hook.key == "needy")),
-            "Expected hook needy to be completed, got {:?}",
+            "Expected hook 'needy' to be completed, got {:?}",
             results.iter().find(|x| x.hook.key == "needy")
         );
     }
@@ -846,8 +914,15 @@ mod tests {
             },
         ];
 
-        let results = run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None)
-            .expect("run_hooks failed, should have succeeded");
+        let results = run_hooks(
+            &hooks,
+            ".",
+            &Vec::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+        )
+        .expect("run_hooks failed, should have succeeded");
 
         assert!(
             results.iter().any(|x| matches!(x, HookResult {
@@ -872,8 +947,15 @@ mod tests {
             description: None,
         }];
 
-        let results = run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None)
-            .expect("run_hooks failed, should have succeeded");
+        let results = run_hooks(
+            &hooks,
+            ".",
+            &Vec::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+        )
+        .expect("run_hooks failed, should have succeeded");
 
         assert!(
             results.iter().any(|x| matches!(x, HookResult {
@@ -918,8 +1000,15 @@ mod tests {
             },
         ];
 
-        let results = run_hooks(&hooks, ".", &HashMap::new(), &HashMap::new(), None)
-            .expect("run_hooks failed, should have succeeded");
+        let results = run_hooks(
+            &hooks,
+            ".",
+            &Vec::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+        )
+        .expect("run_hooks failed, should have succeeded");
 
         assert!(
             results.iter().any(|result| {
@@ -930,7 +1019,7 @@ mod tests {
             } if key == "c")
             }),
             "Expected hook 'c' to be completed, got {:?}",
-            results
+            results.iter().find(|x| x.hook.key == "c")
         );
     }
 
@@ -960,6 +1049,7 @@ mod tests {
         let results = run_hooks(
             &hooks,
             ".",
+            &Vec::new(),
             &HashMap::from([("slot_a".to_string(), "false".to_string())]),
             &HashMap::new(),
             None,
@@ -973,7 +1063,7 @@ mod tests {
                 ..
             } if hook.key == "hook_b")),
             "Expected hook 'hook_b' to be skipped, got {:?}",
-            results
+            results.iter().find(|x| x.hook.key == "hook_b")
         );
     }
 }

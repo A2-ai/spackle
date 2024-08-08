@@ -1,6 +1,6 @@
 use clap::{command, Parser, Subcommand};
 use colored::Colorize;
-use spackle::core::config::Config;
+use spackle::Project;
 use std::{path::PathBuf, process::exit};
 
 mod check;
@@ -73,8 +73,8 @@ fn main() {
     }
 
     // Load the config
-    let config = match spackle::load(&project_dir) {
-        Ok(config) => config,
+    let project = match spackle::load_project(&project_dir) {
+        Ok(p) => p,
         Err(e) => {
             eprintln!(
                 "❌ {}\n{}",
@@ -85,26 +85,24 @@ fn main() {
         }
     };
 
-    print_project_info(&project_dir, &config);
+    print_project_info(&project);
 
     match &cli.command {
-        Commands::Check => check::run(&project_dir, &config),
-        Commands::Info {} => info::run(&config),
-        Commands::Fill { slot, hook } => {
-            fill::run(slot, hook, &project_dir, &cli.out, &config, &cli)
-        }
+        Commands::Check => check::run(&project),
+        Commands::Info {} => info::run(&project.config),
+        Commands::Fill { slot, hook } => fill::run(slot, hook, &project, &cli.out, &cli),
     }
 }
 
-fn print_project_info(project_dir: &PathBuf, config: &Config) {
+fn print_project_info(project: &Project) {
     println!(
         "📂 {} {}\n{}\n{}\n",
         "Using project",
-        project_dir.to_string_lossy().bold(),
+        project.dir.to_string_lossy().bold(),
         format!(
             "  🕳️  {} {}",
-            config.slots.len(),
-            if config.slots.len() == 1 {
+            project.config.slots.len(),
+            if project.config.slots.len() == 1 {
                 "slot"
             } else {
                 "slots"
@@ -113,8 +111,8 @@ fn print_project_info(project_dir: &PathBuf, config: &Config) {
         .dimmed(),
         format!(
             "  🪝  {} {}",
-            config.hooks.len(),
-            if config.hooks.len() == 1 {
+            project.config.hooks.len(),
+            if project.config.hooks.len() == 1 {
                 "hook"
             } else {
                 "hooks"

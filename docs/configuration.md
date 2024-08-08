@@ -82,6 +82,7 @@ Hooks are defined by one or more `[[hooks]]` table entries in the `spackle.toml`
 name = "create file"
 command = ["touch", "new_file"]
 optional = { default = true }
+needs = ["foo"]
 if = "{{foo}} != 'bar'"
 name = "Create a new file"
 description = "Create a new file called new_file"
@@ -117,13 +118,27 @@ When defined, the user can toggle the hook. `default` describes the default stat
 optional = { default = true }
 ```
 
+### needs `string[]`
+
+The items on which the hook depends. The hook will only be executed if all the dependencies are satisfied. A dependency is satisfied if the dependency is enabled and all of its own dependencies are satisfied.
+
+A slot is considered enabled if it has a non-default value (default values include `""`, `0`, and `false` for example).
+
+> Note: Because `if` is evaluated only on hook run time, it is not taken into account when determining satisfaction of `needs`.
+
+```toml
+needs = ["some_hook", "other_slot"]
+```
+
 ### if `string` <span style="color: darkseagreen;">{s}</span>
 
-The condition to execute the hook. Accepts values from slots.
+The condition on which to execute the hook. Accepts values from slots.
 
 ```toml
 if = "{{ foo }} != 'bar'"
 ```
+
+> Note: The `if` condition is evaluated directly before the hook is executed.
 
 #### Dependencies on other hooks
 
