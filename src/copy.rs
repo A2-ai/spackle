@@ -1,9 +1,14 @@
-use std::{collections::HashMap, fmt::Display, fs, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use tera::{Context, Tera};
 use walkdir::WalkDir;
 
-use crate::core::{config::CONFIG_FILE, template::TEMPLATE_EXT};
+use crate::{config::CONFIG_FILE, template::TEMPLATE_EXT};
 
 #[derive(Debug)]
 pub struct Error {
@@ -29,8 +34,8 @@ pub struct CopyResult {
 }
 
 pub fn copy(
-    src: &PathBuf,
-    dest: &PathBuf,
+    src: &Path,
+    dest: &Path,
     skip: &Vec<String>,
     slot_data: &HashMap<String, String>,
 ) -> Result<CopyResult, Error> {
@@ -81,16 +86,16 @@ pub fn copy(
             source: e.into(),
             path: src_path.to_path_buf(),
         })?;
-        let dst_path: PathBuf = Tera::one_off(
-            &dst_path_maybe_template.to_string_lossy(),
-            &context,
-            false,
-            // TODO: fixup unwrap - not sure what situations this could panic in
-            // assuming without need for escaping this should just replace a template
-            // if it exists but otherwise will just carry on forward.
-        )
-        .unwrap()
-        .into();
+        let dst_path: PathBuf =
+            match Tera::one_off(&dst_path_maybe_template.to_string_lossy(), &context, false) {
+                Ok(path) => path.into(),
+                Err(e) => {
+                    return Err(Error {
+                        source: e.into(),
+                        path: dst_path_maybe_template.to_path_buf(),
+                    });
+                }
+            };
 
         if entry.file_type().is_dir() {
             fs::create_dir_all(&dst_path).map_err(|e| Error {

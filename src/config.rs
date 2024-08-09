@@ -1,9 +1,11 @@
-use super::{hook::Hook, slot::Slot};
 use serde::Deserialize;
 use std::{collections::HashSet, fmt::Display, fs, io, path::PathBuf};
 
+use crate::{hook::Hook, slot::Slot};
+
 #[derive(Deserialize, Debug)]
 pub struct Config {
+    pub name: Option<String>,
     #[serde(default)]
     pub ignore: Vec<String>,
     #[serde(default)]

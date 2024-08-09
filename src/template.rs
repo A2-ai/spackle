@@ -1,12 +1,13 @@
-use super::slot::Slot;
 use std::{
     collections::HashMap,
     fmt::{Debug, Display},
     fs, io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 use tera::{Context, Tera};
+
+use crate::slot::Slot;
 
 pub const TEMPLATE_EXT: &str = ".j2";
 
@@ -53,8 +54,8 @@ pub struct RenderedFile {
 }
 
 pub fn fill(
-    project_dir: &PathBuf,
-    out_dir: &PathBuf,
+    project_dir: &Path,
+    out_dir: &Path,
     slot_data: &HashMap<String, String>,
 ) -> Result<Vec<Result<RenderedFile, FileError>>, tera::Error> {
     let glob = project_dir.join("**").join("*".to_owned() + TEMPLATE_EXT);
@@ -165,11 +166,10 @@ pub fn validate(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), ValidateError> {
 
 #[cfg(test)]
 mod tests {
-    use tempdir::TempDir;
-
-    use crate::core::slot::SlotType;
+    use crate::slot::SlotType;
 
     use super::*;
+    use tempdir::TempDir;
 
     #[test]
     fn fill_proj1() {

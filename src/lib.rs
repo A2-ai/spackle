@@ -1,15 +1,17 @@
-use core::{
-    config::{self},
-    copy,
-    hook::{self, HookResult, HookStreamResult},
-    template::{self, RenderedFile},
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    path::{Path, PathBuf},
 };
-use std::{collections::HashMap, fmt::Display, path::PathBuf};
 
 use tokio_stream::Stream;
 use users::User;
 
-pub mod core;
+pub mod config;
+pub mod copy;
+pub mod hook;
+pub mod slot;
+pub mod template;
 
 pub struct Project {
     pub config: config::Config,
@@ -29,9 +31,12 @@ pub fn load_project(dir: &PathBuf) -> Result<Project, config::Error> {
 }
 
 impl Project {
-    // TODO add top-level config for forcing project name
-    /// Gets the name of the project from the directory name
+    /// Gets the name of the project or if one isn't specified, from the directory name
     pub fn get_name(&self) -> String {
+        if let Some(name) = &self.config.name {
+            return name.clone();
+        }
+
         let path = match self.dir.canonicalize() {
             Ok(path) => path,
             Err(_) => return "".to_string(),
@@ -44,53 +49,48 @@ impl Project {
             .into_owned();
     }
 
-    /// Generates a filled directory from the project
-    ///
-    /// out_dir is the path to what will become the filled directory
-    pub fn generate(
-        self,
-        out_dir: &PathBuf,
+    pub fn validate(&self) -> Result<(), template::ValidateError> {
+        template::validate(&self.dir, &self.config.slots)
+    }
+
+    pub fn copy_files(
+        &self,
+        out_dir: &Path,
         slot_data: &HashMap<String, String>,
-    ) -> Result<Vec<RenderedFile>, GenerateError> {
-        if out_dir.exists() {
-            return Err(GenerateError::AlreadyExists(out_dir.clone()));
-        }
-
+    ) -> Result<copy::CopyResult, copy::Error> {
         let mut slot_data = slot_data.clone();
-        slot_data.insert(
-            "project_name".to_string(),
-            self.dir.file_name().unwrap().to_string_lossy().into(),
-        );
+        slot_data.insert("project_name".to_string(), self.get_name());
 
-        // Copy all non-template files to the output directory
-        copy::copy(&self.dir, &out_dir, &self.config.ignore, &slot_data)
-            .map_err(GenerateError::CopyError)?;
+        copy::copy(&self.dir, out_dir, &self.config.ignore, &slot_data)
+    }
 
-        // Render template files to the output directory
-        // TODO improve returned error type here
-        let results = template::fill(&self.dir, &out_dir, &slot_data)
-            .map_err(|_| GenerateError::TemplateError)?;
+    pub fn render_templates(
+        &self,
+        out_dir: &Path,
+        slot_data: &HashMap<String, String>,
+    ) -> Result<Vec<Result<template::RenderedFile, template::FileError>>, tera::Error> {
+        let mut slot_data = slot_data.clone();
+        slot_data.insert("project_name".to_string(), self.get_name());
 
-        if results.iter().any(|r| r.is_err()) {
-            return Err(GenerateError::TemplateError);
-        }
-
-        Ok(results.into_iter().filter_map(|r| r.ok()).collect())
+        template::fill(&self.dir, out_dir, &slot_data)
     }
 
     /// Runs the hooks in the generated spackle project.
     ///
     /// out_dir is the path to the filled directory
     pub fn run_hooks_stream(
-        self,
-        out_dir: PathBuf,
+        &self,
+        out_dir: &Path,
         slot_data: &HashMap<String, String>,
         hook_data: &HashMap<String, bool>,
         run_as_user: Option<User>,
-    ) -> Result<impl Stream<Item = HookStreamResult>, RunHooksError> {
+    ) -> Result<impl Stream<Item = hook::HookStreamResult>, RunHooksError> {
+        let mut slot_data = slot_data.clone();
+        slot_data.insert("project_name".to_string(), self.get_name());
+
         let result = hook::run_hooks_stream(
             &self.config.hooks,
-            out_dir,
+            out_dir.to_owned(),
             &self.config.slots,
             &slot_data,
             hook_data,
@@ -105,12 +105,15 @@ impl Project {
     ///
     /// out_dir is the path to the filled directory
     pub fn run_hooks(
-        self,
-        out_dir: &PathBuf,
+        &self,
+        out_dir: &Path,
         slot_data: &HashMap<String, String>,
         hook_data: &HashMap<String, bool>,
         run_as_user: Option<User>,
-    ) -> Result<Vec<HookResult>, RunHooksError> {
+    ) -> Result<Vec<hook::HookResult>, hook::Error> {
+        let mut slot_data = slot_data.clone();
+        slot_data.insert("project_name".to_string(), self.get_name());
+
         let result = hook::run_hooks(
             &self.config.hooks,
             out_dir.to_owned(),
@@ -118,42 +121,9 @@ impl Project {
             &slot_data,
             hook_data,
             run_as_user.clone(),
-        )
-        .map_err(RunHooksError::HookError)?;
+        )?;
 
         Ok(result)
-    }
-}
-
-#[derive(Debug)]
-pub enum GenerateError {
-    AlreadyExists(PathBuf),
-    BadConfig(config::Error),
-    CopyError(copy::Error),
-    TemplateError,
-}
-
-impl Display for GenerateError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            GenerateError::AlreadyExists(dir) => {
-                write!(f, "Directory already exists: {}", dir.display())
-            }
-            GenerateError::BadConfig(e) => write!(f, "Error loading config: {}", e),
-            GenerateError::TemplateError => write!(f, "Error rendering template"),
-            GenerateError::CopyError(e) => write!(f, "Error copying files: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for GenerateError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            GenerateError::AlreadyExists(_) => None,
-            GenerateError::BadConfig(_) => None,
-            GenerateError::TemplateError => None,
-            GenerateError::CopyError(e) => Some(e),
-        }
     }
 }
 

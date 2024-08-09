@@ -2,7 +2,7 @@ use std::{error::Error, process::exit, time::Instant};
 
 use colored::Colorize;
 use spackle::{
-    core::template::{self, ValidateError},
+    template::{self, ValidateError},
     Project,
 };
 

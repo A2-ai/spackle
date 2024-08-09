@@ -1,13 +1,10 @@
 use colored::Colorize;
 use rocket::{futures::StreamExt, tokio};
 use spackle::{
-    core::{
-        copy,
-        hook::{self, HookError, HookResult, HookResultKind, HookStreamResult},
-        slot, template,
-    },
-    Project,
+    hook::{HookError, HookResult, HookResultKind, HookStreamResult},
+    slot, Project,
 };
+
 use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant};
 use tokio::pin;
 
@@ -83,16 +80,7 @@ pub fn run(slot: &Vec<String>, hook: &Vec<String>, project: &Project, out: &Path
     let mut slot_data = slot_data.clone();
     slot_data.insert("project_name".to_string(), project.get_name());
 
-    // CR(devin): when looking at the below code, this likely should be pushed
-    // into the spackle lib itself, there are too many implementation details
-    // in the CLi that would also need to be replicated in any api/other client
-    // when by the time you get to actually rendering the template
-    // the fact this is touching like a util related module shows its
-    // breaking the ideal implementation boundaries.
-
-    // TODO: refactor the data_entries and context boundaries after considering
-    // the api surface area
-    match copy::copy(&project.dir, out, &project.config.ignore, &slot_data) {
+    match project.copy_files(out, &slot_data) {
         Ok(r) => {
             println!(
                 "{} {} {} {}",
@@ -123,7 +111,7 @@ pub fn run(slot: &Vec<String>, hook: &Vec<String>, project: &Project, out: &Path
             println!();
         }
         Err(e) => {
-            std::fs::remove_dir_all(out).unwrap();
+            let _ = fs::remove_dir_all(out);
 
             eprintln!(
                 "❌ {}\n{}\n{}",
@@ -138,7 +126,7 @@ pub fn run(slot: &Vec<String>, hook: &Vec<String>, project: &Project, out: &Path
 
     let start_time = Instant::now();
 
-    match template::fill(&project.dir, &PathBuf::from(out), &slot_data) {
+    match project.render_templates(&PathBuf::from(out), &slot_data) {
         Ok(r) => {
             println!(
                 "{} {} {} {} {}\n",
@@ -182,7 +170,7 @@ pub fn run(slot: &Vec<String>, hook: &Vec<String>, project: &Project, out: &Path
             }
         }
         Err(e) => {
-            std::fs::remove_dir_all(out).unwrap();
+            let _ = fs::remove_dir_all(out);
 
             eprintln!(
                 "❌ {}\n{}",
@@ -211,17 +199,10 @@ pub fn run(slot: &Vec<String>, hook: &Vec<String>, project: &Project, out: &Path
     };
 
     runtime.block_on(async {
-        let stream = match hook::run_hooks_stream(
-            &project.config.hooks,
-            out,
-            &Vec::new(),
-            &slot_data,
-            &hook_data,
-            None,
-        ) {
+        let stream = match project.run_hooks_stream(out, &slot_data, &hook_data, None) {
             Ok(stream) => stream,
             Err(e) => {
-                fs::remove_dir_all(out).unwrap();
+                let _ = fs::remove_dir_all(out);
 
                 eprintln!(
                     "  ❌ {}\n  {}",
@@ -247,7 +228,7 @@ pub fn run(slot: &Vec<String>, hook: &Vec<String>, project: &Project, out: &Path
                         kind: HookResultKind::Failed(error),
                         ..
                     } => {
-                        fs::remove_dir_all(out).unwrap();
+                        let _ = fs::remove_dir_all(out);
 
                         eprintln!(
                             "    ❌ {}\n    {}",

@@ -1,5 +1,5 @@
 use colored::Colorize;
-use spackle::core::config::Config;
+use spackle::config::Config;
 
 pub fn run(config: &Config) {
     // Print slot info

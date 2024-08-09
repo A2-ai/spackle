@@ -438,9 +438,10 @@ impl Display for ConditionalError {
 
 #[cfg(test)]
 mod tests {
-    use crate::core::slot::SlotType;
+    use crate::slot::SlotType;
 
     use super::*;
+
     #[test]
     fn basic() {
         let hooks = vec![Hook {

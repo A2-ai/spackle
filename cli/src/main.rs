@@ -96,9 +96,10 @@ fn main() {
 
 fn print_project_info(project: &Project) {
     println!(
-        "📂 {} {}\n{}\n{}\n",
+        "📂 {} {}\n  {}\n{}\n{}\n",
         "Using project",
-        project.dir.to_string_lossy().bold(),
+        project.get_name().bold(),
+        project.dir.to_string_lossy().dimmed(),
         format!(
             "  🕳️  {} {}",
             project.config.slots.len(),
