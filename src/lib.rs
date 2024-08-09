@@ -151,7 +151,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn get_name_explicit() {
+    fn project_get_name_explicit() {
         let project = Project {
             config: Config {
                 name: Some("some_name".to_string()),
@@ -164,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn get_name_inferred() {
+    fn project_get_name_inferred() {
         let project = Project {
             config: Config::default(),
             dir: PathBuf::from("tests/data/templated"),
@@ -174,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn get_name_cwd() {
+    fn project_get_name_cwd() {
         let cwd = env::current_dir().unwrap();
 
         env::set_current_dir(PathBuf::from("tests/data/templated")).unwrap();

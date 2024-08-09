@@ -20,6 +20,18 @@ pub enum SlotType {
     Boolean,
 }
 
+impl Default for Slot {
+    fn default() -> Self {
+        Self {
+            key: "".to_string(),
+            r#type: SlotType::String,
+            needs: None,
+            name: None,
+            description: None,
+        }
+    }
+}
+
 impl Display for Slot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -132,16 +144,12 @@ mod tests {
             Slot {
                 key: "key".to_string(),
                 r#type: SlotType::String,
-                needs: None,
-                name: None,
-                description: None,
+                ..Default::default()
             },
             Slot {
                 key: "key2".to_string(),
                 r#type: SlotType::String,
-                needs: None,
-                name: None,
-                description: None,
+                ..Default::default()
             },
         ];
 
@@ -159,16 +167,12 @@ mod tests {
             Slot {
                 key: "key".to_string(),
                 r#type: SlotType::String,
-                needs: None,
-                name: None,
-                description: None,
+                ..Default::default()
             },
             Slot {
                 key: "key2".to_string(),
                 r#type: SlotType::String,
-                needs: None,
-                name: None,
-                description: None,
+                ..Default::default()
             },
         ];
 
@@ -185,9 +189,7 @@ mod tests {
         let slots = vec![Slot {
             key: "key".to_string(),
             r#type: SlotType::String,
-            needs: None,
-            name: None,
-            description: None,
+            ..Default::default()
         }];
 
         let data = HashMap::from([("key", "value"), ("key2", "value2")])
@@ -204,16 +206,12 @@ mod tests {
             Slot {
                 key: "key".to_string(),
                 r#type: SlotType::Number,
-                needs: None,
-                name: None,
-                description: None,
+                ..Default::default()
             },
             Slot {
                 key: "key2".to_string(),
                 r#type: SlotType::Boolean,
-                needs: None,
-                name: None,
-                description: None,
+                ..Default::default()
             },
         ];
 
@@ -230,9 +228,7 @@ mod tests {
         let slots = vec![Slot {
             key: "key".to_string(),
             r#type: SlotType::Number,
-            needs: None,
-            name: None,
-            description: None,
+            ..Default::default()
         }];
 
         let data = HashMap::from([("key", "value")])
