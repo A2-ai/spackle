@@ -8,6 +8,8 @@ use tera::{Context, Tera};
 use tokio::pin;
 use tokio_stream::{Stream, StreamExt};
 
+use crate::get_project_name;
+
 use super::config::Hook;
 use users::User;
 
@@ -115,13 +117,7 @@ pub fn run_hooks_stream(
     run_as_user: Option<User>,
 ) -> Result<impl Stream<Item = HookStreamResult>, Error> {
     let mut slot_data = slot_data.clone();
-    slot_data.insert(
-        "project_name".to_string(),
-        dir.as_ref()
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or(".".to_string()),
-    );
+    slot_data.insert("project_name".to_string(), get_project_name(dir.as_ref()));
 
     let mut skipped_hooks = Vec::new();
     let mut queued_hooks = Vec::new();
@@ -684,10 +680,11 @@ mod tests {
                     hook,
                     kind: HookResultKind::Completed { stdout, .. },
                     ..
-                } if hook.key == "2" => stdout.trim() == ".",
+                } if hook.key == "2" => stdout.trim() == "spackle",
                 _ => false,
             }),
-            "Hook 2 should output '.'"
+            "Hook '2' should output 'spackle', got {:?}",
+            results.iter().find(|x| x.hook.key == "2")
         );
     }
 

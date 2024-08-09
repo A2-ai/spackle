@@ -2,11 +2,14 @@ use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant}
 
 use colored::Colorize;
 use rocket::{futures::StreamExt, tokio};
-use spackle::core::{
-    config::Config,
-    copy,
-    hook::{self, HookError, HookResult, HookResultKind, HookStreamResult},
-    slot, template,
+use spackle::{
+    core::{
+        config::Config,
+        copy,
+        hook::{self, HookError, HookResult, HookResultKind, HookStreamResult},
+        slot, template,
+    },
+    get_project_name,
 };
 use tokio::pin;
 
@@ -87,10 +90,7 @@ pub fn run(
     let start_time = Instant::now();
 
     let mut slot_data = slot_data.clone();
-    slot_data.insert(
-        "project_name".to_string(),
-        project_dir.file_name().unwrap().to_string_lossy().into(),
-    );
+    slot_data.insert("project_name".to_string(), get_project_name(project_dir));
 
     // CR(devin): when looking at the below code, this likely should be pushed
     // into the spackle lib itself, there are too many implementation details
@@ -199,6 +199,11 @@ pub fn run(
                 e.to_string().red(),
             );
         }
+    }
+
+    if config.hooks.is_empty() {
+        println!("🪝  No hooks to run");
+        return;
     }
 
     println!("🪝  Running hooks...\n");

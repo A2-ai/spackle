@@ -3,7 +3,11 @@ use core::{
     hook::{self, HookResult, HookStreamResult},
     template::{self, RenderedFile},
 };
-use std::{collections::HashMap, fmt::Display, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    path::{Path, PathBuf},
+};
 
 use tokio_stream::Stream;
 use users::User;
@@ -42,6 +46,22 @@ impl std::error::Error for GenerateError {
     }
 }
 
+// TODO add to Project data struct
+// TODO add top-level config for forcing project name
+/// Gets the name of the project from the directory name
+pub fn get_project_name(project_dir: &Path) -> String {
+    let path = match project_dir.canonicalize() {
+        Ok(path) => path,
+        Err(_) => return "".to_string(),
+    };
+
+    return path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+}
+
 /// Generates a filled directory from the specified spackle project.
 ///
 /// out_dir is the path to what will become the filled directory
@@ -57,10 +77,7 @@ pub fn generate(
     let config = config::load(project_dir).map_err(GenerateError::BadConfig)?;
 
     let mut slot_data = slot_data.clone();
-    slot_data.insert(
-        "project_name".to_string(),
-        project_dir.file_name().unwrap().to_string_lossy().into(),
-    );
+    slot_data.insert("project_name".to_string(), get_project_name(project_dir));
 
     // Copy all non-template files to the output directory
     copy::copy(project_dir, &out_dir, &config.ignore, &slot_data)
@@ -139,4 +156,29 @@ pub fn run_hooks(
     .map_err(RunHooksError::HookError)?;
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::env;
+
+    use super::*;
+
+    #[test]
+    fn test_get_project_name() {
+        // set cwd to tests/data/templated
+        let project_dir = PathBuf::from("tests/data/templated");
+
+        assert_eq!(get_project_name(&project_dir), "templated");
+    }
+
+    #[test]
+    fn test_get_project_name_cwd() {
+        // set cwd to tests/data/templated
+        env::set_current_dir(PathBuf::from("tests/data/templated")).unwrap();
+
+        let project_dir = PathBuf::from(".");
+
+        assert_eq!(get_project_name(&project_dir), "templated");
+    }
 }
