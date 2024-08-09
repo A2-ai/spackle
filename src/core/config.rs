@@ -1,6 +1,5 @@
-use super::slot::Slot;
-use colored::Colorize;
-use serde::{Deserialize, Serialize};
+use super::{hook::Hook, slot::Slot};
+use serde::Deserialize;
 use std::{collections::HashSet, fmt::Display, fs, io, path::PathBuf};
 
 #[derive(Deserialize, Debug)]
@@ -11,51 +10,6 @@ pub struct Config {
     pub slots: Vec<Slot>,
     #[serde(default)]
     pub hooks: Vec<Hook>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Hook {
-    pub key: String,
-    pub command: Vec<String>,
-    pub r#if: Option<String>,
-    pub optional: Option<HookConfigOptional>,
-    pub needs: Option<Vec<String>>,
-    pub name: Option<String>,
-    pub description: Option<String>,
-}
-
-impl Display for Hook {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} {}\n{}",
-            self.key.bold(),
-            if let Some(optional) = &self.optional {
-                format!(
-                    "optional, default {}",
-                    if optional.default {
-                        "on".green()
-                    } else {
-                        "off".red()
-                    }
-                )
-            } else {
-                "".to_string()
-            }
-            .dimmed(),
-            self.command
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<String>>()
-                .join(" ")
-                .dimmed()
-        )
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct HookConfigOptional {
-    pub default: bool,
 }
 
 pub const CONFIG_FILE: &str = "spackle.toml";

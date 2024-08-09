@@ -1,16 +1,73 @@
-use std::{collections::HashMap, fmt::Display, path::Path};
-use std::{io, process};
-
+use super::slot::Slot;
 use async_process::Stdio;
 use async_stream::stream;
-use serde::Serialize;
+use colored::Colorize;
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, fmt::Display, path::Path};
+use std::{io, process};
 use tera::{Context, Tera};
 use tokio::pin;
 use tokio_stream::{Stream, StreamExt};
-
-use super::config::Hook;
-use super::slot::Slot;
 use users::User;
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Hook {
+    pub key: String,
+    pub command: Vec<String>,
+    pub r#if: Option<String>,
+    pub optional: Option<HookConfigOptional>,
+    pub needs: Option<Vec<String>>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct HookConfigOptional {
+    pub default: bool,
+}
+
+impl Display for Hook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} {}\n{}",
+            self.key.bold(),
+            if let Some(optional) = &self.optional {
+                format!(
+                    "optional, default {}",
+                    if optional.default {
+                        "on".green()
+                    } else {
+                        "off".red()
+                    }
+                )
+            } else {
+                "".to_string()
+            }
+            .dimmed(),
+            self.command
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<String>>()
+                .join(" ")
+                .dimmed()
+        )
+    }
+}
+
+impl Default for Hook {
+    fn default() -> Self {
+        Hook {
+            key: "".to_string(),
+            command: vec![],
+            r#if: None,
+            optional: None,
+            needs: None,
+            name: None,
+            description: None,
+        }
+    }
+}
 
 impl Hook {
     fn evaluate_conditional(
@@ -390,20 +447,15 @@ impl Display for ConditionalError {
 
 #[cfg(test)]
 mod tests {
-    use crate::core::{config::HookConfigOptional, slot::SlotType};
+    use crate::core::slot::SlotType;
 
     use super::*;
-
     #[test]
     fn basic() {
         let hooks = vec![Hook {
             key: "hello world".to_string(),
             command: vec!["echo".to_string(), "hello world".to_string()],
-            r#if: None,
-            optional: None,
-            needs: None,
-            name: None,
-            description: None,
+            ..Hook::default()
         }];
 
         assert!(run_hooks(
@@ -420,27 +472,15 @@ mod tests {
     #[test]
     fn command_fail() {
         let hooks = vec![
-            Hook {
-                key: "hello world".to_string(),
-                command: vec!["echo".to_string(), "hello world".to_string()],
-                r#if: None,
-                optional: None,
-                needs: None,
-                name: None,
-                description: None,
-            },
+            // Hook::new("okay".to_string(), vec!["true".to_string()]),
             Hook {
                 key: "error".to_string(),
                 command: vec!["false".to_string()],
-                r#if: None,
-                optional: None,
-                needs: None,
-                name: None,
-                description: None,
+                ..Hook::default()
             },
         ];
 
-        let result = run_hooks(
+        let results = run_hooks(
             &hooks,
             ".",
             &Vec::new(),
@@ -450,15 +490,15 @@ mod tests {
         )
         .expect("run_hooks failed, should have succeeded");
 
-        assert_eq!(result.len(), 2, "Expected 2 results, got {:?}", result);
-
-        assert!(matches!(
-            result[0],
-            HookResult {
-                kind: HookResultKind::Completed { .. },
+        assert!(
+            results.iter().any(|x| matches!(x, HookResult {
+                hook,
+                kind: HookResultKind::Failed { .. },
                 ..
-            }
-        ));
+            } if hook.key == "error")),
+            "Expected error hook to fail, got {:?}",
+            results
+        );
     }
 
     #[test]
@@ -467,20 +507,12 @@ mod tests {
             Hook {
                 key: "1".to_string(),
                 command: vec!["echo".to_string(), "hello world".to_string()],
-                r#if: None,
-                optional: None,
-                needs: None,
-                name: None,
-                description: None,
+                ..Hook::default()
             },
             Hook {
                 key: "2".to_string(),
                 command: vec!["invalid_cmd".to_string()],
-                r#if: None,
-                optional: None,
-                needs: None,
-                name: None,
-                description: None,
+                ..Hook::default()
             },
         ];
 
@@ -514,37 +546,24 @@ mod tests {
                 key: "1".to_string(),
                 command: vec!["echo".to_string(), "hello world".to_string()],
                 r#if: Some("true".to_string()),
-                optional: None,
-                needs: None,
-                name: None,
-                description: None,
+                ..Hook::default()
             },
             Hook {
                 key: "2".to_string(),
                 command: vec!["echo".to_string(), "hello world".to_string()],
                 r#if: Some("false".to_string()),
-                optional: None,
-                needs: None,
-                name: None,
-                description: None,
+                ..Hook::default()
             },
             Hook {
                 key: "3".to_string(),
                 command: vec!["echo".to_string(), "hello world".to_string()],
-                r#if: None,
-                optional: None,
-                needs: None,
-                name: None,
-                description: None,
+                ..Hook::default()
             },
             Hook {
                 key: "4".to_string(),
                 command: vec!["echo".to_string(), "hello world".to_string()],
                 r#if: Some("{{ hook_ran_1 }}".to_string()),
-                optional: None,
-                needs: None,
-                name: None,
-                description: None,
+                ..Hook::default()
             },
         ];
 
@@ -590,19 +609,13 @@ mod tests {
                 key: "1".to_string(),
                 command: vec!["echo".to_string(), "hello world".to_string()],
                 r#if: Some("{{ good_var }}".to_string()),
-                optional: None,
-                needs: None,
-                name: None,
-                description: None,
+                ..Hook::default()
             },
             Hook {
                 key: "2".to_string(),
                 command: vec!["echo".to_string(), "hello world".to_string()],
                 r#if: Some("{{ bad_var }}".to_string()),
-                optional: None,
-                needs: None,
-                name: None,
-                description: None,
+                ..Hook::default()
             },
         ];
 
@@ -635,10 +648,7 @@ mod tests {
             key: "1".to_string(),
             command: vec!["echo".to_string(), "hello world".to_string()],
             r#if: Some("lorem ipsum".to_string()),
-            optional: None,
-            needs: None,
-            name: None,
-            description: None,
+            ..Hook::default()
         }];
 
         let results = run_hooks(
@@ -664,29 +674,19 @@ mod tests {
             Hook {
                 key: "1".to_string(),
                 command: vec!["echo".to_string(), "hello world".to_string()],
-                r#if: None,
-                optional: None,
-                needs: None,
-                name: None,
-                description: None,
+                ..Hook::default()
             },
             Hook {
                 key: "2".to_string(),
                 command: vec!["echo".to_string(), "hello world".to_string()],
-                r#if: None,
                 optional: Some(HookConfigOptional { default: false }),
-                needs: None,
-                name: None,
-                description: None,
+                ..Hook::default()
             },
             Hook {
                 key: "3".to_string(),
                 command: vec!["echo".to_string(), "hello world".to_string()],
-                r#if: None,
                 optional: Some(HookConfigOptional { default: false }),
-                needs: None,
-                name: None,
-                description: None,
+                ..Hook::default()
             },
         ];
 
@@ -732,20 +732,12 @@ mod tests {
             Hook {
                 key: "1".to_string(),
                 command: vec!["{{ field_1 }}".to_string(), "{{ field_2 }}".to_string()],
-                r#if: None,
-                optional: None,
-                needs: None,
-                name: None,
-                description: None,
+                ..Hook::default()
             },
             Hook {
                 key: "2".to_string(),
                 command: vec!["echo".to_string(), "{{ project_name }}".to_string()],
-                r#if: None,
-                optional: None,
-                needs: None,
-                name: None,
-                description: None,
+                ..Hook::default()
             },
         ];
 
@@ -793,11 +785,7 @@ mod tests {
         let hooks = vec![Hook {
             key: "1".to_string(),
             command: vec!["{{ field_1 }}".to_string(), "{{ field_2 }}".to_string()],
-            r#if: None,
-            optional: None,
-            needs: None,
-            name: None,
-            description: None,
+            ..Hook::default()
         }];
 
         let results = run_hooks(
@@ -822,25 +810,18 @@ mod tests {
             Hook {
                 key: "hook".to_string(),
                 command: vec!["true".to_string()],
-                r#if: None,
-                optional: None,
-                needs: None,
-                name: None,
-                description: None,
+                ..Hook::default()
             },
             Hook {
                 key: "needy".to_string(),
                 command: vec!["true".to_string()],
-                r#if: None,
-                optional: None,
                 needs: Some(vec![
                     "hook".to_string(),
                     "string_slot".to_string(),
                     "number_slot".to_string(),
                     "bool_slot".to_string(),
                 ]),
-                name: None,
-                description: None,
+                ..Hook::default()
             },
         ];
 
@@ -897,20 +878,14 @@ mod tests {
             Hook {
                 key: "hook".to_string(),
                 command: vec!["true".to_string()],
-                r#if: None,
                 optional: Some(HookConfigOptional { default: false }),
-                needs: None,
-                name: None,
-                description: None,
+                ..Hook::default()
             },
             Hook {
                 key: "needy".to_string(),
                 command: vec!["true".to_string()],
-                r#if: None,
-                optional: None,
                 needs: Some(vec!["hook".to_string()]),
-                name: None,
-                description: None,
+                ..Hook::default()
             },
         ];
 
@@ -940,11 +915,8 @@ mod tests {
         let hooks = vec![Hook {
             key: "hook".to_string(),
             command: vec!["true".to_string()],
-            r#if: None,
-            optional: None,
             needs: Some(vec!["invalid_key".to_string()]),
-            name: None,
-            description: None,
+            ..Hook::default()
         }];
 
         let results = run_hooks(
@@ -974,29 +946,19 @@ mod tests {
             Hook {
                 key: "a".to_string(),
                 command: vec!["echo".to_string(), "a".to_string()],
-                r#if: None,
-                optional: None,
-                needs: None,
-                name: None,
-                description: None,
+                ..Hook::default()
             },
             Hook {
                 key: "b".to_string(),
                 command: vec!["echo".to_string(), "b".to_string()],
-                r#if: None,
-                optional: None,
                 needs: Some(vec!["a".to_string()]),
-                name: None,
-                description: None,
+                ..Hook::default()
             },
             Hook {
                 key: "c".to_string(),
                 command: vec!["echo".to_string(), "c".to_string()],
-                r#if: None,
-                optional: None,
                 needs: Some(vec!["b".to_string()]),
-                name: None,
-                description: None,
+                ..Hook::default()
             },
         ];
 
@@ -1029,20 +991,15 @@ mod tests {
             Hook {
                 key: "hook_a".to_string(),
                 command: vec!["true".to_string()],
-                r#if: None,
                 optional: Some(HookConfigOptional { default: false }),
                 needs: Some(vec!["slot_a".to_string()]),
-                name: None,
-                description: None,
+                ..Hook::default()
             },
             Hook {
                 key: "hook_b".to_string(),
                 command: vec!["true".to_string()],
-                r#if: None,
-                optional: None,
                 needs: Some(vec!["hook_a".to_string()]),
-                name: None,
-                description: None,
+                ..Hook::default()
             },
         ];
 
