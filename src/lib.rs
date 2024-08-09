@@ -18,6 +18,21 @@ pub struct Project {
     pub dir: PathBuf,
 }
 
+#[derive(Debug)]
+pub enum RunHooksError {
+    BadConfig(config::Error),
+    HookError(hook::Error),
+}
+
+impl Display for RunHooksError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunHooksError::BadConfig(e) => write!(f, "Error loading config: {}", e),
+            RunHooksError::HookError(e) => write!(f, "Error running hook: {}", e),
+        }
+    }
+}
+
 // Loads the config from the project directory and validates it
 pub fn load_project(dir: &PathBuf) -> Result<Project, config::Error> {
     let config = config::load(dir)?;
@@ -127,17 +142,51 @@ impl Project {
     }
 }
 
-#[derive(Debug)]
-pub enum RunHooksError {
-    BadConfig(config::Error),
-    HookError(hook::Error),
-}
+#[cfg(test)]
+mod tests {
+    use std::env;
 
-impl Display for RunHooksError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RunHooksError::BadConfig(e) => write!(f, "Error loading config: {}", e),
-            RunHooksError::HookError(e) => write!(f, "Error running hook: {}", e),
-        }
+    use crate::config::Config;
+
+    use super::*;
+
+    #[test]
+    fn get_name_explicit() {
+        let project = Project {
+            config: Config {
+                name: Some("some_name".to_string()),
+                ..Default::default()
+            },
+            dir: PathBuf::from("."),
+        };
+
+        assert_eq!(project.get_name(), "some_name");
+    }
+
+    #[test]
+    fn get_name_inferred() {
+        let project = Project {
+            config: Config::default(),
+            dir: PathBuf::from("tests/data/templated"),
+        };
+
+        assert_eq!(project.get_name(), "templated");
+    }
+
+    #[test]
+    fn get_name_cwd() {
+        let cwd = env::current_dir().unwrap();
+
+        env::set_current_dir(PathBuf::from("tests/data/templated")).unwrap();
+
+        let project = Project {
+            config: Config::default(),
+            dir: PathBuf::from("."),
+        };
+
+        assert_eq!(project.get_name(), "templated");
+
+        // HACK find a better way to do this
+        env::set_current_dir(cwd).unwrap();
     }
 }

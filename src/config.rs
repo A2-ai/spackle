@@ -14,6 +14,17 @@ pub struct Config {
     pub hooks: Vec<Hook>,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            name: None,
+            ignore: vec![],
+            slots: vec![],
+            hooks: vec![],
+        }
+    }
+}
+
 pub const CONFIG_FILE: &str = "spackle.toml";
 
 #[derive(Debug)]
