@@ -242,15 +242,6 @@ pub fn run_hooks_stream(
     hook_data: &HashMap<String, bool>,
     run_as_user: Option<User>,
 ) -> Result<impl Stream<Item = HookStreamResult>, Error> {
-    let mut slot_data = slot_data.clone();
-    slot_data.insert(
-        "project_name".to_string(),
-        dir.as_ref()
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or(".".to_string()),
-    );
-
     let mut skipped_hooks = Vec::new();
     let mut queued_hooks = Vec::new();
 
@@ -728,18 +719,11 @@ mod tests {
 
     #[test]
     fn templated_cmd() {
-        let hooks = vec![
-            Hook {
-                key: "1".to_string(),
-                command: vec!["{{ field_1 }}".to_string(), "{{ field_2 }}".to_string()],
-                ..Hook::default()
-            },
-            Hook {
-                key: "2".to_string(),
-                command: vec!["echo".to_string(), "{{ project_name }}".to_string()],
-                ..Hook::default()
-            },
-        ];
+        let hooks = vec![Hook {
+            key: "echo".to_string(),
+            command: vec!["{{ field_1 }}".to_string(), "{{ field_2 }}".to_string()],
+            ..Hook::default()
+        }];
 
         let results = run_hooks(
             &hooks,
@@ -747,7 +731,7 @@ mod tests {
             &Vec::new(),
             &HashMap::from([
                 ("field_1".to_string(), "echo".to_string()),
-                ("field_2".to_string(), "out1".to_string()),
+                ("field_2".to_string(), "test".to_string()),
             ]),
             &HashMap::new(),
             None,
@@ -755,28 +739,16 @@ mod tests {
         .expect("run_hooks failed, should have succeeded");
 
         assert!(
-            results.iter().all(|x| matches!(
-                x,
-                HookResult {
-                    kind: HookResultKind::Completed { .. },
-                    ..
-                }
-            )),
-            "Expected all hooks to be completed, but got: {:?}",
-            results
-        );
-
-        // Assert that hook 2 outputs "."
-        assert!(
             results.iter().any(|x| match x {
                 HookResult {
                     hook,
                     kind: HookResultKind::Completed { stdout, .. },
                     ..
-                } if hook.key == "2" => stdout.trim() == ".",
+                } if hook.key == "echo" => stdout.trim() == "test",
                 _ => false,
             }),
-            "Hook 2 should output '.'"
+            "Hook 'echo' should output 'test', got {:?}",
+            results.iter().find(|x| x.hook.key == "echo")
         );
     }
 

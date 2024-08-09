@@ -1,3 +1,4 @@
+use super::slot::Slot;
 use std::{
     collections::HashMap,
     fmt::{Debug, Display},
@@ -6,8 +7,6 @@ use std::{
     time::Duration,
 };
 use tera::{Context, Tera};
-
-use super::slot::Slot;
 
 pub const TEMPLATE_EXT: &str = ".j2";
 
@@ -140,13 +139,14 @@ pub fn validate(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), ValidateError> {
     let glob = dir.join("**").join("*".to_owned() + TEMPLATE_EXT);
 
     let tera = Tera::new(&glob.to_string_lossy()).map_err(|e| ValidateError::TeraError(e))?;
-    let context = Context::from_serialize(
+    let mut context = Context::from_serialize(
         slots
             .iter()
             .map(|s| (s.key.clone(), ""))
             .collect::<HashMap<_, _>>(),
     )
     .map_err(|e| ValidateError::TeraError(e))?;
+    context.insert("project_name".to_string(), &"".to_string());
 
     let errors = tera
         .get_template_names()

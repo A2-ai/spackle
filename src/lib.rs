@@ -29,6 +29,21 @@ pub fn load_project(dir: &PathBuf) -> Result<Project, config::Error> {
 }
 
 impl Project {
+    // TODO add top-level config for forcing project name
+    /// Gets the name of the project from the directory name
+    pub fn get_name(&self) -> String {
+        let path = match self.dir.canonicalize() {
+            Ok(path) => path,
+            Err(_) => return "".to_string(),
+        };
+
+        return path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+    }
+
     /// Generates a filled directory from the project
     ///
     /// out_dir is the path to what will become the filled directory
