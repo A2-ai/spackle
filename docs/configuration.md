@@ -65,6 +65,14 @@ The data type of the slot. Can be one of the following:
 type = "String"
 ```
 
+### needs `string[]`
+
+The slots that the slot depends on.
+
+```toml
+needs = ["some_slot", "other_slot"]
+```
+
 ### name `string`
 
 The human-friendly name of the slot.

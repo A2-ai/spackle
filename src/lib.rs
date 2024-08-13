@@ -10,6 +10,7 @@ use users::User;
 pub mod config;
 pub mod copy;
 pub mod hook;
+mod needs;
 pub mod slot;
 pub mod template;
 
@@ -104,8 +105,8 @@ impl Project {
         slot_data.insert("project_name".to_string(), self.get_name());
 
         let result = hook::run_hooks_stream(
-            &self.config.hooks,
             out_dir.to_owned(),
+            &self.config.hooks,
             &self.config.slots,
             &slot_data,
             hook_data,

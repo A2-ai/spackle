@@ -2,12 +2,15 @@ use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt::Display};
 
+use crate::needs::{is_satisfied, Needy};
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Slot {
     pub key: String,
     #[serde(default)]
     pub r#type: SlotType,
-    pub needs: Option<Vec<String>>,
+    #[serde(default)]
+    pub needs: Vec<String>,
     pub name: Option<String>,
     pub description: Option<String>,
 }
@@ -25,7 +28,7 @@ impl Default for Slot {
         Self {
             key: "".to_string(),
             r#type: SlotType::String,
-            needs: None,
+            needs: vec![],
             name: None,
             description: None,
         }
@@ -51,25 +54,20 @@ impl Display for Slot {
     }
 }
 
-impl Slot {
-    pub fn is_non_default(&self, data: &HashMap<String, String>) -> bool {
+impl Needy for Slot {
+    fn key(&self) -> String {
+        self.key.clone()
+    }
+
+    fn is_enabled(&self, data: &HashMap<String, String>) -> bool {
         let binding = String::new();
         let value = data.get(&self.key).unwrap_or(&binding);
 
         !value.is_empty() && value != "0" && value.to_lowercase() != "false"
     }
 
-    pub fn is_satisfied(&self, slots: &Vec<Slot>, data: &HashMap<String, String>) -> bool {
-        match &self.needs {
-            Some(needs) => needs.iter().all(|key| {
-                // TODO make isomorphic to hook::is_satisfied and abstract into trait
-                match slots.iter().find(|s| s.key == *key) {
-                    Some(slot) => slot.is_non_default(data) && slot.is_satisfied(slots, data),
-                    None => false,
-                }
-            }),
-            None => true,
-        }
+    fn is_satisfied(&self, items: &Vec<&dyn Needy>, data: &HashMap<String, String>) -> bool {
+        is_satisfied(&self.needs, items, data)
     }
 }
 

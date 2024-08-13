@@ -10,13 +10,16 @@ use tokio::pin;
 use tokio_stream::{Stream, StreamExt};
 use users::User;
 
+use crate::needs::{is_satisfied, Needy};
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Hook {
     pub key: String,
     pub command: Vec<String>,
     pub r#if: Option<String>,
     pub optional: Option<HookConfigOptional>,
-    pub needs: Option<Vec<String>>,
+    #[serde(default)]
+    pub needs: Vec<String>,
     pub name: Option<String>,
     pub description: Option<String>,
 }
@@ -62,10 +65,30 @@ impl Default for Hook {
             command: vec![],
             r#if: None,
             optional: None,
-            needs: None,
+            needs: vec![],
             name: None,
             description: None,
         }
+    }
+}
+
+impl Needy for Hook {
+    fn key(&self) -> String {
+        self.key.clone()
+    }
+
+    fn is_enabled(&self, data: &HashMap<String, String>) -> bool {
+        match &self.optional {
+            Some(optional) => data
+                .get(&self.key)
+                .map(|s: &String| s.parse::<bool>().unwrap_or(false))
+                .unwrap_or(optional.default),
+            None => true,
+        }
+    }
+
+    fn is_satisfied(&self, items: &Vec<&dyn Needy>, data: &HashMap<String, String>) -> bool {
+        is_satisfied(&self.needs, items, data)
     }
 }
 
@@ -91,50 +114,6 @@ impl Hook {
             .map_err(|e| ConditionalError::NotBoolean(e.to_string()))?;
 
         Ok(condition)
-    }
-
-    fn is_enabled(&self, hook_data: &HashMap<String, bool>) -> bool {
-        match &self.optional {
-            Some(optional) => *hook_data.get(&self.key).unwrap_or(&optional.default),
-            None => true,
-        }
-    }
-
-    /// Returns true if all entries in *needs* are satisfied given the provided user inputs
-    /// Needy slots are satisfied if they are not set to a non-falsy value (e.g. "false", "0", "")
-    /// Needy hooks are satisfied if they are enabled (either by the user or by default) and their needs are satisfied
-    /// Needy hooks are not checked for recursion, so be careful with circular dependencies
-    fn is_satisfied(
-        &self,
-        hooks: &Vec<Hook>,
-        slots: &Vec<Slot>,
-        slot_data: &HashMap<String, String>,
-        hook_data: &HashMap<String, bool>,
-    ) -> bool {
-        match &self.needs {
-            Some(needs) => needs.iter().all(|key| {
-                let hook_satisfied = match hooks.iter().find(|h| h.key == *key) {
-                    Some(hook) => {
-                        hook.is_satisfied(hooks, slots, slot_data, hook_data)
-                            && hook.is_enabled(hook_data)
-                    }
-                    None => false,
-                };
-
-                let slot_satisfied = match slots.iter().find(|s| s.key == *key) {
-                    Some(slot) => slot.is_non_default(slot_data),
-                    None => false,
-                };
-
-                println!(
-                    "hook_satisfied: {}, slot_satisfied: {}, key: {}",
-                    hook_satisfied, slot_satisfied, key
-                );
-
-                hook_satisfied || slot_satisfied
-            }),
-            None => true,
-        }
     }
 }
 
@@ -235,8 +214,8 @@ pub enum HookStreamResult {
 }
 
 pub fn run_hooks_stream(
-    hooks: &Vec<Hook>,
     dir: impl AsRef<Path>,
+    hooks: &Vec<Hook>,
     slots: &Vec<Slot>,
     slot_data: &HashMap<String, String>,
     hook_data: &HashMap<String, bool>,
@@ -245,10 +224,30 @@ pub fn run_hooks_stream(
     let mut skipped_hooks = Vec::new();
     let mut queued_hooks = Vec::new();
 
+    let hook_data_str = hook_data
+        .iter()
+        .map(|(k, v)| (k.clone(), v.to_string()))
+        .collect::<HashMap<String, String>>();
+
+    let data_merged = {
+        let mut data = slot_data.clone();
+        data.extend(hook_data_str.clone());
+        data
+    };
+
+    let items: Vec<&dyn Needy> = {
+        let mut items = slots
+            .iter()
+            .map(|s| s as &dyn Needy)
+            .collect::<Vec<&dyn Needy>>();
+        items.extend(hooks.iter().map(|h| h as &dyn Needy));
+        items
+    };
+
     for hook in hooks {
-        if hook.is_enabled(hook_data) && hook.is_satisfied(hooks, slots, &slot_data, hook_data) {
+        if hook.is_enabled(&hook_data_str) && hook.is_satisfied(&items, &data_merged) {
             queued_hooks.push(hook.clone());
-        } else if hook.is_enabled(hook_data) {
+        } else if hook.is_enabled(&hook_data_str) {
             skipped_hooks.push((hook.clone(), SkipReason::FalseConditional));
         } else {
             skipped_hooks.push((hook.clone(), SkipReason::UserDisabled));
@@ -399,7 +398,7 @@ pub fn run_hooks(
         .map_err(|e| Error::ErrorInitializingRuntime(e))?;
 
     let results = runtime.block_on(async {
-        let stream = run_hooks_stream(hooks, dir, slots, slot_data, hook_data, run_as_user)?;
+        let stream = run_hooks_stream(dir, hooks, slots, slot_data, hook_data, run_as_user)?;
         pin!(stream);
 
         let mut hook_results = Vec::new();
@@ -788,12 +787,12 @@ mod tests {
             Hook {
                 key: "needy".to_string(),
                 command: vec!["true".to_string()],
-                needs: Some(vec![
+                needs: vec![
                     "hook".to_string(),
                     "string_slot".to_string(),
                     "number_slot".to_string(),
                     "bool_slot".to_string(),
-                ]),
+                ],
                 ..Hook::default()
             },
         ];
@@ -805,23 +804,17 @@ mod tests {
                 Slot {
                     key: "string_slot".to_string(),
                     r#type: SlotType::String,
-                    needs: None,
-                    name: None,
-                    description: None,
+                    ..Default::default()
                 },
                 Slot {
                     key: "number_slot".to_string(),
                     r#type: SlotType::Number,
-                    needs: None,
-                    name: None,
-                    description: None,
+                    ..Default::default()
                 },
                 Slot {
                     key: "bool_slot".to_string(),
                     r#type: SlotType::Boolean,
-                    needs: None,
-                    name: None,
-                    description: None,
+                    ..Default::default()
                 },
             ]),
             &HashMap::from([
@@ -857,7 +850,7 @@ mod tests {
             Hook {
                 key: "needy".to_string(),
                 command: vec!["true".to_string()],
-                needs: Some(vec!["hook".to_string()]),
+                needs: vec!["hook".to_string()],
                 ..Hook::default()
             },
         ];
@@ -888,7 +881,7 @@ mod tests {
         let hooks = vec![Hook {
             key: "hook".to_string(),
             command: vec!["true".to_string()],
-            needs: Some(vec!["invalid_key".to_string()]),
+            needs: vec!["invalid_key".to_string()],
             ..Hook::default()
         }];
 
@@ -924,13 +917,13 @@ mod tests {
             Hook {
                 key: "b".to_string(),
                 command: vec!["echo".to_string(), "b".to_string()],
-                needs: Some(vec!["a".to_string()]),
+                needs: vec!["a".to_string()],
                 ..Hook::default()
             },
             Hook {
                 key: "c".to_string(),
                 command: vec!["echo".to_string(), "c".to_string()],
-                needs: Some(vec!["b".to_string()]),
+                needs: vec!["b".to_string()],
                 ..Hook::default()
             },
         ];
@@ -965,13 +958,13 @@ mod tests {
                 key: "hook_a".to_string(),
                 command: vec!["true".to_string()],
                 optional: Some(HookConfigOptional { default: false }),
-                needs: Some(vec!["slot_a".to_string()]),
+                needs: vec!["slot_a".to_string()],
                 ..Hook::default()
             },
             Hook {
                 key: "hook_b".to_string(),
                 command: vec!["true".to_string()],
-                needs: Some(vec!["hook_a".to_string()]),
+                needs: vec!["hook_a".to_string()],
                 ..Hook::default()
             },
         ];
