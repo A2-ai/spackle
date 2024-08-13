@@ -3,3 +3,7 @@ pre-commit:
   commands:
     run-tests:
       run: cargo test --workspace
+
+    run-clippy:
+      run: cargo clippy --workspace
+      # stage_fixed: true
