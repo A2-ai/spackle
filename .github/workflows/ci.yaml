@@ -26,4 +26,7 @@ jobs:
           ssh-private-key: ${{ secrets.POLYJUICE_DEPLOY_KEY }}
 
       - name: Test
-        run: cargo test
+        run: cargo test --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace

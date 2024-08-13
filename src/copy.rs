@@ -109,7 +109,7 @@ pub fn copy(
                     path: parent.to_path_buf(),
                 })?;
             }
-            fs::copy(&src_path, &dst_path).map_err(|e| Error {
+            fs::copy(src_path, &dst_path).map_err(|e| Error {
                 source: e.into(),
                 path: dst_path.clone(),
             })?;

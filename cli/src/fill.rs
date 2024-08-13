@@ -14,7 +14,7 @@ pub fn run(slot: &Vec<String>, hook: &Vec<String>, project: &Project, out: &Path
     // First, run spackle check
     check::run(project);
 
-    println!("");
+    println!();
 
     let slot_data = slot
         .iter()
@@ -22,8 +22,7 @@ pub fn run(slot: &Vec<String>, hook: &Vec<String>, project: &Project, out: &Path
             Some((key, value)) => Some((key.to_string(), value.to_string())),
             None => {
                 eprintln!(
-                    "{} {}\n",
-                    "❌",
+                    "❌ {}\n",
                     "Invalid slot argument, must be in the form of key=value. Skipping."
                         .bright_red()
                 );
@@ -52,8 +51,7 @@ pub fn run(slot: &Vec<String>, hook: &Vec<String>, project: &Project, out: &Path
             Some((key, value)) => Some((key.to_string(), value.to_string())),
             None => {
                 eprintln!(
-                    "{} {}\n",
-                    "❌",
+                    "❌ {}\n",
                     "Invalid hook argument, must be in the form of key=<true|false>. Skipping."
                         .bright_red()
                 );
@@ -64,8 +62,7 @@ pub fn run(slot: &Vec<String>, hook: &Vec<String>, project: &Project, out: &Path
             Ok(v) => Some((key, v)),
             Err(_) => {
                 eprintln!(
-                    "{} {}\n",
-                    "❌",
+                    "❌ {}\n",
                     "Invalid hook argument, must be a boolean. Skipping.".bright_red()
                 );
                 None
@@ -83,8 +80,7 @@ pub fn run(slot: &Vec<String>, hook: &Vec<String>, project: &Project, out: &Path
     match project.copy_files(out, &slot_data) {
         Ok(r) => {
             println!(
-                "{} {} {} {}",
-                "🖨️  Copied",
+                "🖨️  Copied {} {} {}",
                 r.copied_count,
                 if r.copied_count == 1 { "file" } else { "files" },
                 format!("in {:?}", start_time.elapsed()).dimmed()
@@ -129,8 +125,7 @@ pub fn run(slot: &Vec<String>, hook: &Vec<String>, project: &Project, out: &Path
     match project.render_templates(&PathBuf::from(out), &slot_data) {
         Ok(r) => {
             println!(
-                "{} {} {} {} {}\n",
-                "⛽ Processed",
+                "⛽ Processed {} {} {} {}\n",
                 r.len(),
                 if r.len() == 1 { "file" } else { "files" },
                 "in".dimmed(),
@@ -250,8 +245,7 @@ pub fn run(slot: &Vec<String>, hook: &Vec<String>, project: &Project, out: &Path
                         ..
                     } => {
                         println!(
-                            "{} {}\n",
-                            "    ✅ done",
+                            "    ✅ done {}\n",
                             format!("in {:?}", start_time.elapsed()).dimmed()
                         );
 

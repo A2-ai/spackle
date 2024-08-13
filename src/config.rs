@@ -4,6 +4,7 @@ use std::{collections::HashSet, fmt::Display, fs, io, path::PathBuf};
 use crate::{hook::Hook, slot::Slot};
 
 #[derive(Deserialize, Debug)]
+#[derive(Default)]
 pub struct Config {
     pub name: Option<String>,
     #[serde(default)]
@@ -14,16 +15,6 @@ pub struct Config {
     pub hooks: Vec<Hook>,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            name: None,
-            ignore: vec![],
-            slots: vec![],
-            hooks: vec![],
-        }
-    }
-}
 
 pub const CONFIG_FILE: &str = "spackle.toml";
 
@@ -106,7 +97,7 @@ mod tests {
     fn load_empty() {
         let dir = TempDir::new("spackle").unwrap().into_path();
 
-        fs::write(&dir.join("spackle.toml"), "").unwrap();
+        fs::write(dir.join("spackle.toml"), "").unwrap();
 
         let result = load(&dir);
 

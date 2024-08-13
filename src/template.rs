@@ -139,14 +139,14 @@ pub enum ValidateError {
 pub fn validate(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), ValidateError> {
     let glob = dir.join("**").join("*".to_owned() + TEMPLATE_EXT);
 
-    let tera = Tera::new(&glob.to_string_lossy()).map_err(|e| ValidateError::TeraError(e))?;
+    let tera = Tera::new(&glob.to_string_lossy()).map_err(ValidateError::TeraError)?;
     let mut context = Context::from_serialize(
         slots
             .iter()
             .map(|s| (s.key.clone(), ""))
             .collect::<HashMap<_, _>>(),
     )
-    .map_err(|e| ValidateError::TeraError(e))?;
+    .map_err(ValidateError::TeraError)?;
     context.insert("project_name".to_string(), &"".to_string());
 
     let errors = tera

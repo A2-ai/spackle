@@ -132,7 +132,7 @@ impl Project {
 
         let result = hook::run_hooks(
             &self.config.hooks,
-            out_dir.to_owned(),
+            out_dir,
             &self.config.slots,
             &slot_data,
             hook_data,

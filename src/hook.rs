@@ -103,10 +103,10 @@ impl Hook {
         };
 
         let context =
-            Context::from_serialize(context).map_err(|e| ConditionalError::InvalidContext(e))?;
+            Context::from_serialize(context).map_err(ConditionalError::InvalidContext)?;
 
-        let condition_str = Tera::one_off(&conditional, &context, false)
-            .map_err(|e| ConditionalError::InvalidTemplate(e))?;
+        let condition_str = Tera::one_off(conditional, &context, false)
+            .map_err(ConditionalError::InvalidTemplate)?;
 
         let condition = condition_str
             .trim()
@@ -395,7 +395,7 @@ pub fn run_hooks(
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(|e| Error::ErrorInitializingRuntime(e))?;
+        .map_err(Error::ErrorInitializingRuntime)?;
 
     let results = runtime.block_on(async {
         let stream = run_hooks_stream(dir, hooks, slots, slot_data, hook_data, run_as_user)?;

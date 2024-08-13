@@ -96,8 +96,7 @@ fn main() {
 
 fn print_project_info(project: &Project) {
     println!(
-        "📂 {} {}\n  {}\n{}\n{}\n",
-        "Using project",
+        "📂 Using project {}\n  {}\n{}\n{}\n",
         project.get_name().bold(),
         project.dir.to_string_lossy().dimmed(),
         format!(
