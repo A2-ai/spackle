@@ -41,6 +41,18 @@ pub fn run(slot: &Vec<String>, hook: &Vec<String>, project: &Project, out: &Path
                 e.to_string().red()
             );
 
+            if let slot::Error::UndefinedSlot(key) = e {
+                println!(
+                    "{}",
+                    format!(
+                        "\nℹ Define a value for {} using the --slot (-s) flag\ne.g. --slot {}=<value>",
+                        format!("{}", key).bold(),
+                        key
+                    )
+                    .yellow()
+                );
+            }
+
             exit(1);
         }
     }

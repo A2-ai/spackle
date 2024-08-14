@@ -16,22 +16,10 @@ pub fn is_satisfied(
     items: &Vec<&dyn Needy>,
     data: &HashMap<String, String>,
 ) -> bool {
-    println!("Checking needs: {:?}", needs);
-    // println!("Items: {:?}", items);
-    println!("Data: {:?}", data);
     needs
         .iter()
         .all(|key| match items.iter().find(|h| h.key() == *key) {
-            Some(item) => {
-                println!("Checking need: {}", key);
-                let enabled = item.is_enabled(data);
-                let satisfied = item.is_satisfied(items, data);
-                println!("Enabled: {}, Satisfied: {}", enabled, satisfied);
-                enabled && satisfied
-            }
-            None => {
-                println!("Item not found: {}", key);
-                false
-            }
+            Some(item) => item.is_enabled(data) && item.is_satisfied(items, data),
+            None => false,
         })
 }
