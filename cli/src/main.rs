@@ -14,12 +14,8 @@ struct Cli {
     command: Commands,
 
     /// The directory of the spackle project. Defaults to the current directory.
-    #[arg(short = 'D', long, default_value = ".", global = true)]
-    dir: PathBuf,
-
-    /// The directory to render to. Defaults to 'render' within the current directory. Cannot be the same as the project directory.
-    #[arg(short = 'o', long, default_value = "render", global = true)]
-    out: PathBuf,
+    #[arg(short, long, default_value = ".", global = true)]
+    project_dir: PathBuf,
 
     /// Whether to run in verbose mode.
     #[arg(short, long, global = true)]
@@ -36,6 +32,14 @@ enum Commands {
         /// Assign data to a slot or hook
         #[arg(short, long)]
         data: Vec<String>,
+
+        /// The directory to render to. Defaults to 'render' within the current directory. Cannot be the same as the project directory.
+        #[arg(short, long, default_value = "render", global = true)]
+        out_dir: PathBuf,
+
+        /// Whether to overwrite existing files
+        #[arg(short = 'O', long)]
+        overwrite: bool,
     },
     /// Checks the validity of a spackle project
     Check,
@@ -46,17 +50,7 @@ fn main() {
 
     let cli = Cli::parse();
 
-    // Ensure the output directory is not the same as the project directory
-    if cli.out == cli.dir {
-        eprintln!(
-            "{}\n{}",
-            "❌ Output directory cannot be the same as project directory".bright_red(),
-            "Please choose a different output directory.".red()
-        );
-        exit(2);
-    }
-
-    let project_dir = cli.dir.clone();
+    let project_dir = cli.project_dir.clone();
 
     // Check if the project directory is a spackle project
     if !project_dir.join("spackle.toml").exists() {
@@ -86,15 +80,24 @@ fn main() {
     match &cli.command {
         Commands::Check => check::run(&project),
         Commands::Info {} => info::run(&project.config),
-        Commands::Fill { data } => fill::run(data, &project, &cli.out, &cli),
+        Commands::Fill {
+            data,
+            out_dir,
+            overwrite,
+        } => fill::run(data, *overwrite, &out_dir, &project, &cli),
     }
 }
 
 fn print_project_info(project: &Project) {
+    println!("📦 Using project {}\n", project.get_name().bold());
+
     println!(
-        "📂 Using project {}\n  {}\n{}\n{}\n",
-        project.get_name().bold(),
-        project.dir.to_string_lossy().dimmed(),
+        "  {}",
+        format!("📁 {}", project.dir.to_string_lossy()).dimmed()
+    );
+
+    println!(
+        "{}",
         format!(
             "  🕳️  {} {}",
             project.config.slots.len(),
@@ -104,7 +107,11 @@ fn print_project_info(project: &Project) {
                 "slots"
             }
         )
-        .dimmed(),
+        .dimmed()
+    );
+
+    println!(
+        "{}",
         format!(
             "  🪝  {} {}",
             project.config.hooks.len(),
@@ -116,4 +123,5 @@ fn print_project_info(project: &Project) {
         )
         .dimmed()
     );
+    println!();
 }

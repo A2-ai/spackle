@@ -10,13 +10,12 @@ use tokio::pin;
 
 use crate::{check, Cli};
 
-pub fn run(data: &Vec<String>, project: &Project, out: &PathBuf, cli: &Cli) {
+pub fn run(data: &Vec<String>, overwrite: bool, out_dir: &PathBuf, project: &Project, cli: &Cli) {
     // First, run spackle check
     check::run(project);
 
     println!();
 
-    // TODO perform type checks depending on if the data is a slot or hook
     let data = data
         .iter()
         .filter_map(|data| match data.split_once('=') {
@@ -81,10 +80,42 @@ pub fn run(data: &Vec<String>, project: &Project, out: &PathBuf, cli: &Cli) {
     let mut data = data.clone();
     data.insert("project_name".to_string(), project.get_name());
 
-    match project.copy_files(out, &data) {
+    println!("🖨️  Creating project files\n");
+
+    println!(
+        "{}",
+        format!("  📁 {}\n", out_dir.to_string_lossy().bold()).dimmed()
+    );
+
+    // Ensure the output directory is not the same as the project directory
+    if out_dir == &cli.project_dir {
+        eprintln!(
+            "{}\n{}",
+            "❌ Output directory cannot be the same as project directory".bright_red(),
+            "Please choose a different output directory.".red()
+        );
+        exit(2);
+    }
+
+    if overwrite {
+        println!(
+            "{}\n",
+            format!("  ⚠️ Overwriting existing directory").yellow()
+        );
+    } else if out_dir.exists() {
+        eprintln!(
+            "{}\n{}",
+            "  ❌ Directory already exists".bright_red(),
+            "  Please remove the directory before running spackle again".red()
+        );
+
+        exit(1);
+    }
+
+    match project.copy_files(out_dir, &data) {
         Ok(r) => {
             println!(
-                "🖨️  Copied {} {} {}",
+                "  Copied {} {} {}",
                 r.copied_count,
                 if r.copied_count == 1 { "file" } else { "files" },
                 format!("in {:?}", start_time.elapsed()).dimmed()
@@ -95,7 +126,7 @@ pub fn run(data: &Vec<String>, project: &Project, out: &PathBuf, cli: &Cli) {
                     "{}",
                     format!(
                         "{} {} {}",
-                        "  Ignored",
+                        "    Ignored",
                         r.skipped_count,
                         if r.skipped_count == 1 {
                             "entry"
@@ -111,7 +142,7 @@ pub fn run(data: &Vec<String>, project: &Project, out: &PathBuf, cli: &Cli) {
             println!();
         }
         Err(e) => {
-            let _ = fs::remove_dir_all(out);
+            let _ = fs::remove_dir_all(out_dir);
 
             eprintln!(
                 "❌ {}\n{}\n{}",
@@ -126,10 +157,10 @@ pub fn run(data: &Vec<String>, project: &Project, out: &PathBuf, cli: &Cli) {
 
     let start_time = Instant::now();
 
-    match project.render_templates(&PathBuf::from(out), &data) {
+    match project.render_templates(&PathBuf::from(out_dir), &data) {
         Ok(r) => {
             println!(
-                "⛽ Processed {} {} {} {}\n",
+                "  Rendered {} {} {} {}\n",
                 r.len(),
                 if r.len() == 1 { "file" } else { "files" },
                 "in".dimmed(),
@@ -169,7 +200,7 @@ pub fn run(data: &Vec<String>, project: &Project, out: &PathBuf, cli: &Cli) {
             }
         }
         Err(e) => {
-            let _ = fs::remove_dir_all(out);
+            let _ = fs::remove_dir_all(out_dir);
 
             eprintln!(
                 "❌ {}\n{}",
@@ -178,6 +209,12 @@ pub fn run(data: &Vec<String>, project: &Project, out: &PathBuf, cli: &Cli) {
             );
         }
     }
+
+    // print done
+    println!(
+        "  ✅ done {}\n",
+        format!("{:?}", start_time.elapsed()).dimmed()
+    );
 
     if project.config.hooks.is_empty() {
         println!("🪝  No hooks to run");
@@ -198,10 +235,10 @@ pub fn run(data: &Vec<String>, project: &Project, out: &PathBuf, cli: &Cli) {
     };
 
     runtime.block_on(async {
-        let stream = match project.run_hooks_stream(out, &data, None) {
+        let stream = match project.run_hooks_stream(out_dir, &data, None) {
             Ok(stream) => stream,
             Err(e) => {
-                let _ = fs::remove_dir_all(out);
+                let _ = fs::remove_dir_all(out_dir);
 
                 eprintln!(
                     "  ❌ {}\n  {}",
@@ -227,8 +264,6 @@ pub fn run(data: &Vec<String>, project: &Project, out: &PathBuf, cli: &Cli) {
                         kind: HookResultKind::Failed(error),
                         ..
                     } => {
-                        let _ = fs::remove_dir_all(out);
-
                         eprintln!(
                             "    ❌ {}\n    {}",
                             format!("Hook {} failed", hook.key.bold()).bright_red(),
