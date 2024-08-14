@@ -249,9 +249,9 @@ pub fn run_hooks_stream(
     };
 
     for hook in hooks {
-        if hook.is_enabled(&data) && hook.is_satisfied(&items, &data) {
+        if hook.is_enabled(data) && hook.is_satisfied(&items, data) {
             queued_hooks.push(hook.clone());
-        } else if hook.is_enabled(&data) {
+        } else if hook.is_enabled(data) {
             skipped_hooks.push((hook.clone(), SkipReason::FalseConditional));
         } else {
             skipped_hooks.push((hook.clone(), SkipReason::UserDisabled));

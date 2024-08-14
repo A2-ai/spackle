@@ -50,7 +50,7 @@ pub fn run(data: &Vec<String>, project: &Project, out: &PathBuf, cli: &Cli) {
                 "{}",
                 format!(
                     "\nℹ Define a value for {} using the --data (-d) flag\ne.g. --data {}=<value>",
-                    format!("{}", key).bold(),
+                    key.to_string().bold(),
                     key
                 )
                 .yellow()

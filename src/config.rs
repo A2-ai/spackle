@@ -1,10 +1,9 @@
 use serde::Deserialize;
-use std::{collections::HashSet, fmt::Display, fs, io, path::PathBuf};
+use std::{collections::HashSet, fmt::Display, fs, io, path::Path};
 
 use crate::{hook::Hook, slot::Slot};
 
-#[derive(Deserialize, Debug)]
-#[derive(Default)]
+#[derive(Deserialize, Debug, Default)]
 pub struct Config {
     pub name: Option<String>,
     #[serde(default)]
@@ -14,7 +13,6 @@ pub struct Config {
     #[serde(default)]
     pub hooks: Vec<Hook>,
 }
-
 
 pub const CONFIG_FILE: &str = "spackle.toml";
 
@@ -36,7 +34,7 @@ impl Display for Error {
 }
 
 // Loads the config for the given directory
-pub fn load(dir: &PathBuf) -> Result<Config, Error> {
+pub fn load(dir: &Path) -> Result<Config, Error> {
     let config_path = dir.join(CONFIG_FILE);
 
     let config_str = match fs::read_to_string(config_path) {
@@ -106,9 +104,9 @@ mod tests {
 
     #[test]
     fn dup_key() {
-        let dir = PathBuf::from("tests/data/conf_dup_key");
+        let dir = Path::new("tests/data/conf_dup_key");
 
-        let config = load(&dir).expect("Expected ok");
+        let config = load(dir).expect("Expected ok");
 
         config.validate().expect_err("Expected error");
     }
