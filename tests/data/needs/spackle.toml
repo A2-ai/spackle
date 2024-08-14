@@ -1,17 +1,19 @@
 [[slots]]
 key = "slot_1"
 type = "String"
+needs = ["hook_1"]
 
 [[hooks]]
 key = "hook_1"
 command = ["true"]
+optional = { default = false }
 
 [[hooks]]
-key = "dep_hook_should_run"
+key = "dep_hook_run"
 command = ["true"]
 needs = ["hook_1"]
 
 [[hooks]]
-key = "dep_hook_should_skip"
+key = "dep_hook_maybe"
 command = ["true"]
 needs = ["slot_1"]

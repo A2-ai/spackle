@@ -37,7 +37,7 @@ pub fn copy(
     src: &Path,
     dest: &Path,
     skip: &Vec<String>,
-    slot_data: &HashMap<String, String>,
+    data: &HashMap<String, String>,
 ) -> Result<CopyResult, Error> {
     let mut copied_count = 0;
     let mut skipped_count = 0;
@@ -82,7 +82,7 @@ pub fn copy(
         })?;
         let dst_path_maybe_template = dest.join(relative_path);
 
-        let context = Context::from_serialize(slot_data).map_err(|e| Error {
+        let context = Context::from_serialize(data).map_err(|e| Error {
             source: e.into(),
             path: src_path.to_path_buf(),
         })?;

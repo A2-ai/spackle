@@ -72,23 +72,23 @@ impl Project {
     pub fn copy_files(
         &self,
         out_dir: &Path,
-        slot_data: &HashMap<String, String>,
+        data: &HashMap<String, String>,
     ) -> Result<copy::CopyResult, copy::Error> {
-        let mut slot_data = slot_data.clone();
-        slot_data.insert("project_name".to_string(), self.get_name());
+        let mut data = data.clone();
+        data.insert("project_name".to_string(), self.get_name());
 
-        copy::copy(&self.dir, out_dir, &self.config.ignore, &slot_data)
+        copy::copy(&self.dir, out_dir, &self.config.ignore, &data)
     }
 
     pub fn render_templates(
         &self,
         out_dir: &Path,
-        slot_data: &HashMap<String, String>,
+        data: &HashMap<String, String>,
     ) -> Result<Vec<Result<template::RenderedFile, template::FileError>>, tera::Error> {
-        let mut slot_data = slot_data.clone();
-        slot_data.insert("project_name".to_string(), self.get_name());
+        let mut data = data.clone();
+        data.insert("project_name".to_string(), self.get_name());
 
-        template::fill(&self.dir, out_dir, &slot_data)
+        template::fill(&self.dir, out_dir, &data)
     }
 
     /// Runs the hooks in the generated spackle project.
@@ -98,18 +98,16 @@ impl Project {
         &self,
         out_dir: &Path,
         slot_data: &HashMap<String, String>,
-        hook_data: &HashMap<String, bool>,
         run_as_user: Option<User>,
     ) -> Result<impl Stream<Item = hook::HookStreamResult>, RunHooksError> {
-        let mut slot_data = slot_data.clone();
-        slot_data.insert("project_name".to_string(), self.get_name());
+        let mut data = slot_data.clone();
+        data.insert("project_name".to_string(), self.get_name());
 
         let result = hook::run_hooks_stream(
             out_dir.to_owned(),
             &self.config.hooks,
             &self.config.slots,
-            &slot_data,
-            hook_data,
+            &data,
             run_as_user.clone(),
         )
         .map_err(RunHooksError::HookError)?;
@@ -123,19 +121,17 @@ impl Project {
     pub fn run_hooks(
         &self,
         out_dir: &Path,
-        slot_data: &HashMap<String, String>,
-        hook_data: &HashMap<String, bool>,
+        data: &HashMap<String, String>,
         run_as_user: Option<User>,
     ) -> Result<Vec<hook::HookResult>, hook::Error> {
-        let mut slot_data = slot_data.clone();
-        slot_data.insert("project_name".to_string(), self.get_name());
+        let mut data = data.clone();
+        data.insert("project_name".to_string(), self.get_name());
 
         let result = hook::run_hooks(
             &self.config.hooks,
             out_dir,
             &self.config.slots,
-            &slot_data,
-            hook_data,
+            &data,
             run_as_user.clone(),
         )?;
 

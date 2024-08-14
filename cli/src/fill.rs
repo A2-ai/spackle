@@ -1,7 +1,7 @@
 use colored::Colorize;
 use rocket::{futures::StreamExt, tokio};
 use spackle::{
-    hook::{HookError, HookResult, HookResultKind, HookStreamResult},
+    hook::{self, HookError, HookResult, HookResultKind, HookStreamResult},
     slot, Project,
 };
 
@@ -10,86 +10,78 @@ use tokio::pin;
 
 use crate::{check, Cli};
 
-pub fn run(slot: &Vec<String>, hook: &Vec<String>, project: &Project, out: &PathBuf, cli: &Cli) {
+pub fn run(data: &Vec<String>, project: &Project, out: &PathBuf, cli: &Cli) {
     // First, run spackle check
     check::run(project);
 
     println!();
 
-    let slot_data = slot
+    // TODO perform type checks depending on if the data is a slot or hook
+    let data = data
         .iter()
         .filter_map(|data| match data.split_once('=') {
             Some((key, value)) => Some((key.to_string(), value.to_string())),
             None => {
                 eprintln!(
                     "❌ {}\n",
-                    "Invalid slot argument, must be in the form of key=value. Skipping."
+                    "Invalid data argument, must be in the form of key=value. Skipping."
                         .bright_red()
                 );
                 None
             }
         })
-        .map(|(key, value)| (key.to_string(), value.to_string()))
         .collect::<HashMap<String, String>>();
 
-    match slot::validate_data(&slot_data, &project.config.slots) {
-        Ok(()) => {}
-        Err(e) => {
-            eprintln!(
-                "{}\n{}",
-                "❌ Error with supplied data".bright_red(),
-                e.to_string().red()
+    let slot_data = data
+        .clone()
+        .into_iter()
+        .filter(|(key, _)| project.config.slots.iter().any(|s| s.key == key.as_str()))
+        .collect::<HashMap<String, String>>();
+
+    if let Err(e) = slot::validate_data(&slot_data, &project.config.slots) {
+        eprintln!(
+            "{}\n{}",
+            "❌ Error with supplied slot data".bright_red(),
+            e.to_string().red()
+        );
+
+        if let slot::Error::UndefinedSlot(key) = e {
+            println!(
+                "{}",
+                format!(
+                    "\nℹ Define a value for {} using the --data (-d) flag\ne.g. --data {}=<value>",
+                    format!("{}", key).bold(),
+                    key
+                )
+                .yellow()
             );
-
-            if let slot::Error::UndefinedSlot(key) = e {
-                println!(
-                    "{}",
-                    format!(
-                        "\nℹ Define a value for {} using the --slot (-s) flag\ne.g. --slot {}=<value>",
-                        format!("{}", key).bold(),
-                        key
-                    )
-                    .yellow()
-                );
-            }
-
-            exit(1);
         }
+
+        exit(1);
     }
 
-    let hook_data = hook
-        .iter()
-        .filter_map(|data| match data.split_once('=') {
-            Some((key, value)) => Some((key.to_string(), value.to_string())),
-            None => {
-                eprintln!(
-                    "❌ {}\n",
-                    "Invalid hook argument, must be in the form of key=<true|false>. Skipping."
-                        .bright_red()
-                );
-                None
-            }
-        })
-        .filter_map(|(key, value)| match value.parse::<bool>() {
-            Ok(v) => Some((key, v)),
-            Err(_) => {
-                eprintln!(
-                    "❌ {}\n",
-                    "Invalid hook argument, must be a boolean. Skipping.".bright_red()
-                );
-                None
-            }
-        })
-        .collect::<HashMap<String, bool>>();
+    let hook_data = data
+        .clone()
+        .into_iter()
+        .filter(|(key, _)| project.config.hooks.iter().any(|h| h.key == key.as_str()))
+        .collect::<HashMap<String, String>>();
 
-    // TODO validate hook data
+    if let Err(e) = hook::validate_data(&hook_data, &project.config.hooks) {
+        eprintln!(
+            "{}\n{}",
+            "❌ Error with supplied hook data".bright_red(),
+            e.to_string().red()
+        );
+
+        exit(1);
+    }
 
     let start_time = Instant::now();
 
-    let mut slot_data = slot_data.clone();
-    slot_data.insert("project_name".to_string(), project.get_name());
+    let mut data = data.clone();
+    data.insert("project_name".to_string(), project.get_name());
 
-    match project.copy_files(out, &slot_data) {
+    match project.copy_files(out, &data) {
         Ok(r) => {
             println!(
                 "🖨️  Copied {} {} {}",
@@ -134,7 +126,7 @@ pub fn run(slot: &Vec<String>, hook: &Vec<String>, project: &Project, out: &Path
 
     let start_time = Instant::now();
 
-    match project.render_templates(&PathBuf::from(out), &slot_data) {
+    match project.render_templates(&PathBuf::from(out), &data) {
         Ok(r) => {
             println!(
                 "⛽ Processed {} {} {} {}\n",
@@ -206,7 +198,7 @@ pub fn run(slot: &Vec<String>, hook: &Vec<String>, project: &Project, out: &Path
     };
 
     runtime.block_on(async {
-        let stream = match project.run_hooks_stream(out, &slot_data, &hook_data, None) {
+        let stream = match project.run_hooks_stream(out, &data, None) {
             Ok(stream) => stream,
             Err(e) => {
                 let _ = fs::remove_dir_all(out);

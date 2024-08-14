@@ -33,13 +33,9 @@ enum Commands {
     Info,
     /// Fills a spackle project using the provided data
     Fill {
-        /// Assign a given slot a value
+        /// Assign data to a slot or hook
         #[arg(short, long)]
-        slot: Vec<String>,
-
-        /// Toggle a given hook on or off
-        #[arg(short = 'H', long)]
-        hook: Vec<String>,
+        data: Vec<String>,
     },
     /// Checks the validity of a spackle project
     Check,
@@ -90,7 +86,7 @@ fn main() {
     match &cli.command {
         Commands::Check => check::run(&project),
         Commands::Info {} => info::run(&project.config),
-        Commands::Fill { slot, hook } => fill::run(slot, hook, &project, &cli.out, &cli),
+        Commands::Fill { data } => fill::run(data, &project, &cli.out, &cli),
     }
 }
 

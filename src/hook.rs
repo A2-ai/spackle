@@ -102,8 +102,7 @@ impl Hook {
             None => return Ok(true),
         };
 
-        let context =
-            Context::from_serialize(context).map_err(ConditionalError::InvalidContext)?;
+        let context = Context::from_serialize(context).map_err(ConditionalError::InvalidContext)?;
 
         let condition_str = Tera::one_off(conditional, &context, false)
             .map_err(ConditionalError::InvalidTemplate)?;
@@ -114,6 +113,23 @@ impl Hook {
             .map_err(|e| ConditionalError::NotBoolean(e.to_string()))?;
 
         Ok(condition)
+    }
+}
+
+#[derive(Serialize, Debug)]
+pub enum ConditionalError {
+    InvalidContext(#[serde(skip)] tera::Error),
+    InvalidTemplate(#[serde(skip)] tera::Error),
+    NotBoolean(String),
+}
+
+impl Display for ConditionalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConditionalError::InvalidContext(e) => write!(f, "invalid context\n{}", e),
+            ConditionalError::InvalidTemplate(e) => write!(f, "invalid template\n{}", e),
+            ConditionalError::NotBoolean(e) => write!(f, "not a boolean\n{}", e),
+        }
     }
 }
 
@@ -217,23 +233,11 @@ pub fn run_hooks_stream(
     dir: impl AsRef<Path>,
     hooks: &Vec<Hook>,
     slots: &Vec<Slot>,
-    slot_data: &HashMap<String, String>,
-    hook_data: &HashMap<String, bool>,
+    data: &HashMap<String, String>,
     run_as_user: Option<User>,
 ) -> Result<impl Stream<Item = HookStreamResult>, Error> {
     let mut skipped_hooks = Vec::new();
     let mut queued_hooks = Vec::new();
-
-    let hook_data_str = hook_data
-        .iter()
-        .map(|(k, v)| (k.clone(), v.to_string()))
-        .collect::<HashMap<String, String>>();
-
-    let data_merged = {
-        let mut data = slot_data.clone();
-        data.extend(hook_data_str.clone());
-        data
-    };
 
     let items: Vec<&dyn Needy> = {
         let mut items = slots
@@ -245,9 +249,9 @@ pub fn run_hooks_stream(
     };
 
     for hook in hooks {
-        if hook.is_enabled(&hook_data_str) && hook.is_satisfied(&items, &data_merged) {
+        if hook.is_enabled(&data) && hook.is_satisfied(&items, &data) {
             queued_hooks.push(hook.clone());
-        } else if hook.is_enabled(&hook_data_str) {
+        } else if hook.is_enabled(&data) {
             skipped_hooks.push((hook.clone(), SkipReason::FalseConditional));
         } else {
             skipped_hooks.push((hook.clone(), SkipReason::UserDisabled));
@@ -257,7 +261,7 @@ pub fn run_hooks_stream(
     // Apply template to command
     let mut templated_hooks = Vec::new();
     for hook in queued_hooks {
-        let context = Context::from_serialize(slot_data.clone())
+        let context = Context::from_serialize(data.clone())
             .map_err(|e| Error::ErrorRenderingTemplate(hook.clone(), e))?;
 
         let command = hook
@@ -296,7 +300,7 @@ pub fn run_hooks_stream(
         commands.push((hook, async_process::Command::from(cmd)));
     }
 
-    let slot_data_owned = slot_data.clone();
+    let slot_data_owned = data.clone();
     let hook_keys = hooks.iter().map(|h| h.key.clone()).collect::<Vec<String>>();
 
     Ok(stream! {
@@ -388,8 +392,7 @@ pub fn run_hooks(
     hooks: &Vec<Hook>,
     dir: impl AsRef<Path>,
     slots: &Vec<Slot>,
-    slot_data: &HashMap<String, String>,
-    hook_data: &HashMap<String, bool>,
+    data: &HashMap<String, String>,
     run_as_user: Option<User>,
 ) -> Result<Vec<HookResult>, Error> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -398,7 +401,7 @@ pub fn run_hooks(
         .map_err(Error::ErrorInitializingRuntime)?;
 
     let results = runtime.block_on(async {
-        let stream = run_hooks_stream(dir, hooks, slots, slot_data, hook_data, run_as_user)?;
+        let stream = run_hooks_stream(dir, hooks, slots, data, run_as_user)?;
         pin!(stream);
 
         let mut hook_results = Vec::new();
@@ -418,21 +421,43 @@ pub fn run_hooks(
     Ok(results)
 }
 
-#[derive(Serialize, Debug)]
-pub enum ConditionalError {
-    InvalidContext(#[serde(skip)] tera::Error),
-    InvalidTemplate(#[serde(skip)] tera::Error),
-    NotBoolean(String),
+#[derive(Debug)]
+pub enum ValidateError {
+    UnknownKey(String),
+    NotOptional(String),
+    NotABoolean(String),
 }
 
-impl Display for ConditionalError {
+impl Display for ValidateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ConditionalError::InvalidContext(e) => write!(f, "invalid context\n{}", e),
-            ConditionalError::InvalidTemplate(e) => write!(f, "invalid template\n{}", e),
-            ConditionalError::NotBoolean(e) => write!(f, "not a boolean\n{}", e),
+            ValidateError::UnknownKey(key) => write!(f, "unknown key: {}", key),
+            ValidateError::NotABoolean(key) => write!(f, "not a boolean: {}", key),
+            ValidateError::NotOptional(key) => write!(f, "not optional: {}", key),
         }
     }
+}
+
+pub fn validate_data(
+    data: &HashMap<String, String>,
+    hooks: &Vec<Hook>,
+) -> Result<(), ValidateError> {
+    for entry in data.iter() {
+        match hooks.iter().find(|hook| hook.key == *entry.0) {
+            None => return Err(ValidateError::UnknownKey(entry.0.clone())),
+            Some(hook) => {
+                if hook.optional.is_none() {
+                    return Err(ValidateError::NotOptional(entry.0.clone()));
+                }
+            }
+        }
+
+        if entry.1.parse::<bool>().is_err() {
+            return Err(ValidateError::NotABoolean(entry.0.clone()));
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -449,15 +474,7 @@ mod tests {
             ..Hook::default()
         }];
 
-        assert!(run_hooks(
-            &hooks,
-            ".",
-            &Vec::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            None
-        )
-        .is_ok());
+        assert!(run_hooks(&hooks, ".", &Vec::new(), &HashMap::new(), None).is_ok());
     }
 
     #[test]
@@ -471,15 +488,8 @@ mod tests {
             },
         ];
 
-        let results = run_hooks(
-            &hooks,
-            ".",
-            &Vec::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-        )
-        .expect("run_hooks failed, should have succeeded");
+        let results = run_hooks(&hooks, ".", &Vec::new(), &HashMap::new(), None)
+            .expect("run_hooks failed, should have succeeded");
 
         assert!(
             results.iter().any(|x| matches!(x, HookResult {
@@ -507,15 +517,8 @@ mod tests {
             },
         ];
 
-        let results = run_hooks(
-            &hooks,
-            ".",
-            &Vec::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-        )
-        .expect("run_hooks failed, should have succeeded");
+        let results = run_hooks(&hooks, ".", &Vec::new(), &HashMap::new(), None)
+            .expect("run_hooks failed, should have succeeded");
 
         assert!(results.iter().any(|x| matches!(x, HookResult {
                 hook,
@@ -558,15 +561,8 @@ mod tests {
             },
         ];
 
-        let results = run_hooks(
-            &hooks,
-            ".",
-            &Vec::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-        )
-        .expect("run_hooks failed, should have succeeded");
+        let results = run_hooks(&hooks, ".", &Vec::new(), &HashMap::new(), None)
+            .expect("run_hooks failed, should have succeeded");
 
         let skipped_hooks: Vec<_> = results
             .iter()
@@ -615,7 +611,6 @@ mod tests {
             ".",
             &Vec::new(),
             &HashMap::from([("good_var".to_string(), "true".to_string())]),
-            &HashMap::new(),
             None,
         )
         .expect("run_hooks failed, should have succeeded");
@@ -647,7 +642,6 @@ mod tests {
             ".",
             &Vec::new(),
             &HashMap::from([("".to_string(), "".to_string())]),
-            &HashMap::new(),
             None,
         )
         .expect("run_hooks failed, should have succeeded");
@@ -685,8 +679,7 @@ mod tests {
             &hooks,
             ".",
             &Vec::new(),
-            &HashMap::new(),
-            &HashMap::from([("3".to_string(), true)]),
+            &HashMap::from([("3".to_string(), "true".to_string())]),
             None,
         )
         .expect("run_hooks failed, should have succeeded");
@@ -733,7 +726,6 @@ mod tests {
                 ("field_1".to_string(), "echo".to_string()),
                 ("field_2".to_string(), "test".to_string()),
             ]),
-            &HashMap::new(),
             None,
         )
         .expect("run_hooks failed, should have succeeded");
@@ -765,7 +757,6 @@ mod tests {
             ".",
             &Vec::new(),
             &HashMap::from([("field_1".to_string(), "echo".to_string())]),
-            &HashMap::new(),
             None,
         )
         .expect_err("run_hooks succeeded, should have failed");
@@ -822,7 +813,6 @@ mod tests {
                 ("number_slot".to_string(), "1".to_string()),
                 ("bool_slot".to_string(), "true".to_string()),
             ]),
-            &HashMap::new(),
             None,
         )
         .expect("run_hooks failed, should have succeeded");
@@ -855,15 +845,8 @@ mod tests {
             },
         ];
 
-        let results = run_hooks(
-            &hooks,
-            ".",
-            &Vec::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-        )
-        .expect("run_hooks failed, should have succeeded");
+        let results = run_hooks(&hooks, ".", &Vec::new(), &HashMap::new(), None)
+            .expect("run_hooks failed, should have succeeded");
 
         assert!(
             results.iter().any(|x| matches!(x, HookResult {
@@ -885,15 +868,8 @@ mod tests {
             ..Hook::default()
         }];
 
-        let results = run_hooks(
-            &hooks,
-            ".",
-            &Vec::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-        )
-        .expect("run_hooks failed, should have succeeded");
+        let results = run_hooks(&hooks, ".", &Vec::new(), &HashMap::new(), None)
+            .expect("run_hooks failed, should have succeeded");
 
         assert!(
             results.iter().any(|x| matches!(x, HookResult {
@@ -928,15 +904,8 @@ mod tests {
             },
         ];
 
-        let results = run_hooks(
-            &hooks,
-            ".",
-            &Vec::new(),
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-        )
-        .expect("run_hooks failed, should have succeeded");
+        let results = run_hooks(&hooks, ".", &Vec::new(), &HashMap::new(), None)
+            .expect("run_hooks failed, should have succeeded");
 
         assert!(
             results.iter().any(|result| {
@@ -974,7 +943,6 @@ mod tests {
             ".",
             &Vec::new(),
             &HashMap::from([("slot_a".to_string(), "false".to_string())]),
-            &HashMap::new(),
             None,
         )
         .expect("run_hooks failed, should have succeeded");
@@ -988,5 +956,39 @@ mod tests {
             "Expected hook 'hook_b' to be skipped, got {:?}",
             results.iter().find(|x| x.hook.key == "hook_b")
         );
+    }
+
+    #[test]
+    fn test_validate_data_non_boolean() {
+        let data = HashMap::from([("hook_a".to_string(), "foo".to_string())]);
+
+        let hooks = Vec::from([Hook {
+            key: "hook_a".to_string(),
+            optional: Some(HookConfigOptional { default: false }),
+            ..Hook::default()
+        }]);
+
+        validate_data(&data, &hooks).expect_err("validate_data should have failed");
+    }
+
+    #[test]
+    fn test_validate_data_missing_key() {
+        let data = HashMap::from([("hook_a".to_string(), "true".to_string())]);
+
+        let hooks = Vec::new();
+
+        validate_data(&data, &hooks).expect_err("validate_data should have failed");
+    }
+
+    #[test]
+    fn test_validate_data_not_optional() {
+        let data = HashMap::from([("hook_a".to_string(), "true".to_string())]);
+
+        let hooks = Vec::from([Hook {
+            key: "hook_a".to_string(),
+            ..Hook::default()
+        }]);
+
+        validate_data(&data, &hooks).expect_err("validate_data should have failed");
     }
 }
