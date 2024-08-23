@@ -90,7 +90,7 @@ pub fn run(
     let start_time = Instant::now();
 
     let mut slot_data = slot_data.clone();
-    slot_data.insert("project_name".to_string(), get_project_name(project_dir));
+    slot_data.insert("_project_name".to_string(), get_project_name(project_dir));
 
     // CR(devin): when looking at the below code, this likely should be pushed
     // into the spackle lib itself, there are too many implementation details

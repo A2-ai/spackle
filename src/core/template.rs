@@ -149,7 +149,7 @@ pub fn validate(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), ValidateError> {
             .collect::<HashMap<_, _>>(),
     )
     .map_err(|e| ValidateError::TeraError(e))?;
-    context.insert("project_name".to_string(), &get_project_name(dir));
+    context.insert("_project_name".to_string(), &get_project_name(dir));
 
     let errors = tera
         .get_template_names()

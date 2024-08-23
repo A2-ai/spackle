@@ -77,7 +77,7 @@ pub fn generate(
     let config = config::load(project_dir).map_err(GenerateError::BadConfig)?;
 
     let mut slot_data = slot_data.clone();
-    slot_data.insert("project_name".to_string(), get_project_name(project_dir));
+    slot_data.insert("_project_name".to_string(), get_project_name(project_dir));
 
     // Copy all non-template files to the output directory
     copy::copy(project_dir, &out_dir, &config.ignore, &slot_data)
