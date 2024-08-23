@@ -2,7 +2,7 @@ use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt::Display};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Slot {
     pub key: String,
     #[serde(default)]

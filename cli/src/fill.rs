@@ -1,16 +1,17 @@
-use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant};
-
 use colored::Colorize;
+use dialoguer::{theme::ColorfulTheme, Input};
 use rocket::{futures::StreamExt, tokio};
 use spackle::{
     core::{
         config::Config,
         copy,
         hook::{self, HookError, HookResult, HookResultKind, HookStreamResult},
-        slot, template,
+        slot::{self, Slot, SlotType},
+        template,
     },
     get_project_name,
 };
+use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant};
 use tokio::pin;
 
 use crate::{check, Cli};
@@ -28,7 +29,7 @@ pub fn run(
 
     println!("");
 
-    let slot_data = slot
+    let mut slot_data = slot
         .iter()
         .filter_map(|data| match data.split_once('=') {
             Some((key, value)) => Some((key.to_string(), value.to_string())),
@@ -44,6 +45,39 @@ pub fn run(
         })
         .map(|(key, value)| (key.to_string(), value.to_string()))
         .collect::<HashMap<String, String>>();
+
+    // at this point we've collected all the flags, so we should identify
+    // if any additional slots are needed and if we're in a tty context prompt
+    // for more slot info before validating
+    if atty::is(atty::Stream::Stdout) {
+    let missing_slots: Vec<Slot> = config
+        .slots
+        .clone()
+        .into_iter()
+        .filter(|slot| !slot_data.contains_key(&slot.key))
+        .collect();
+
+    missing_slots.iter().for_each(|slot| {
+        match &slot.r#type {
+            SlotType::String => {
+                // Handle String type here
+                let input: String = Input::with_theme(&ColorfulTheme::default())
+                    .with_prompt(&slot.key)
+                    .interact_text()
+                    .unwrap();
+                slot_data.insert(slot.key.clone(), input);
+            }
+            SlotType::Boolean => {
+                // Handle Boolean type here
+                println!("Missing slot of type Boolean with value: {}", slot.key);
+            }
+            SlotType::Number => {
+                // Handle Number type here
+                println!("Missing slot of type Number with value: {}", slot.key);
+            }
+        }
+    });
+    }
 
     match slot::validate_data(&slot_data, &config.slots) {
         Ok(()) => {}
@@ -89,7 +123,6 @@ pub fn run(
 
     let start_time = Instant::now();
 
-    let mut slot_data = slot_data.clone();
     slot_data.insert("_project_name".to_string(), get_project_name(project_dir));
 
     // CR(devin): when looking at the below code, this likely should be pushed
