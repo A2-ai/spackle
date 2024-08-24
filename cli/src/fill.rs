@@ -1,3 +1,4 @@
+use crate::{check, Cli};
 use colored::Colorize;
 use dialoguer::{theme::ColorfulTheme, Input};
 use rocket::{futures::StreamExt, tokio};
@@ -12,23 +13,36 @@ use spackle::{
     get_project_name,
 };
 use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant};
+use tera::{Context, Tera};
 use tokio::pin;
 
-use crate::{check, Cli};
-
-pub fn run(
+pub fn run_file(
+    template: String,
     slot: &Vec<String>,
-    hook: &Vec<String>,
-    project_dir: &PathBuf,
-    out: &PathBuf,
-    config: &Config,
-    cli: &Cli,
-) {
-    // First, run spackle check
-    check::run(project_dir, config);
+    slots: Vec<Slot> 
+) -> Result<String, tera::Error> {
+    let mut slot_data = collect_slot_data(slot, slots.clone());
 
-    println!("");
+    // TODO: refactor all this is literally copy-pasted from run
+    match slot::validate_data(&slot_data, &slots) {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!(
+                "{}\n{}",
+                "❌ Error with supplied data".bright_red(),
+                e.to_string().red()
+            );
 
+            exit(1);
+        }
+    }
+
+    // TODO: end copy-paste
+    let context = Context::from_serialize(slot_data)?;
+    Tera::one_off(template.as_str(), &context, false)
+}
+
+fn collect_slot_data(slot: &Vec<String>, slots: Vec<Slot>) -> HashMap<String, String> {
     let mut slot_data = slot
         .iter()
         .filter_map(|data| match data.split_once('=') {
@@ -50,34 +64,49 @@ pub fn run(
     // if any additional slots are needed and if we're in a tty context prompt
     // for more slot info before validating
     if atty::is(atty::Stream::Stdout) {
-    let missing_slots: Vec<Slot> = config
-        .slots
-        .clone()
-        .into_iter()
-        .filter(|slot| !slot_data.contains_key(&slot.key))
-        .collect();
+        let missing_slots: Vec<Slot> = slots
+            .into_iter()
+            .filter(|slot| !slot_data.contains_key(&slot.key))
+            .collect();
 
-    missing_slots.iter().for_each(|slot| {
-        match &slot.r#type {
-            SlotType::String => {
-                // Handle String type here
-                let input: String = Input::with_theme(&ColorfulTheme::default())
-                    .with_prompt(&slot.key)
-                    .interact_text()
-                    .unwrap();
-                slot_data.insert(slot.key.clone(), input);
+        missing_slots.iter().for_each(|slot| {
+            match &slot.r#type {
+                SlotType::String => {
+                    // Handle String type here
+                    let input: String = Input::with_theme(&ColorfulTheme::default())
+                        .with_prompt(&slot.key)
+                        .interact_text()
+                        .unwrap();
+                    slot_data.insert(slot.key.clone(), input);
+                }
+                SlotType::Boolean => {
+                    // Handle Boolean type here
+                    println!("Missing slot of type Boolean with value: {}", slot.key);
+                }
+                SlotType::Number => {
+                    // Handle Number type here
+                    println!("Missing slot of type Number with value: {}", slot.key);
+                }
             }
-            SlotType::Boolean => {
-                // Handle Boolean type here
-                println!("Missing slot of type Boolean with value: {}", slot.key);
-            }
-            SlotType::Number => {
-                // Handle Number type here
-                println!("Missing slot of type Number with value: {}", slot.key);
-            }
-        }
-    });
+        });
     }
+    slot_data
+}
+
+pub fn run(
+    slot: &Vec<String>,
+    hook: &Vec<String>,
+    project_dir: &PathBuf,
+    out: &PathBuf,
+    config: &Config,
+    cli: &Cli,
+) {
+    // First, run spackle check
+    check::run(project_dir, config);
+
+    println!("");
+
+    let mut slot_data = collect_slot_data(slot, config.slots.clone());
 
     match slot::validate_data(&slot_data, &config.slots) {
         Ok(()) => {}
