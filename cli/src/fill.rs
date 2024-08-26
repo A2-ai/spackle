@@ -13,7 +13,7 @@ use spackle::{
     },
     get_project_name,
 };
-use std::{collections::HashMap, fmt::Debug, fs, path::PathBuf, process::exit, time::Instant};
+use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant};
 use tera::{Context, Tera};
 use tokio::pin;
 
@@ -47,20 +47,41 @@ fn collect_slot_data(slot: &Vec<String>, slots: Vec<Slot>) -> HashMap<String, St
         missing_slots.iter().for_each(|slot| {
             match &slot.r#type {
                 SlotType::String => {
-                    // Handle String type here
-                    let input: String = Input::with_theme(&ColorfulTheme::default())
-                        .with_prompt(&slot.key)
+                    let input = Input::with_theme(&ColorfulTheme::default())
+                        .with_prompt(&slot.get_name())
                         .interact_text()
                         .unwrap();
+
                     slot_data.insert(slot.key.clone(), input);
                 }
                 SlotType::Boolean => {
-                    // Handle Boolean type here
-                    println!("Missing slot of type Boolean with value: {}", slot.key);
+                    let input = Input::with_theme(&ColorfulTheme::default())
+                        .with_prompt(&slot.get_name())
+                        .validate_with(|input: &String| -> Result<(), &str> {
+                            // ensure input is a boolean
+                            if input.parse::<bool>().is_err() {
+                                return Err("Input must be a boolean".into());
+                            }
+                            Ok(())
+                        })
+                        .interact()
+                        .unwrap();
+
+                    slot_data.insert(slot.key.clone(), input);
                 }
                 SlotType::Number => {
-                    // Handle Number type here
-                    println!("Missing slot of type Number with value: {}", slot.key);
+                    let input = Input::with_theme(&ColorfulTheme::default())
+                        .with_prompt(&slot.get_name())
+                        .validate_with(|input: &String| -> Result<(), &str> {
+                            if input.parse::<i32>().is_err() {
+                                return Err("Input must be a number".into());
+                            }
+                            Ok(())
+                        })
+                        .interact_text()
+                        .unwrap();
+
+                    slot_data.insert(slot.key.clone(), input);
                 }
             }
         });

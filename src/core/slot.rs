@@ -2,7 +2,7 @@ use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt::Display};
 
-#[derive(Serialize, Deserialize, Debug,  Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Slot {
     pub key: String,
     #[serde(default)]
@@ -54,6 +54,12 @@ impl Display for Error {
             }
             Error::UndefinedSlot(key) => write!(f, "slot was not defined: {}", key),
         }
+    }
+}
+
+impl Slot {
+    pub fn get_name(&self) -> String {
+        self.name.clone().unwrap_or(self.key.clone())
     }
 }
 
