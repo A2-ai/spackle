@@ -1,9 +1,6 @@
 use clap::{command, Parser, Subcommand};
 use colored::Colorize;
-use fronma::engines::Toml;
-use fronma::parser::parse_with_engine;
 use spackle::core::config::{self, Config};
-use std::fs;
 use std::{path::PathBuf, process::exit};
 mod check;
 mod fill;
@@ -15,16 +12,13 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 
-    #[arg(short = 'f', long, default_value = None, global = true)]
-    file: Option<PathBuf>,
-
-    /// The directory of the spackle project. Defaults to the current directory.
-    #[arg(short = 'D', long, default_value = ".", global = true)]
-    dir: PathBuf,
+    /// The directory of the spackle project or the single file to render. Defaults to the current directory.
+    #[arg(short = 'p', long = "project", default_value = ".", global = true)]
+    project_path: PathBuf,
 
     /// The directory to render to. Defaults to 'render' within the current directory. Cannot be the same as the project directory.
-    #[arg(short = 'o', long, default_value = "render", global = true)]
-    out: PathBuf,
+    #[arg(short = 'o', long = "out", default_value = "render", global = true)]
+    out_dir: PathBuf,
 
     /// Whether to run in verbose mode.
     #[arg(short, long, global = true)]
@@ -56,7 +50,7 @@ fn main() {
     let cli = Cli::parse();
 
     // Ensure the output directory is not the same as the project directory
-    if cli.file.is_none() && cli.out == cli.dir {
+    if cli.project_path.is_dir() && cli.out_dir == cli.project_path {
         eprintln!(
             "{}\n{}",
             "❌ Output directory cannot be the same as project directory".bright_red(),
@@ -65,9 +59,19 @@ fn main() {
         exit(2);
     }
 
-    let project_dir = cli.dir.clone();
-    let config = if cli.file.is_none() {
-        match config::load(&project_dir) {
+    // Load the config
+    // this can either be a directory or a single file
+    let config = if cli.project_path.is_dir() {
+        if !cli.project_path.join("spackle.toml").exists() {
+            eprintln!(
+                "{}\n{}",
+                "❌ Provided directory is not a spackle project".bright_red(),
+                "Valid projects must have a spackle.toml file.".red()
+            );
+            exit(1);
+        }
+
+        match config::load_dir(&cli.project_path) {
             Ok(config) => config,
             Err(e) => {
                 eprintln!(
@@ -79,45 +83,33 @@ fn main() {
             }
         }
     } else {
-        let file_contents = fs::read_to_string(cli.file.clone().unwrap()).unwrap();
-        // TODO: don't duplicate this lol
-        parse_with_engine::<spackle::core::config::Config, Toml>(&file_contents)
-            .unwrap()
-            .headers
-        // parse config off file frontmatter
+        match config::load_file(&cli.project_path) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!(
+                    "❌ {}\n{}",
+                    "Error loading project file".bright_red(),
+                    e.to_string().red()
+                );
+                exit(1);
+            }
+        }
     };
-    // Check if the project directory is a spackle project
-    if cli.file.is_none() && !project_dir.join("spackle.toml").exists() {
-        eprintln!(
-            "{}\n{}",
-            "❌ Provided directory is not a spackle project".bright_red(),
-            "Valid projects must have a spackle.toml file.".red()
-        );
-        exit(1);
-    }
 
-    // Load the config
-    if cli.file.is_none() {
-        print_project_info(&project_dir, &config);
+    if cli.project_path.is_dir() {
+        print_project_info(&cli.project_path, &config);
+    } else {
+        println!(
+            "📄 Using project file {}\n",
+            cli.project_path.to_string_lossy().bold()
+        );
     }
 
     match &cli.command {
-        Commands::Check => check::run(&project_dir, &config),
+        Commands::Check => check::run(&cli.project_path, &config),
         Commands::Info {} => info::run(&config),
         Commands::Fill { slot, hook } => {
-            if cli.file.is_none() {
-                fill::run(slot, hook, &project_dir, &cli.out, &config, &cli)
-            } else {
-                // TODO: refactor - at the moment this is also duplicated in the config parsing logic
-                // where its read in prior. just doing this quick and dirty now where not dealing with
-                // the scoping rules/conditions of file vs dir
-                let file_contents = fs::read_to_string(cli.file.clone().unwrap()).unwrap();
-                let result =
-                    parse_with_engine::<spackle::core::config::Config, Toml>(&file_contents)
-                        .unwrap();
-                let res = fill::run_file(result.body.to_string(), slot, config.slots);
-                println!("{}", res.unwrap());
-            }
+            fill::run(slot, hook, &cli.project_path, &cli.out_dir, &config, &cli)
         }
     }
 }

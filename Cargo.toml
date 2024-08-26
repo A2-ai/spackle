@@ -38,6 +38,7 @@ install-updater = true
 async-process = "2.2.3"
 async-stream = "0.3.5"
 colored = "2.1.0"
+fronma = { version = "0.2.0", features = ["toml"] }
 getrandom = { version = "0.2.15", features = ["js"] }
 polyjuice = { git = "https://github.com/a2-ai/polyjuice" }
 serde = { version = "1.0.202", features = ["derive"] }

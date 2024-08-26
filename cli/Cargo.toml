@@ -16,5 +16,5 @@ rust-embed = "8.4.0"
 tera = "1.20.0"
 dialoguer = "0.11.0"
 atty = "0.2.14"
-fronma = { version = "0.2.0", features = ["toml"] }
 toml = "0.8.19"
+fronma = { version = "0.2.0", features = ["toml"] }

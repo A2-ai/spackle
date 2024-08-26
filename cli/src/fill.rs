@@ -1,10 +1,11 @@
 use crate::{check, Cli};
 use colored::Colorize;
 use dialoguer::{theme::ColorfulTheme, Input};
+use fronma::parser::parse_with_engine;
 use rocket::{futures::StreamExt, tokio};
 use spackle::{
     core::{
-        config::Config,
+        config::{self, Config},
         copy,
         hook::{self, HookError, HookResult, HookResultKind, HookStreamResult},
         slot::{self, Slot, SlotType},
@@ -12,35 +13,9 @@ use spackle::{
     },
     get_project_name,
 };
-use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant};
+use std::{collections::HashMap, fmt::Debug, fs, path::PathBuf, process::exit, time::Instant};
 use tera::{Context, Tera};
 use tokio::pin;
-
-pub fn run_file(
-    template: String,
-    slot: &Vec<String>,
-    slots: Vec<Slot> 
-) -> Result<String, tera::Error> {
-    let mut slot_data = collect_slot_data(slot, slots.clone());
-
-    // TODO: refactor all this is literally copy-pasted from run
-    match slot::validate_data(&slot_data, &slots) {
-        Ok(()) => {}
-        Err(e) => {
-            eprintln!(
-                "{}\n{}",
-                "❌ Error with supplied data".bright_red(),
-                e.to_string().red()
-            );
-
-            exit(1);
-        }
-    }
-
-    // TODO: end copy-paste
-    let context = Context::from_serialize(slot_data)?;
-    Tera::one_off(template.as_str(), &context, false)
-}
 
 fn collect_slot_data(slot: &Vec<String>, slots: Vec<Slot>) -> HashMap<String, String> {
     let mut slot_data = slot
@@ -90,6 +65,9 @@ fn collect_slot_data(slot: &Vec<String>, slots: Vec<Slot>) -> HashMap<String, St
             }
         });
     }
+
+    println!();
+
     slot_data
 }
 
@@ -121,6 +99,23 @@ pub fn run(
         }
     }
 
+    slot_data.insert("_project_name".to_string(), get_project_name(project_dir));
+
+    if cli.project_path.is_dir() {
+        run_multi(&slot_data, hook, project_dir, out, config, cli);
+    } else {
+        run_single(&slot_data, &cli)
+    }
+}
+
+pub fn run_multi(
+    slot_data: &HashMap<String, String>,
+    hook: &Vec<String>,
+    project_dir: &PathBuf,
+    out: &PathBuf,
+    config: &Config,
+    cli: &Cli,
+) {
     let hook_data = hook
         .iter()
         .filter_map(|data| match data.split_once('=') {
@@ -151,8 +146,6 @@ pub fn run(
     // TODO validate hook data
 
     let start_time = Instant::now();
-
-    slot_data.insert("_project_name".to_string(), get_project_name(project_dir));
 
     // CR(devin): when looking at the below code, this likely should be pushed
     // into the spackle lib itself, there are too many implementation details
@@ -356,4 +349,80 @@ pub fn run(
             start_time = Instant::now();
         }
     });
+}
+
+pub fn run_single(slot_data: &HashMap<String, String>, cli: &Cli) {
+    let start_time = Instant::now();
+
+    let file_contents = match fs::read_to_string(&cli.project_path) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!(
+                "❌ {}\n{}",
+                "Error reading project file".bright_red(),
+                e.to_string().red()
+            );
+            exit(1);
+        }
+    };
+
+    let body = match parse_with_engine::<config::Config, fronma::engines::Toml>(&file_contents) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("❌ {}\n{:#?}", "Error parsing project file".bright_red(), e);
+            exit(1);
+        }
+    }
+    .body;
+
+    let context = match Context::from_serialize(slot_data) {
+        Ok(context) => context,
+        Err(e) => {
+            eprintln!(
+                "❌ {}\n{}",
+                "Error parsing context".bright_red(),
+                e.to_string().red()
+            );
+            exit(1);
+        }
+    };
+
+    let result = match Tera::one_off(body, &context, false) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!(
+                "❌ {}\n{}",
+                "Error rendering template".bright_red(),
+                e.to_string().red()
+            );
+            exit(1);
+        }
+    };
+
+    let output_path = cli
+        .out_dir
+        .join(get_project_name(&cli.project_path).as_str());
+
+    // TODO do we want to output to out_dir to make consistent with full project render?
+    // match fs::write(&output_path, result.clone()) {
+    //     Ok(_) => {}
+    //     Err(e) => {
+    //         eprintln!(
+    //             "❌ {}\n{}",
+    //             "Error writing output file".bright_red(),
+    //             e.to_string().red()
+    //         );
+    //         exit(1);
+    //     }
+    // }
+
+    println!(
+        "⛽ Rendered file {}\n  {}",
+        format!("in {:?}", start_time.elapsed()).dimmed(),
+        output_path.to_string_lossy().bold()
+    );
+
+    // if cli.verbose {
+    println!("\n{}\n{}", "contents".dimmed(), result);
+    // }
 }
