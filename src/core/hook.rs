@@ -39,6 +39,7 @@ impl Display for HookResultKind {
 }
 
 #[derive(Serialize, Debug)]
+#[serde(tag = "type")]
 pub enum HookError {
     ConditionalFailed(ConditionalError),
     CommandLaunchFailed(#[serde(skip)] io::Error),
