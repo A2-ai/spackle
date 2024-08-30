@@ -299,6 +299,7 @@ pub fn run_hooks(
 }
 
 #[derive(Serialize, Debug)]
+#[serde(tag = "type")]
 pub enum ConditionalError {
     InvalidContext(#[serde(skip)] tera::Error),
     InvalidTemplate(#[serde(skip)] tera::Error),
