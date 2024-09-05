@@ -2,7 +2,6 @@ use clap::{command, Parser, Subcommand};
 use colored::Colorize;
 use spackle::core::config::{self, Config};
 use std::{path::PathBuf, process::exit};
-
 mod check;
 mod fill;
 mod info;
@@ -13,13 +12,9 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 
-    /// The directory of the spackle project. Defaults to the current directory.
-    #[arg(short = 'D', long, default_value = ".", global = true)]
-    dir: PathBuf,
-
-    /// The directory to render to. Defaults to 'render' within the current directory. Cannot be the same as the project directory.
-    #[arg(short = 'o', long, default_value = "render", global = true)]
-    out: PathBuf,
+    /// The spackle project to use (either a directory or a single file). Defaults to the current directory.
+    #[arg(short = 'p', long = "project", default_value = ".", global = true)]
+    project_path: PathBuf,
 
     /// Whether to run in verbose mode.
     #[arg(short, long, global = true)]
@@ -40,6 +35,10 @@ enum Commands {
         /// Toggle a given hook on or off
         #[arg(short = 'H', long)]
         hook: Vec<String>,
+
+        /// The location the output should be written to. If the project is a single file, this is the output file. If the project is a directory, this is the output directory.
+        #[arg(short = 'o', long = "out", global = true)]
+        out_path: Option<PathBuf>,
     },
     /// Checks the validity of a spackle project
     Check,
@@ -50,49 +49,60 @@ fn main() {
 
     let cli = Cli::parse();
 
-    // Ensure the output directory is not the same as the project directory
-    if cli.out == cli.dir {
-        eprintln!(
-            "{}\n{}",
-            "❌ Output directory cannot be the same as project directory".bright_red(),
-            "Please choose a different output directory.".red()
-        );
-        exit(2);
-    }
-
-    let project_dir = cli.dir.clone();
-
-    // Check if the project directory is a spackle project
-    if !project_dir.join("spackle.toml").exists() {
-        eprintln!(
-            "{}\n{}",
-            "❌ Provided directory is not a spackle project".bright_red(),
-            "Valid projects must have a spackle.toml file.".red()
-        );
-        exit(1);
-    }
-
     // Load the config
-    let config = match config::load(&project_dir) {
-        Ok(config) => config,
-        Err(e) => {
+    // this can either be a directory or a single file
+    let config = if cli.project_path.is_dir() {
+        if !cli.project_path.join("spackle.toml").exists() {
             eprintln!(
-                "❌ {}\n{}",
-                "Error loading project config".bright_red(),
-                e.to_string().red()
+                "{}\n{}",
+                "❌ Provided directory is not a spackle project".bright_red(),
+                "Valid projects must have a spackle.toml file.".red()
             );
             exit(1);
         }
+
+        match config::load_dir(&cli.project_path) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!(
+                    "❌ {}\n{}",
+                    "Error loading project config".bright_red(),
+                    e.to_string().red()
+                );
+                exit(1);
+            }
+        }
+    } else {
+        match config::load_file(&cli.project_path) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!(
+                    "❌ {}\n{}",
+                    "Error loading project file".bright_red(),
+                    e.to_string().red()
+                );
+                exit(1);
+            }
+        }
     };
 
-    print_project_info(&project_dir, &config);
+    if cli.project_path.is_dir() {
+        print_project_info(&cli.project_path, &config);
+    } else {
+        println!(
+            "📄 Using project file {}\n",
+            cli.project_path.to_string_lossy().bold()
+        );
+    }
 
     match &cli.command {
-        Commands::Check => check::run(&project_dir, &config),
+        Commands::Check => check::run(&cli.project_path, &config),
         Commands::Info {} => info::run(&config),
-        Commands::Fill { slot, hook } => {
-            fill::run(slot, hook, &project_dir, &cli.out, &config, &cli)
-        }
+        Commands::Fill {
+            slot,
+            hook,
+            out_path,
+        } => fill::run(slot, hook, &cli.project_path, out_path, &config, &cli),
     }
 }
 

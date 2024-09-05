@@ -17,11 +17,10 @@ Commands:
   help   Print this message or the help of the given subcommand(s)
 
 Options:
-  -D, --dir <DIR>  The directory of the spackle project. Defaults to the current directory [default: .]
-  -o, --out <OUT>  The directory to render to. Defaults to 'render' within the current directory. Cannot be the same as the project directory [default: render]
-  -v, --verbose    Whether to run in verbose mode
-  -h, --help       Print help
-  -V, --version    Print version
+  -p, --project <PROJECT_PATH>  The spackle project to use (either a directory or a single file). Defaults to the current directory [default: .]
+  -v, --verbose                 Whether to run in verbose mode
+  -h, --help                    Print help
+  -V, --version                 Print version
 ```
 
 ## Project configuration

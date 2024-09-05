@@ -10,7 +10,7 @@ A spackle project is defined by a `spackle.toml` file at the root directory. Bel
 
 Universal slots are available in all slot environments (`.j2` file contents, file names, <span style="color: darkseagreen;">{s}</span> fields).
 
-- project_name `string`
+- `_project_name` `string`
   - The name of the project, defined by the name of the output directory
 
 ## Project-level config

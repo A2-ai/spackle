@@ -118,7 +118,7 @@ pub fn run_hooks_stream(
     run_as_user: Option<User>,
 ) -> Result<impl Stream<Item = HookStreamResult>, Error> {
     let mut slot_data = slot_data.clone();
-    slot_data.insert("project_name".to_string(), get_project_name(dir.as_ref()));
+    slot_data.insert("_project_name".to_string(), get_project_name(dir.as_ref()));
 
     let mut skipped_hooks = Vec::new();
     let mut queued_hooks = Vec::new();
@@ -643,7 +643,7 @@ mod tests {
             },
             Hook {
                 key: "2".to_string(),
-                command: vec!["echo".to_string(), "{{ project_name }}".to_string()],
+                command: vec!["echo".to_string(), "{{ _project_name }}".to_string()],
                 r#if: None,
                 optional: None,
                 name: None,

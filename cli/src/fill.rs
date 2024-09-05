@@ -1,34 +1,24 @@
-use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant};
-
+use crate::{check, Cli};
 use colored::Colorize;
+use dialoguer::{theme::ColorfulTheme, Input};
+use fronma::parser::parse_with_engine;
 use rocket::{futures::StreamExt, tokio};
 use spackle::{
     core::{
-        config::Config,
+        config::{self, Config},
         copy,
         hook::{self, HookError, HookResult, HookResultKind, HookStreamResult},
-        slot, template,
+        slot::{self, Slot, SlotType},
+        template,
     },
     get_project_name,
 };
+use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant};
+use tera::{Context, Tera};
 use tokio::pin;
 
-use crate::{check, Cli};
-
-pub fn run(
-    slot: &Vec<String>,
-    hook: &Vec<String>,
-    project_dir: &PathBuf,
-    out: &PathBuf,
-    config: &Config,
-    cli: &Cli,
-) {
-    // First, run spackle check
-    check::run(project_dir, config);
-
-    println!("");
-
-    let slot_data = slot
+fn collect_slot_data(slot: &Vec<String>, slots: Vec<Slot>) -> HashMap<String, String> {
+    let mut slot_data = slot
         .iter()
         .filter_map(|data| match data.split_once('=') {
             Some((key, value)) => Some((key.to_string(), value.to_string())),
@@ -45,6 +35,78 @@ pub fn run(
         .map(|(key, value)| (key.to_string(), value.to_string()))
         .collect::<HashMap<String, String>>();
 
+    // at this point we've collected all the flags, so we should identify
+    // if any additional slots are needed and if we're in a tty context prompt
+    // for more slot info before validating
+    if atty::is(atty::Stream::Stdout) {
+        let missing_slots: Vec<Slot> = slots
+            .into_iter()
+            .filter(|slot| !slot_data.contains_key(&slot.key))
+            .collect();
+
+        missing_slots.iter().for_each(|slot| {
+            match &slot.r#type {
+                SlotType::String => {
+                    let input = Input::with_theme(&ColorfulTheme::default())
+                        .with_prompt(&slot.get_name())
+                        .interact_text()
+                        .unwrap();
+
+                    slot_data.insert(slot.key.clone(), input);
+                }
+                SlotType::Boolean => {
+                    let input = Input::with_theme(&ColorfulTheme::default())
+                        .with_prompt(&slot.get_name())
+                        .validate_with(|input: &String| -> Result<(), &str> {
+                            // ensure input is a boolean
+                            if input.parse::<bool>().is_err() {
+                                return Err("Input must be a boolean".into());
+                            }
+                            Ok(())
+                        })
+                        .interact()
+                        .unwrap();
+
+                    slot_data.insert(slot.key.clone(), input);
+                }
+                SlotType::Number => {
+                    let input = Input::with_theme(&ColorfulTheme::default())
+                        .with_prompt(&slot.get_name())
+                        .validate_with(|input: &String| -> Result<(), &str> {
+                            if input.parse::<i32>().is_err() {
+                                return Err("Input must be a number".into());
+                            }
+                            Ok(())
+                        })
+                        .interact_text()
+                        .unwrap();
+
+                    slot_data.insert(slot.key.clone(), input);
+                }
+            }
+        });
+    }
+
+    println!();
+
+    slot_data
+}
+
+pub fn run(
+    slot: &Vec<String>,
+    hook: &Vec<String>,
+    project_dir: &PathBuf,
+    out_path: &Option<PathBuf>,
+    config: &Config,
+    cli: &Cli,
+) {
+    // First, run spackle check
+    check::run(project_dir, config);
+
+    println!("");
+
+    let mut slot_data = collect_slot_data(slot, config.slots.clone());
+
     match slot::validate_data(&slot_data, &config.slots) {
         Ok(()) => {}
         Err(e) => {
@@ -58,6 +120,45 @@ pub fn run(
         }
     }
 
+    slot_data.insert("_project_name".to_string(), get_project_name(project_dir));
+
+    let out_path = match &out_path {
+        Some(path) => path,
+        None => &Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("Enter the output path")
+            .interact_text()
+            .map(|p: String| PathBuf::from(p))
+            .unwrap_or_else(|e| {
+                eprintln!("❌ {}", e.to_string().red());
+                exit(1);
+            }),
+    };
+
+    // Ensure the output path doesn't exist
+    if out_path.exists() {
+        eprintln!(
+            "{}\n{}",
+            "❌ Output path already exists".bright_red(),
+            "Please choose a different output path.".red()
+        );
+        exit(2);
+    }
+
+    if cli.project_path.is_dir() {
+        run_multi(&slot_data, hook, project_dir, out_path, config, cli);
+    } else {
+        run_single(&slot_data, out_path, &cli)
+    }
+}
+
+pub fn run_multi(
+    slot_data: &HashMap<String, String>,
+    hook: &Vec<String>,
+    project_dir: &PathBuf,
+    out: &PathBuf,
+    config: &Config,
+    cli: &Cli,
+) {
     let hook_data = hook
         .iter()
         .filter_map(|data| match data.split_once('=') {
@@ -88,9 +189,6 @@ pub fn run(
     // TODO validate hook data
 
     let start_time = Instant::now();
-
-    let mut slot_data = slot_data.clone();
-    slot_data.insert("project_name".to_string(), get_project_name(project_dir));
 
     // CR(devin): when looking at the below code, this likely should be pushed
     // into the spackle lib itself, there are too many implementation details
@@ -310,4 +408,75 @@ pub fn run(
             start_time = Instant::now();
         }
     });
+}
+
+pub fn run_single(slot_data: &HashMap<String, String>, out_path: &PathBuf, cli: &Cli) {
+    let start_time = Instant::now();
+
+    let file_contents = match fs::read_to_string(&cli.project_path) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!(
+                "❌ {}\n{}",
+                "Error reading project file".bright_red(),
+                e.to_string().red()
+            );
+            exit(1);
+        }
+    };
+
+    let body = match parse_with_engine::<config::Config, fronma::engines::Toml>(&file_contents) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("❌ {}\n{:#?}", "Error parsing project file".bright_red(), e);
+            exit(1);
+        }
+    }
+    .body;
+
+    let context = match Context::from_serialize(slot_data) {
+        Ok(context) => context,
+        Err(e) => {
+            eprintln!(
+                "❌ {}\n{}",
+                "Error parsing context".bright_red(),
+                e.to_string().red()
+            );
+            exit(1);
+        }
+    };
+
+    let result = match Tera::one_off(body, &context, false) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!(
+                "❌ {}\n{}",
+                "Error rendering template".bright_red(),
+                e.to_string().red()
+            );
+            exit(1);
+        }
+    };
+
+    match fs::write(&out_path, result.clone()) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!(
+                "❌ {}\n{}",
+                "Error writing output file".bright_red(),
+                e.to_string().red()
+            );
+            exit(1);
+        }
+    }
+
+    println!(
+        "⛽ Rendered file {}\n  {}",
+        format!("in {:?}", start_time.elapsed()).dimmed(),
+        out_path.to_string_lossy().bold()
+    );
+
+    if cli.verbose {
+        println!("\n{}\n{}", "contents".dimmed(), result);
+    }
 }

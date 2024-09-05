@@ -55,6 +55,14 @@ pub fn get_project_name(project_dir: &Path) -> String {
         Err(_) => return "".to_string(),
     };
 
+    if path.is_file() {
+        return path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+    }
+
     return path
         .file_name()
         .unwrap_or_default()
@@ -74,10 +82,10 @@ pub fn generate(
         return Err(GenerateError::AlreadyExists(out_dir.clone()));
     }
 
-    let config = config::load(project_dir).map_err(GenerateError::BadConfig)?;
+    let config = config::load_dir(project_dir).map_err(GenerateError::BadConfig)?;
 
     let mut slot_data = slot_data.clone();
-    slot_data.insert("project_name".to_string(), get_project_name(project_dir));
+    slot_data.insert("_project_name".to_string(), get_project_name(project_dir));
 
     // Copy all non-template files to the output directory
     copy::copy(project_dir, &out_dir, &config.ignore, &slot_data)
@@ -120,7 +128,7 @@ pub fn run_hooks_stream(
     hook_data: &HashMap<String, bool>,
     run_as_user: Option<User>,
 ) -> Result<impl Stream<Item = HookStreamResult>, RunHooksError> {
-    let config = config::load(project_dir).map_err(RunHooksError::BadConfig)?;
+    let config = config::load_dir(project_dir).map_err(RunHooksError::BadConfig)?;
 
     let result = hook::run_hooks_stream(
         &config.hooks,
@@ -144,7 +152,7 @@ pub fn run_hooks(
     hook_data: &HashMap<String, bool>,
     run_as_user: Option<User>,
 ) -> Result<Vec<HookResult>, RunHooksError> {
-    let config = config::load(project_dir).map_err(RunHooksError::BadConfig)?;
+    let config = config::load_dir(project_dir).map_err(RunHooksError::BadConfig)?;
 
     let result = hook::run_hooks(
         &config.hooks,
