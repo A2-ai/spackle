@@ -96,7 +96,7 @@ pub fn run(
     slot: &Vec<String>,
     hook: &Vec<String>,
     project_dir: &PathBuf,
-    out_path: &PathBuf,
+    out_path: &Option<PathBuf>,
     config: &Config,
     cli: &Cli,
 ) {
@@ -121,6 +121,28 @@ pub fn run(
     }
 
     slot_data.insert("_project_name".to_string(), get_project_name(project_dir));
+
+    let out_path = match &out_path {
+        Some(path) => path,
+        None => &Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("Enter the output path")
+            .interact_text()
+            .map(|p: String| PathBuf::from(p))
+            .unwrap_or_else(|e| {
+                eprintln!("❌ {}", e.to_string().red());
+                exit(1);
+            }),
+    };
+
+    // Ensure the output path doesn't exist
+    if out_path.exists() {
+        eprintln!(
+            "{}\n{}",
+            "❌ Output path already exists".bright_red(),
+            "Please choose a different output path.".red()
+        );
+        exit(2);
+    }
 
     if cli.project_path.is_dir() {
         run_multi(&slot_data, hook, project_dir, out_path, config, cli);
