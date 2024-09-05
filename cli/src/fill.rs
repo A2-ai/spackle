@@ -96,7 +96,7 @@ pub fn run(
     slot: &Vec<String>,
     hook: &Vec<String>,
     project_dir: &PathBuf,
-    out: &PathBuf,
+    out_path: &PathBuf,
     config: &Config,
     cli: &Cli,
 ) {
@@ -123,9 +123,9 @@ pub fn run(
     slot_data.insert("_project_name".to_string(), get_project_name(project_dir));
 
     if cli.project_path.is_dir() {
-        run_multi(&slot_data, hook, project_dir, out, config, cli);
+        run_multi(&slot_data, hook, project_dir, out_path, config, cli);
     } else {
-        run_single(&slot_data, &cli)
+        run_single(&slot_data, out_path, &cli)
     }
 }
 
@@ -388,7 +388,7 @@ pub fn run_multi(
     });
 }
 
-pub fn run_single(slot_data: &HashMap<String, String>, cli: &Cli) {
+pub fn run_single(slot_data: &HashMap<String, String>, out_path: &PathBuf, cli: &Cli) {
     let start_time = Instant::now();
 
     let file_contents = match fs::read_to_string(&cli.project_path) {
@@ -436,30 +436,25 @@ pub fn run_single(slot_data: &HashMap<String, String>, cli: &Cli) {
         }
     };
 
-    let output_path = cli
-        .out_dir
-        .join(get_project_name(&cli.project_path).as_str());
-
-    // TODO do we want to output to out_dir to make consistent with full project render?
-    // match fs::write(&output_path, result.clone()) {
-    //     Ok(_) => {}
-    //     Err(e) => {
-    //         eprintln!(
-    //             "❌ {}\n{}",
-    //             "Error writing output file".bright_red(),
-    //             e.to_string().red()
-    //         );
-    //         exit(1);
-    //     }
-    // }
+    match fs::write(&out_path, result.clone()) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!(
+                "❌ {}\n{}",
+                "Error writing output file".bright_red(),
+                e.to_string().red()
+            );
+            exit(1);
+        }
+    }
 
     println!(
         "⛽ Rendered file {}\n  {}",
         format!("in {:?}", start_time.elapsed()).dimmed(),
-        output_path.to_string_lossy().bold()
+        out_path.to_string_lossy().bold()
     );
 
-    // if cli.verbose {
-    println!("\n{}\n{}", "contents".dimmed(), result);
-    // }
+    if cli.verbose {
+        println!("\n{}\n{}", "contents".dimmed(), result);
+    }
 }

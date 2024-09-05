@@ -1,5 +1,6 @@
 use clap::{command, Parser, Subcommand};
 use colored::Colorize;
+use dialoguer::{theme::ColorfulTheme, Input};
 use spackle::core::config::{self, Config};
 use std::{path::PathBuf, process::exit};
 mod check;
@@ -16,9 +17,9 @@ struct Cli {
     #[arg(short = 'p', long = "project", default_value = ".", global = true)]
     project_path: PathBuf,
 
-    /// The directory to render to. Defaults to 'render' within the current directory. Cannot be the same as the project directory.
-    #[arg(short = 'o', long = "out", default_value = "render", global = true)]
-    out_dir: PathBuf,
+    /// The path to render to. If the project is a single file, this is the output file. If the project is a directory, this is the output directory.
+    #[arg(short = 'o', long = "out", global = true)]
+    out_dir: Option<PathBuf>,
 
     /// Whether to run in verbose mode.
     #[arg(short, long, global = true)]
@@ -49,12 +50,24 @@ fn main() {
 
     let cli = Cli::parse();
 
-    // Ensure the output directory is not the same as the project directory
-    if cli.project_path.is_dir() && cli.out_dir == cli.project_path {
+    let out_path = match &cli.out_dir {
+        Some(path) => path,
+        None => &Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("Enter the output path")
+            .interact_text()
+            .map(|p: String| PathBuf::from(p))
+            .unwrap_or_else(|e| {
+                eprintln!("❌ {}", e.to_string().red());
+                exit(1);
+            }),
+    };
+
+    // Ensure the output path doesn't exist
+    if out_path.exists() {
         eprintln!(
             "{}\n{}",
-            "❌ Output directory cannot be the same as project directory".bright_red(),
-            "Please choose a different output directory.".red()
+            "❌ Output path already exists".bright_red(),
+            "Please choose a different output path.".red()
         );
         exit(2);
     }
@@ -109,7 +122,7 @@ fn main() {
         Commands::Check => check::run(&cli.project_path, &config),
         Commands::Info {} => info::run(&config),
         Commands::Fill { slot, hook } => {
-            fill::run(slot, hook, &cli.project_path, &cli.out_dir, &config, &cli)
+            fill::run(slot, hook, &cli.project_path, &out_path, &config, &cli)
         }
     }
 }
