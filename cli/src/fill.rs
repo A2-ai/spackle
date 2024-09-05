@@ -1,24 +1,23 @@
+use crate::{check, Cli};
 use colored::Colorize;
+use dialoguer::{theme::ColorfulTheme, Input};
+use fronma::parser::parse_with_engine;
 use rocket::{futures::StreamExt, tokio};
 use spackle::{
+    config::{self},
     hook::{self, HookError, HookResult, HookResultKind, HookStreamResult},
-    slot, Project,
+    slot::{self, Slot, SlotType},
+    Project,
 };
-
 use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant};
+use tera::{Context, Tera};
 use tokio::pin;
 
-use crate::{check, Cli};
-
-pub fn run(data: &Vec<String>, overwrite: bool, out_dir: &PathBuf, project: &Project, cli: &Cli) {
-    // First, run spackle check
-    check::run(project);
-
-    println!();
-
-    let data = data
+/// Collects all required data (slot and hook data) and prompts the user for any slots or hooks that need data that are not passed via the command line
+fn collect_data(flag_data: &Vec<String>, slots: &Vec<Slot>) -> HashMap<String, String> {
+    let mut collected = flag_data
         .iter()
-        .filter_map(|data| match data.split_once('=') {
+        .filter_map(|e| match e.split_once('=') {
             Some((key, value)) => Some((key.to_string(), value.to_string())),
             None => {
                 eprintln!(
@@ -31,13 +30,81 @@ pub fn run(data: &Vec<String>, overwrite: bool, out_dir: &PathBuf, project: &Pro
         })
         .collect::<HashMap<String, String>>();
 
-    let slot_data = data
-        .clone()
-        .into_iter()
-        .filter(|(key, _)| project.config.slots.iter().any(|s| s.key == key.as_str()))
-        .collect::<HashMap<String, String>>();
+    // at this point we've collected all the flags, so we should identify
+    // if any additional slots are needed and if we're in a tty context prompt
+    // for more slot info before validating
+    if atty::is(atty::Stream::Stdout) {
+        let missing_slots: Vec<&Slot> = slots
+            .iter()
+            .filter(|slot| !collected.contains_key(&slot.key))
+            .collect();
 
-    if let Err(e) = slot::validate_data(&slot_data, &project.config.slots) {
+        missing_slots.iter().for_each(|slot| {
+            match &slot.r#type {
+                SlotType::String => {
+                    let input = Input::with_theme(&ColorfulTheme::default())
+                        .with_prompt(&format!("{} ({})", slot.get_name(), slot.r#type))
+                        .interact_text()
+                        .unwrap();
+
+                    collected.insert(slot.key.clone(), input);
+                }
+                SlotType::Boolean => {
+                    let input = Input::with_theme(&ColorfulTheme::default())
+                        .with_prompt(&format!("{} ({})", slot.get_name(), slot.r#type))
+                        .validate_with(|input: &String| -> Result<(), &str> {
+                            // ensure input is a boolean
+                            if input.parse::<bool>().is_err() {
+                                return Err("Input must be a boolean".into());
+                            }
+                            Ok(())
+                        })
+                        .interact()
+                        .unwrap();
+
+                    collected.insert(slot.key.clone(), input);
+                }
+                SlotType::Number => {
+                    let input = Input::with_theme(&ColorfulTheme::default())
+                        .with_prompt(&format!("{} ({})", slot.get_name(), slot.r#type))
+                        .validate_with(|input: &String| -> Result<(), &str> {
+                            if input.parse::<i32>().is_err() {
+                                return Err("Input must be a number".into());
+                            }
+                            Ok(())
+                        })
+                        .interact_text()
+                        .unwrap();
+
+                    collected.insert(slot.key.clone(), input);
+                }
+            }
+        });
+    }
+
+    println!();
+
+    // TODO collect missing hooks
+
+    collected
+}
+
+pub fn run(
+    data: &Vec<String>,
+    overwrite: &bool,
+    out_path: &Option<PathBuf>,
+    project: &Project,
+    cli: &Cli,
+) {
+    // First, run spackle check
+    check::run(project);
+
+    println!("");
+
+    let mut data = collect_data(data, &project.config.slots);
+
+    // TODO filter slot data
+    if let Err(e) = slot::validate_data(&data, &project.config.slots) {
         eprintln!(
             "{}\n{}",
             "❌ Error with supplied slot data".bright_red(),
@@ -59,11 +126,13 @@ pub fn run(data: &Vec<String>, overwrite: bool, out_dir: &PathBuf, project: &Pro
         exit(1);
     }
 
-    let hook_data = data
-        .clone()
-        .into_iter()
-        .filter(|(key, _)| project.config.hooks.iter().any(|h| h.key == key.as_str()))
-        .collect::<HashMap<String, String>>();
+    // TODO filter hook data
+
+    let hook_data: HashMap<String, String> = data
+        .iter()
+        .filter(|(key, _)| project.config.hooks.iter().any(|hook| hook.key == **key))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
 
     if let Err(e) = hook::validate_data(&hook_data, &project.config.hooks) {
         eprintln!(
@@ -75,42 +144,71 @@ pub fn run(data: &Vec<String>, overwrite: bool, out_dir: &PathBuf, project: &Pro
         exit(1);
     }
 
+    data.insert("_project_name".to_string(), project.get_name());
+
+    let out_path = match &out_path {
+        Some(path) => path,
+        None => &Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("Enter the output path")
+            .interact_text()
+            .map(|p: String| PathBuf::from(p))
+            .unwrap_or_else(|e| {
+                eprintln!("❌ {}", e.to_string().red());
+                exit(1);
+            }),
+    };
+
+    println!("");
+
+    // Ensure the output path doesn't exist
+    if *overwrite {
+        println!(
+            "{}\n",
+            format!("⚠️ Overwriting existing output path").yellow()
+        );
+    } else if out_path.exists() {
+        eprintln!(
+            "{}\n{}",
+            "❌ Directory already exists".bright_red(),
+            "Please remove the directory before running spackle again".red()
+        );
+
+        exit(2);
+    }
+
+    if cli.project_path.is_dir() {
+        run_multi(&data, out_path, cli, project);
+    } else {
+        run_single(&data, out_path, cli);
+    }
+}
+
+pub fn run_multi(data: &HashMap<String, String>, out_dir: &PathBuf, cli: &Cli, project: &Project) {
+    let hook_data: HashMap<&String, bool> = data
+        .iter()
+        .filter_map(|(key, value)| match value.parse::<bool>() {
+            Ok(v) => Some((key, v)),
+            Err(_) => {
+                eprintln!(
+                    "{} {}\n",
+                    "❌",
+                    "Invalid hook argument, must be a boolean. Skipping.".bright_red()
+                );
+                None
+            }
+        })
+        .collect();
+
     let start_time = Instant::now();
 
     let mut data = data.clone();
-    data.insert("project_name".to_string(), project.get_name());
+    data.insert("_project_name".to_string(), project.get_name());
 
     println!("🖨️  Creating project files\n");
-
     println!(
         "{}",
         format!("  📁 {}\n", out_dir.to_string_lossy().bold()).dimmed()
     );
-
-    // Ensure the output directory is not the same as the project directory
-    if out_dir == &cli.project_dir {
-        eprintln!(
-            "{}\n{}",
-            "❌ Output directory cannot be the same as project directory".bright_red(),
-            "Please choose a different output directory.".red()
-        );
-        exit(2);
-    }
-
-    if overwrite {
-        println!(
-            "{}\n",
-            format!("  ⚠️ Overwriting existing directory").yellow()
-        );
-    } else if out_dir.exists() {
-        eprintln!(
-            "{}\n{}",
-            "  ❌ Directory already exists".bright_red(),
-            "  Please remove the directory before running spackle again".red()
-        );
-
-        exit(1);
-    }
 
     match project.copy_files(out_dir, &data) {
         Ok(r) => {
@@ -272,8 +370,16 @@ pub fn run(data: &Vec<String>, overwrite: bool, out_dir: &PathBuf, project: &Pro
 
                         if cli.verbose {
                             if let HookError::CommandExited { stdout, stderr, .. } = error {
-                                eprintln!("\n    {}\n{}", "stdout".bold().dimmed(), stdout);
-                                eprintln!("    {}\n{}", "stderr".bold().dimmed(), stderr);
+                                eprintln!(
+                                    "\n    {}\n{}",
+                                    "stdout".bold().dimmed(),
+                                    String::from_utf8_lossy(&stdout)
+                                );
+                                eprintln!(
+                                    "    {}\n{}",
+                                    "stderr".bold().dimmed(),
+                                    String::from_utf8_lossy(&stderr)
+                                );
                             }
                         }
 
@@ -289,8 +395,16 @@ pub fn run(data: &Vec<String>, overwrite: bool, out_dir: &PathBuf, project: &Pro
                         );
 
                         if cli.verbose {
-                            println!("    {}\n{}", "stdout".bold().dimmed(), stdout);
-                            println!("    {}\n{}", "stderr".bold().dimmed(), stderr);
+                            println!(
+                                "    {}\n{}",
+                                "stdout".bold().dimmed(),
+                                String::from_utf8_lossy(&stdout)
+                            );
+                            println!(
+                                "    {}\n{}",
+                                "stderr".bold().dimmed(),
+                                String::from_utf8_lossy(&stderr)
+                            );
                         }
                     }
                     HookResult {
@@ -305,4 +419,75 @@ pub fn run(data: &Vec<String>, overwrite: bool, out_dir: &PathBuf, project: &Pro
             start_time = Instant::now();
         }
     });
+}
+
+pub fn run_single(slot_data: &HashMap<String, String>, out_path: &PathBuf, cli: &Cli) {
+    let start_time = Instant::now();
+
+    let file_contents = match fs::read_to_string(&cli.project_path) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!(
+                "❌ {}\n{}",
+                "Error reading project file".bright_red(),
+                e.to_string().red()
+            );
+            exit(1);
+        }
+    };
+
+    let body = match parse_with_engine::<config::Config, fronma::engines::Toml>(&file_contents) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("❌ {}\n{:#?}", "Error parsing project file".bright_red(), e);
+            exit(1);
+        }
+    }
+    .body;
+
+    let context = match Context::from_serialize(slot_data) {
+        Ok(context) => context,
+        Err(e) => {
+            eprintln!(
+                "❌ {}\n{}",
+                "Error parsing context".bright_red(),
+                e.to_string().red()
+            );
+            exit(1);
+        }
+    };
+
+    let result = match Tera::one_off(body, &context, false) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!(
+                "❌ {}\n{}",
+                "Error rendering template".bright_red(),
+                e.to_string().red()
+            );
+            exit(1);
+        }
+    };
+
+    match fs::write(&out_path, result.clone()) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!(
+                "❌ {}\n{}",
+                "Error writing output file".bright_red(),
+                e.to_string().red()
+            );
+            exit(1);
+        }
+    }
+
+    println!(
+        "⛽ Rendered file {}\n  {}",
+        format!("in {:?}", start_time.elapsed()).dimmed(),
+        out_path.to_string_lossy().bold()
+    );
+
+    if cli.verbose {
+        println!("\n{}\n{}", "contents".dimmed(), result);
+    }
 }

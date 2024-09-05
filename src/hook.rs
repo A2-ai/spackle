@@ -142,7 +142,7 @@ pub struct HookResult {
 #[derive(Serialize, Debug)]
 pub enum HookResultKind {
     Skipped(SkipReason),
-    Completed { stdout: String, stderr: String },
+    Completed { stdout: Vec<u8>, stderr: Vec<u8> },
     Failed(HookError),
 }
 
@@ -159,13 +159,14 @@ impl Display for HookResultKind {
 }
 
 #[derive(Serialize, Debug)]
+#[serde(tag = "type")]
 pub enum HookError {
     ConditionalFailed(ConditionalError),
     CommandLaunchFailed(#[serde(skip)] io::Error),
     CommandExited {
         exit_code: i32,
-        stdout: String,
-        stderr: String,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
     },
 }
 
@@ -368,8 +369,8 @@ pub fn run_hooks_stream(
                     hook: hook.clone(),
                     kind: HookResultKind::Failed(HookError::CommandExited {
                         exit_code: output.status.code().unwrap_or(1),
-                        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                        stdout: output.stdout,
+                        stderr: output.stderr,
                     }),
                 });
                 continue;
@@ -380,8 +381,8 @@ pub fn run_hooks_stream(
             yield HookStreamResult::HookDone(HookResult {
                 hook: hook.clone(),
                 kind: HookResultKind::Completed {
-                    stdout: String::from_utf8_lossy(&output.stdout).into(),
-                    stderr: String::from_utf8_lossy(&output.stderr).into(),
+                    stdout: output.stdout,
+                    stderr: output.stderr,
                 }
             });
         }
@@ -421,7 +422,7 @@ pub fn run_hooks(
     Ok(results)
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Debug)]
 pub enum ValidateError {
     UnknownKey(String),
     NotOptional(String),
@@ -712,11 +713,18 @@ mod tests {
 
     #[test]
     fn templated_cmd() {
-        let hooks = vec![Hook {
-            key: "echo".to_string(),
-            command: vec!["{{ field_1 }}".to_string(), "{{ field_2 }}".to_string()],
-            ..Hook::default()
-        }];
+        let hooks = vec![
+            Hook {
+                key: "1".to_string(),
+                command: vec!["{{ field_1 }}".to_string(), "{{ field_2 }}".to_string()],
+                ..Hook::default()
+            },
+            Hook {
+                key: "2".to_string(),
+                command: vec!["echo".to_string(), "{{ _project_name }}".to_string()],
+                ..Hook::default()
+            },
+        ];
 
         let results = run_hooks(
             &hooks,
@@ -731,12 +739,24 @@ mod tests {
         .expect("run_hooks failed, should have succeeded");
 
         assert!(
+            results.iter().all(|x| matches!(
+                x,
+                HookResult {
+                    kind: HookResultKind::Completed { .. },
+                    ..
+                }
+            )),
+            "Expected all hooks to be completed, but got: {:?}",
+            results
+        );
+
+        assert!(
             results.iter().any(|x| match x {
                 HookResult {
                     hook,
                     kind: HookResultKind::Completed { stdout, .. },
                     ..
-                } if hook.key == "echo" => stdout.trim() == "test",
+                } if hook.key == "2" => String::from_utf8_lossy(stdout).trim() == "spackle",
                 _ => false,
             }),
             "Hook 'echo' should output 'test', got {:?}",

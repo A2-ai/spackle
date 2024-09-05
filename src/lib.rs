@@ -14,9 +14,36 @@ mod needs;
 pub mod slot;
 pub mod template;
 
-pub struct Project {
-    pub config: config::Config,
-    pub dir: PathBuf,
+#[derive(Debug)]
+pub enum GenerateError {
+    AlreadyExists(PathBuf),
+    BadConfig(config::Error),
+    CopyError(copy::Error),
+    TemplateError,
+}
+
+impl Display for GenerateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GenerateError::AlreadyExists(dir) => {
+                write!(f, "Directory already exists: {}", dir.display())
+            }
+            GenerateError::BadConfig(e) => write!(f, "Error loading config: {}", e),
+            GenerateError::TemplateError => write!(f, "Error rendering template"),
+            GenerateError::CopyError(e) => write!(f, "Error copying files: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for GenerateError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            GenerateError::AlreadyExists(_) => None,
+            GenerateError::BadConfig(_) => None,
+            GenerateError::TemplateError => None,
+            GenerateError::CopyError(e) => Some(e),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -34,16 +61,21 @@ impl Display for RunHooksError {
     }
 }
 
-// Loads the config from the project directory and validates it
-pub fn load_project(dir: &PathBuf) -> Result<Project, config::Error> {
-    let config = config::load(dir)?;
+// Loads the project from the specified directory or path and validates it
+pub fn load_project(path: &PathBuf) -> Result<Project, config::Error> {
+    let config = config::load(path)?;
 
     config.validate()?;
 
     Ok(Project {
         config,
-        dir: dir.to_owned(),
+        path: path.to_owned(),
     })
+}
+
+pub struct Project {
+    pub config: config::Config,
+    pub path: PathBuf,
 }
 
 impl Project {
@@ -53,20 +85,20 @@ impl Project {
             return name.clone();
         }
 
-        let path = match self.dir.canonicalize() {
+        let path = match self.path.canonicalize() {
             Ok(path) => path,
             Err(_) => return "".to_string(),
         };
 
         return path
-            .file_name()
+            .file_stem()
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
     }
 
     pub fn validate(&self) -> Result<(), template::ValidateError> {
-        template::validate(&self.dir, &self.config.slots)
+        template::validate(&self.path, &self.config.slots)
     }
 
     pub fn copy_files(
@@ -75,9 +107,9 @@ impl Project {
         data: &HashMap<String, String>,
     ) -> Result<copy::CopyResult, copy::Error> {
         let mut data = data.clone();
-        data.insert("project_name".to_string(), self.get_name());
+        data.insert("_project_name".to_string(), self.get_name());
 
-        copy::copy(&self.dir, out_dir, &self.config.ignore, &data)
+        copy::copy(&self.path, out_dir, &self.config.ignore, &data)
     }
 
     pub fn render_templates(
@@ -86,9 +118,9 @@ impl Project {
         data: &HashMap<String, String>,
     ) -> Result<Vec<Result<template::RenderedFile, template::FileError>>, tera::Error> {
         let mut data = data.clone();
-        data.insert("project_name".to_string(), self.get_name());
+        data.insert("_project_name".to_string(), self.get_name());
 
-        template::fill(&self.dir, out_dir, &data)
+        template::fill(&self.path, out_dir, &data)
     }
 
     /// Runs the hooks in the generated spackle project.
@@ -101,7 +133,7 @@ impl Project {
         run_as_user: Option<User>,
     ) -> Result<impl Stream<Item = hook::HookStreamResult>, RunHooksError> {
         let mut data = slot_data.clone();
-        data.insert("project_name".to_string(), self.get_name());
+        data.insert("_project_name".to_string(), self.get_name());
 
         let result = hook::run_hooks_stream(
             out_dir.to_owned(),
@@ -125,7 +157,7 @@ impl Project {
         run_as_user: Option<User>,
     ) -> Result<Vec<hook::HookResult>, hook::Error> {
         let mut data = data.clone();
-        data.insert("project_name".to_string(), self.get_name());
+        data.insert("_project_name".to_string(), self.get_name());
 
         let result = hook::run_hooks(
             &self.config.hooks,
@@ -154,7 +186,7 @@ mod tests {
                 name: Some("some_name".to_string()),
                 ..Default::default()
             },
-            dir: PathBuf::from("."),
+            path: PathBuf::from("."),
         };
 
         assert_eq!(project.get_name(), "some_name");
@@ -164,7 +196,7 @@ mod tests {
     fn project_get_name_inferred() {
         let project = Project {
             config: Config::default(),
-            dir: PathBuf::from("tests/data/templated"),
+            path: PathBuf::from("tests/data/templated"),
         };
 
         assert_eq!(project.get_name(), "templated");
@@ -178,7 +210,7 @@ mod tests {
 
         let project = Project {
             config: Config::default(),
-            dir: PathBuf::from("."),
+            path: PathBuf::from("."),
         };
 
         assert_eq!(project.get_name(), "templated");

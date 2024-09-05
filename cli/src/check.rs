@@ -11,7 +11,7 @@ pub fn run(project: &Project) {
 
     let start_time = Instant::now();
 
-    match template::validate(&project.dir, &project.config.slots) {
+    match template::validate(&project.path, &project.config.slots) {
         Ok(()) => {
             println!("  👌 {}\n", "Template files are valid".bright_green());
         }

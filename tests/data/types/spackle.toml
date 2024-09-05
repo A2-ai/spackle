@@ -1,0 +1,17 @@
+[[slots]]
+key = "string_slot"
+type = "String"
+name = "String slot"
+description = "This is a string slot description"
+
+[[slots]]
+key = "number_slot"
+type = "Number"
+name = "Number slot"
+description = "This is a number slot description"
+
+[[slots]]
+key = "boolean_slot"
+type = "Boolean"
+name = "Boolean slot"
+description = "This is a boolean slot description"

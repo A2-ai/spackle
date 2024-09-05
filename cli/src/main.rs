@@ -2,7 +2,6 @@ use clap::{command, Parser, Subcommand};
 use colored::Colorize;
 use spackle::Project;
 use std::{path::PathBuf, process::exit};
-
 mod check;
 mod fill;
 mod info;
@@ -13,9 +12,9 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 
-    /// The directory of the spackle project. Defaults to the current directory.
-    #[arg(short, long, default_value = ".", global = true)]
-    project_dir: PathBuf,
+    /// The spackle project to use (either a directory or a single file). Defaults to the current directory.
+    #[arg(short = 'p', long = "project", default_value = ".", global = true)]
+    project_path: PathBuf,
 
     /// Whether to run in verbose mode.
     #[arg(short, long, global = true)]
@@ -33,13 +32,13 @@ enum Commands {
         #[arg(short, long)]
         data: Vec<String>,
 
-        /// The directory to render to. Defaults to 'render' within the current directory. Cannot be the same as the project directory.
-        #[arg(short, long, default_value = "render", global = true)]
-        out_dir: PathBuf,
-
         /// Whether to overwrite existing files
         #[arg(short = 'O', long)]
         overwrite: bool,
+
+        /// The location the output should be written to. If the project is a single file, this is the output file. If the project is a directory, this is the output directory.
+        #[arg(short = 'o', long = "out", global = true)]
+        out_path: Option<PathBuf>,
     },
     /// Checks the validity of a spackle project
     Check,
@@ -50,20 +49,7 @@ fn main() {
 
     let cli = Cli::parse();
 
-    let project_dir = cli.project_dir.clone();
-
-    // Check if the project directory is a spackle project
-    if !project_dir.join("spackle.toml").exists() {
-        eprintln!(
-            "{}\n{}",
-            "❌ Provided directory is not a spackle project".bright_red(),
-            "Valid projects must have a spackle.toml file.".red()
-        );
-        exit(1);
-    }
-
-    // Load the config
-    let project = match spackle::load_project(&project_dir) {
+    let project = match spackle::load_project(&cli.project_path) {
         Ok(p) => p,
         Err(e) => {
             eprintln!(
@@ -79,12 +65,12 @@ fn main() {
 
     match &cli.command {
         Commands::Check => check::run(&project),
-        Commands::Info {} => info::run(&project.config),
+        Commands::Info => info::run(&project.config),
         Commands::Fill {
             data,
-            out_dir,
             overwrite,
-        } => fill::run(data, *overwrite, &out_dir, &project, &cli),
+            out_path,
+        } => fill::run(data, overwrite, out_path, &project, &cli),
     }
 }
 
@@ -93,7 +79,7 @@ fn print_project_info(project: &Project) {
 
     println!(
         "  {}",
-        format!("📁 {}", project.dir.to_string_lossy()).dimmed()
+        format!("📁 {}", project.path.to_string_lossy()).dimmed()
     );
 
     println!(

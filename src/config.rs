@@ -1,5 +1,6 @@
+use fronma::{engines::Toml, parser::parse_with_engine};
 use serde::Deserialize;
-use std::{collections::HashSet, fmt::Display, fs, io, path::Path};
+use std::{collections::HashSet, fs, io, path::Path};
 
 use crate::{hook::Hook, slot::Slot};
 
@@ -18,36 +19,48 @@ pub const CONFIG_FILE: &str = "spackle.toml";
 
 #[derive(Debug)]
 pub enum Error {
-    ErrorReading(io::Error),
-    ErrorParsing(toml::de::Error),
+    ReadError(io::Error),
+    ParseError(toml::de::Error),
+    FronmaError(fronma::error::Error),
     DuplicateKey(String),
 }
 
-impl Display for Error {
+impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::ErrorReading(e) => write!(f, "Error reading file\n{}", e),
-            Error::ErrorParsing(e) => write!(f, "Error parsing contents\n{}", e),
-            Error::DuplicateKey(key) => write!(f, "Duplicate key: {}", key),
+            Error::ReadError(e) => write!(f, "Error reading file\n{}", e),
+            Error::ParseError(e) => write!(f, "Error parsing contents\n{}", e),
+            Error::FronmaError(e) => write!(f, "Error parsing single file\n{:?}", e),
+            Error::DuplicateKey(e) => write!(f, "Duplicate keys found\n{}", e),
         }
     }
 }
 
+pub fn load(path: impl AsRef<Path>) -> Result<Config, Error> {
+    if path.as_ref().is_dir() {
+        return load_dir(path);
+    }
+
+    load_file(path)
+}
+
 // Loads the config for the given directory
-pub fn load(dir: &Path) -> Result<Config, Error> {
-    let config_path = dir.join(CONFIG_FILE);
+pub fn load_dir(dir: impl AsRef<Path>) -> Result<Config, Error> {
+    let config_path = dir.as_ref().join(CONFIG_FILE);
 
-    let config_str = match fs::read_to_string(config_path) {
-        Ok(o) => o,
-        Err(e) => return Err(Error::ErrorReading(e)),
-    };
+    let config_str = fs::read_to_string(config_path).map_err(Error::ReadError)?;
 
-    let config = match toml::from_str(&config_str) {
-        Ok(o) => o,
-        Err(e) => return Err(Error::ErrorParsing(e)),
-    };
+    let config = toml::from_str(&config_str).map_err(Error::ParseError)?;
 
     Ok(config)
+}
+
+pub fn load_file(file: impl AsRef<Path>) -> Result<Config, Error> {
+    let file_contents = fs::read_to_string(file).map_err(Error::ReadError)?;
+
+    parse_with_engine::<Config, Toml>(&file_contents)
+        .map(|parsed| parsed.headers)
+        .map_err(Error::FronmaError)
 }
 
 impl Config {
@@ -97,7 +110,7 @@ mod tests {
 
         fs::write(dir.join("spackle.toml"), "").unwrap();
 
-        let result = load(&dir);
+        let result = load_dir(&dir);
 
         assert!(result.is_ok());
     }
@@ -106,7 +119,7 @@ mod tests {
     fn dup_key() {
         let dir = Path::new("tests/data/conf_dup_key");
 
-        let config = load(dir).expect("Expected ok");
+        let config = load_dir(dir).expect("Expected ok");
 
         config.validate().expect_err("Expected error");
     }
