@@ -336,8 +336,16 @@ pub fn run_multi(
 
                         if cli.verbose {
                             if let HookError::CommandExited { stdout, stderr, .. } = error {
-                                eprintln!("\n    {}\n{}", "stdout".bold().dimmed(), stdout);
-                                eprintln!("    {}\n{}", "stderr".bold().dimmed(), stderr);
+                                eprintln!(
+                                    "\n    {}\n{}",
+                                    "stdout".bold().dimmed(),
+                                    String::from_utf8_lossy(&stdout)
+                                );
+                                eprintln!(
+                                    "    {}\n{}",
+                                    "stderr".bold().dimmed(),
+                                    String::from_utf8_lossy(&stderr)
+                                );
                             }
                         }
 
@@ -354,8 +362,16 @@ pub fn run_multi(
                         );
 
                         if cli.verbose {
-                            println!("    {}\n{}", "stdout".bold().dimmed(), stdout);
-                            println!("    {}\n{}", "stderr".bold().dimmed(), stderr);
+                            println!(
+                                "    {}\n{}",
+                                "stdout".bold().dimmed(),
+                                String::from_utf8_lossy(&stdout)
+                            );
+                            println!(
+                                "    {}\n{}",
+                                "stderr".bold().dimmed(),
+                                String::from_utf8_lossy(&stderr)
+                            );
                         }
                     }
                     HookResult {

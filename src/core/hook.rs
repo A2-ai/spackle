@@ -22,7 +22,7 @@ pub struct HookResult {
 #[derive(Serialize, Debug)]
 pub enum HookResultKind {
     Skipped(SkipReason),
-    Completed { stdout: String, stderr: String },
+    Completed { stdout: Vec<u8>, stderr: Vec<u8> },
     Failed(HookError),
 }
 
@@ -39,13 +39,14 @@ impl Display for HookResultKind {
 }
 
 #[derive(Serialize, Debug)]
+#[serde(tag = "type")]
 pub enum HookError {
     ConditionalFailed(ConditionalError),
     CommandLaunchFailed(#[serde(skip)] io::Error),
     CommandExited {
         exit_code: i32,
-        stdout: String,
-        stderr: String,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
     },
 }
 
@@ -244,8 +245,8 @@ pub fn run_hooks_stream(
                     hook: hook.clone(),
                     kind: HookResultKind::Failed(HookError::CommandExited {
                         exit_code: output.status.code().unwrap_or(1),
-                        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                        stdout: output.stdout,
+                        stderr: output.stderr,
                     }),
                 });
                 continue;
@@ -256,8 +257,8 @@ pub fn run_hooks_stream(
             yield HookStreamResult::HookDone(HookResult {
                 hook: hook.clone(),
                 kind: HookResultKind::Completed {
-                    stdout: String::from_utf8_lossy(&output.stdout).into(),
-                    stderr: String::from_utf8_lossy(&output.stderr).into(),
+                    stdout: output.stdout,
+                    stderr: output.stderr,
                 }
             });
         }
@@ -298,6 +299,7 @@ pub fn run_hooks(
 }
 
 #[derive(Serialize, Debug)]
+#[serde(tag = "type")]
 pub enum ConditionalError {
     InvalidContext(#[serde(skip)] tera::Error),
     InvalidTemplate(#[serde(skip)] tera::Error),
@@ -673,14 +675,13 @@ mod tests {
             results
         );
 
-        // Assert that hook 2 outputs "."
         assert!(
             results.iter().any(|x| match x {
                 HookResult {
                     hook,
                     kind: HookResultKind::Completed { stdout, .. },
                     ..
-                } if hook.key == "2" => stdout.trim() == "spackle",
+                } if hook.key == "2" => String::from_utf8_lossy(stdout) == "spackle\n",
                 _ => false,
             }),
             "Hook '2' should output 'spackle', got {:?}",
