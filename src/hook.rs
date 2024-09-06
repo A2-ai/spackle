@@ -733,6 +733,7 @@ mod tests {
             &HashMap::from([
                 ("field_1".to_string(), "echo".to_string()),
                 ("field_2".to_string(), "test".to_string()),
+                ("_project_name".to_string(), "spackle".to_string()),
             ]),
             None,
         )

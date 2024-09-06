@@ -34,6 +34,8 @@ fn collect_data(flag_data: &Vec<String>, slots: &Vec<Slot>) -> HashMap<String, S
     // if any additional slots are needed and if we're in a tty context prompt
     // for more slot info before validating
     if atty::is(atty::Stream::Stdout) {
+        println!("📮 Collecting slot data\n");
+
         let missing_slots: Vec<&Slot> = slots
             .iter()
             .filter(|slot| !collected.contains_key(&slot.key))
@@ -82,7 +84,7 @@ fn collect_data(flag_data: &Vec<String>, slots: &Vec<Slot>) -> HashMap<String, S
         });
     }
 
-    println!();
+    println!("  {}\n", "✅ done");
 
     // TODO collect missing hooks
 
@@ -101,10 +103,14 @@ pub fn run(
 
     println!("");
 
-    let mut data = collect_data(data, &project.config.slots);
+    let data = collect_data(data, &project.config.slots);
 
-    // TODO filter slot data
-    if let Err(e) = slot::validate_data(&data, &project.config.slots) {
+    let slot_data: HashMap<String, String> = data
+        .iter()
+        .filter(|(key, _)| project.config.slots.iter().any(|slot| slot.key == **key))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    if let Err(e) = slot::validate_data(&slot_data, &project.config.slots) {
         eprintln!(
             "{}\n{}",
             "❌ Error with supplied slot data".bright_red(),
@@ -126,14 +132,11 @@ pub fn run(
         exit(1);
     }
 
-    // TODO filter hook data
-
     let hook_data: HashMap<String, String> = data
         .iter()
         .filter(|(key, _)| project.config.hooks.iter().any(|hook| hook.key == **key))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-
     if let Err(e) = hook::validate_data(&hook_data, &project.config.hooks) {
         eprintln!(
             "{}\n{}",
@@ -144,12 +147,12 @@ pub fn run(
         exit(1);
     }
 
-    data.insert("_project_name".to_string(), project.get_name());
+    println!("📮 Preparing output path\n");
 
     let out_path = match &out_path {
         Some(path) => path,
         None => &Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("Enter the output path")
+            .with_prompt("output path")
             .interact_text()
             .map(|p: String| PathBuf::from(p))
             .unwrap_or_else(|e| {
@@ -169,11 +172,19 @@ pub fn run(
     } else if out_path.exists() {
         eprintln!(
             "{}\n{}",
-            "❌ Directory already exists".bright_red(),
-            "Please remove the directory before running spackle again".red()
+            "❌ Path already exists".bright_red(),
+            "Please remove the path before running spackle again".red()
         );
 
         exit(2);
+    }
+
+    // Create all parent directories
+    if let Some(parent) = out_path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            eprintln!("❌ {}", e.to_string().red());
+            exit(1);
+        }
     }
 
     if cli.project_path.is_dir() {
@@ -184,30 +195,12 @@ pub fn run(
 }
 
 pub fn run_multi(data: &HashMap<String, String>, out_dir: &PathBuf, cli: &Cli, project: &Project) {
-    let hook_data: HashMap<&String, bool> = data
-        .iter()
-        .filter_map(|(key, value)| match value.parse::<bool>() {
-            Ok(v) => Some((key, v)),
-            Err(_) => {
-                eprintln!(
-                    "{} {}\n",
-                    "❌",
-                    "Invalid hook argument, must be a boolean. Skipping.".bright_red()
-                );
-                None
-            }
-        })
-        .collect();
-
     let start_time = Instant::now();
-
-    let mut data = data.clone();
-    data.insert("_project_name".to_string(), project.get_name());
 
     println!("🖨️  Creating project files\n");
     println!(
         "{}",
-        format!("  📁 {}\n", out_dir.to_string_lossy().bold()).dimmed()
+        format!("  📁 {}", out_dir.to_string_lossy().bold()).dimmed()
     );
 
     match project.copy_files(out_dir, &data) {
@@ -236,8 +229,6 @@ pub fn run_multi(data: &HashMap<String, String>, out_dir: &PathBuf, cli: &Cli, p
                     .dimmed()
                 );
             }
-
-            println!();
         }
         Err(e) => {
             let _ = fs::remove_dir_all(out_dir);

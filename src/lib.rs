@@ -108,6 +108,15 @@ impl Project {
     ) -> Result<copy::CopyResult, copy::Error> {
         let mut data = data.clone();
         data.insert("_project_name".to_string(), self.get_name());
+        data.insert(
+            "_output_name".to_string(),
+            // TODO better handle unwrap
+            out_dir
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+        );
 
         copy::copy(&self.path, out_dir, &self.config.ignore, &data)
     }
@@ -119,6 +128,15 @@ impl Project {
     ) -> Result<Vec<Result<template::RenderedFile, template::FileError>>, tera::Error> {
         let mut data = data.clone();
         data.insert("_project_name".to_string(), self.get_name());
+        data.insert(
+            "_output_name".to_string(),
+            // TODO better handle unwrap
+            out_dir
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+        );
 
         template::fill(&self.path, out_dir, &data)
     }
@@ -134,6 +152,15 @@ impl Project {
     ) -> Result<impl Stream<Item = hook::HookStreamResult>, RunHooksError> {
         let mut data = slot_data.clone();
         data.insert("_project_name".to_string(), self.get_name());
+        data.insert(
+            "_output_name".to_string(),
+            // TODO better handle unwrap
+            out_dir
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+        );
 
         let result = hook::run_hooks_stream(
             out_dir.to_owned(),
@@ -158,6 +185,15 @@ impl Project {
     ) -> Result<Vec<hook::HookResult>, hook::Error> {
         let mut data = data.clone();
         data.insert("_project_name".to_string(), self.get_name());
+        data.insert(
+            "_output_name".to_string(),
+            // TODO better handle unwrap
+            out_dir
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+        );
 
         let result = hook::run_hooks(
             &self.config.hooks,

@@ -7,13 +7,13 @@ use spackle::{
 };
 
 pub fn run(project: &Project) {
-    println!("🔍 Validating project configuration...\n");
+    println!("🔍 Validating project configuration\n");
 
     let start_time = Instant::now();
 
     match template::validate(&project.path, &project.config.slots) {
         Ok(()) => {
-            println!("  👌 {}\n", "Template files are valid".bright_green());
+            println!("  {}\n", "👌 Template files are valid".dimmed());
         }
         Err(e) => {
             match e {
