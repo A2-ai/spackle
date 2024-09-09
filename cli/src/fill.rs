@@ -147,6 +147,28 @@ pub fn run(
         exit(1);
     }
 
+    // Check if any data entries don't align with slots or hooks
+    let unknown_data: Vec<&String> = data
+        .iter()
+        .filter(|(key, _)| !slot_data.contains_key(*key) && !hook_data.contains_key(*key))
+        .map(|(key, _)| key)
+        .collect();
+
+    if !unknown_data.is_empty() {
+        eprintln!(
+            "{}\n{}\n{}\n",
+            "⚠️ Unrecognized data provided".bright_yellow(),
+            "Please ensure all data passed via the --data (-d) flag corresponds to a slot or hook. Unrecognized:".yellow(),
+            unknown_data
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<String>>()
+                .join(", ")
+                .yellow()
+                .dimmed(),
+        );
+    }
+
     println!("📮 Preparing output path\n");
 
     let out_path = match &out_path {
