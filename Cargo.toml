@@ -31,7 +31,7 @@ pr-run-mode = "plan"
 install-updater = true
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
-github-build-setup = "build-setup.yaml"
+github-build-setup = "build-setup.txt"
 
 [dependencies]
 async-process = "2.2.3"
