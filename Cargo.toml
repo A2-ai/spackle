@@ -61,4 +61,4 @@ lto = "thin"
 libpam0g-dev = "*"
 
 [workspace.metadata.dist.github-custom-runners]
-aarch64-unknown-linux-gnu = "ubuntu-arm-22.04"
+aarch64-unknown-linux-gnu = "ubuntu-arm-22.04-public"
