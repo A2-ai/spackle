@@ -4,59 +4,56 @@ use dialoguer::{theme::ColorfulTheme, Input};
 use fronma::parser::parse_with_engine;
 use rocket::{futures::StreamExt, tokio};
 use spackle::{
-    core::{
-        config::{self, Config},
-        copy,
-        hook::{self, HookError, HookResult, HookResultKind, HookStreamResult},
-        slot::{self, Slot, SlotType},
-        template,
-    },
-    get_project_name,
+    config::{self},
+    hook::{self, HookError, HookResult, HookResultKind, HookStreamResult},
+    slot::{self, Slot, SlotType},
+    Project,
 };
 use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant};
 use tera::{Context, Tera};
 use tokio::pin;
 
-fn collect_slot_data(slot: &Vec<String>, slots: Vec<Slot>) -> HashMap<String, String> {
-    let mut slot_data = slot
+/// Collects all required data (slot and hook data) and prompts the user for any slots or hooks that need data that are not passed via the command line
+fn collect_data(flag_data: &Vec<String>, slots: &Vec<Slot>) -> HashMap<String, String> {
+    let mut collected = flag_data
         .iter()
-        .filter_map(|data| match data.split_once('=') {
+        .filter_map(|e| match e.split_once('=') {
             Some((key, value)) => Some((key.to_string(), value.to_string())),
             None => {
                 eprintln!(
-                    "{} {}\n",
-                    "❌",
-                    "Invalid slot argument, must be in the form of key=value. Skipping."
+                    "❌ {}\n",
+                    "Invalid data argument, must be in the form of key=value. Skipping."
                         .bright_red()
                 );
                 None
             }
         })
-        .map(|(key, value)| (key.to_string(), value.to_string()))
         .collect::<HashMap<String, String>>();
 
     // at this point we've collected all the flags, so we should identify
     // if any additional slots are needed and if we're in a tty context prompt
     // for more slot info before validating
     if atty::is(atty::Stream::Stdout) {
-        let missing_slots: Vec<Slot> = slots
-            .into_iter()
-            .filter(|slot| !slot_data.contains_key(&slot.key))
+        println!("📮 Collecting slot data\n");
+
+        let missing_slots: Vec<&Slot> = slots
+            .iter()
+            .filter(|slot| !collected.contains_key(&slot.key))
             .collect();
 
         missing_slots.iter().for_each(|slot| {
             match &slot.r#type {
                 SlotType::String => {
                     let input = Input::with_theme(&ColorfulTheme::default())
-                        .with_prompt(&slot.get_name())
+                        .with_prompt(&format!("{} ({})", slot.get_name(), slot.r#type))
                         .interact_text()
                         .unwrap();
 
-                    slot_data.insert(slot.key.clone(), input);
+                    collected.insert(slot.key.clone(), input);
                 }
                 SlotType::Boolean => {
                     let input = Input::with_theme(&ColorfulTheme::default())
-                        .with_prompt(&slot.get_name())
+                        .with_prompt(&format!("{} ({})", slot.get_name(), slot.r#type))
                         .validate_with(|input: &String| -> Result<(), &str> {
                             // ensure input is a boolean
                             if input.parse::<bool>().is_err() {
@@ -67,11 +64,11 @@ fn collect_slot_data(slot: &Vec<String>, slots: Vec<Slot>) -> HashMap<String, St
                         .interact()
                         .unwrap();
 
-                    slot_data.insert(slot.key.clone(), input);
+                    collected.insert(slot.key.clone(), input);
                 }
                 SlotType::Number => {
                     let input = Input::with_theme(&ColorfulTheme::default())
-                        .with_prompt(&slot.get_name())
+                        .with_prompt(&format!("{} ({})", slot.get_name(), slot.r#type))
                         .validate_with(|input: &String| -> Result<(), &str> {
                             if input.parse::<i32>().is_err() {
                                 return Err("Input must be a number".into());
@@ -81,51 +78,103 @@ fn collect_slot_data(slot: &Vec<String>, slots: Vec<Slot>) -> HashMap<String, St
                         .interact_text()
                         .unwrap();
 
-                    slot_data.insert(slot.key.clone(), input);
+                    collected.insert(slot.key.clone(), input);
                 }
             }
         });
     }
 
-    println!();
+    println!("  {}\n", "✅ done");
 
-    slot_data
+    // TODO collect missing hooks
+
+    collected
 }
 
 pub fn run(
-    slot: &Vec<String>,
-    hook: &Vec<String>,
-    project_dir: &PathBuf,
+    data: &Vec<String>,
+    overwrite: &bool,
     out_path: &Option<PathBuf>,
-    config: &Config,
+    project: &Project,
     cli: &Cli,
 ) {
     // First, run spackle check
-    check::run(project_dir, config);
+    check::run(project);
 
     println!("");
 
-    let mut slot_data = collect_slot_data(slot, config.slots.clone());
+    let data = collect_data(data, &project.config.slots);
 
-    match slot::validate_data(&slot_data, &config.slots) {
-        Ok(()) => {}
-        Err(e) => {
-            eprintln!(
-                "{}\n{}",
-                "❌ Error with supplied data".bright_red(),
-                e.to_string().red()
+    let slot_data: HashMap<String, String> = data
+        .iter()
+        .filter(|(key, _)| project.config.slots.iter().any(|slot| slot.key == **key))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    if let Err(e) = slot::validate_data(&slot_data, &project.config.slots) {
+        eprintln!(
+            "{}\n{}",
+            "❌ Error with supplied slot data".bright_red(),
+            e.to_string().red()
+        );
+
+        if let slot::Error::UndefinedSlot(key) = e {
+            println!(
+                "{}",
+                format!(
+                    "\nℹ Define a value for {} using the --data (-d) flag\ne.g. --data {}=<value>",
+                    key.to_string().bold(),
+                    key
+                )
+                .yellow()
             );
-
-            exit(1);
         }
+
+        exit(1);
     }
 
-    slot_data.insert("_project_name".to_string(), get_project_name(project_dir));
+    let hook_data: HashMap<String, String> = data
+        .iter()
+        .filter(|(key, _)| project.config.hooks.iter().any(|hook| hook.key == **key))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    if let Err(e) = hook::validate_data(&hook_data, &project.config.hooks) {
+        eprintln!(
+            "{}\n{}",
+            "❌ Error with supplied hook data".bright_red(),
+            e.to_string().red()
+        );
+
+        exit(1);
+    }
+
+    // Check if any data entries don't align with slots or hooks
+    let unknown_data: Vec<&String> = data
+        .iter()
+        .filter(|(key, _)| !slot_data.contains_key(*key) && !hook_data.contains_key(*key))
+        .map(|(key, _)| key)
+        .collect();
+
+    if !unknown_data.is_empty() {
+        eprintln!(
+            "{}\n{}\n{}\n",
+            "⚠️ Unrecognized data provided".bright_yellow(),
+            "Please ensure all data passed via the --data (-d) flag corresponds to a slot or hook. Unrecognized:".yellow(),
+            unknown_data
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<String>>()
+                .join(", ")
+                .yellow()
+                .dimmed(),
+        );
+    }
+
+    println!("📮 Preparing output path\n");
 
     let out_path = match &out_path {
         Some(path) => path,
         None => &Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("Enter the output path")
+            .with_prompt("output path")
             .interact_text()
             .map(|p: String| PathBuf::from(p))
             .unwrap_or_else(|e| {
@@ -134,76 +183,52 @@ pub fn run(
             }),
     };
 
+    println!("");
+
     // Ensure the output path doesn't exist
-    if out_path.exists() {
+    if *overwrite {
+        println!(
+            "{}\n",
+            format!("⚠️ Overwriting existing output path").yellow()
+        );
+    } else if out_path.exists() {
         eprintln!(
             "{}\n{}",
-            "❌ Output path already exists".bright_red(),
-            "Please choose a different output path.".red()
+            "❌ Path already exists".bright_red(),
+            "Please remove the path before running spackle again".red()
         );
+
         exit(2);
     }
 
+    // Create all parent directories
+    if let Some(parent) = out_path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            eprintln!("❌ {}", e.to_string().red());
+            exit(1);
+        }
+    }
+
     if cli.project_path.is_dir() {
-        run_multi(&slot_data, hook, project_dir, out_path, config, cli);
+        run_multi(&data, out_path, cli, project);
     } else {
-        run_single(&slot_data, out_path, &cli)
+        run_single(&data, out_path, cli);
     }
 }
 
-pub fn run_multi(
-    slot_data: &HashMap<String, String>,
-    hook: &Vec<String>,
-    project_dir: &PathBuf,
-    out: &PathBuf,
-    config: &Config,
-    cli: &Cli,
-) {
-    let hook_data = hook
-        .iter()
-        .filter_map(|data| match data.split_once('=') {
-            Some((key, value)) => Some((key.to_string(), value.to_string())),
-            None => {
-                eprintln!(
-                    "{} {}\n",
-                    "❌",
-                    "Invalid hook argument, must be in the form of key=<true|false>. Skipping."
-                        .bright_red()
-                );
-                None
-            }
-        })
-        .filter_map(|(key, value)| match value.parse::<bool>() {
-            Ok(v) => Some((key, v)),
-            Err(_) => {
-                eprintln!(
-                    "{} {}\n",
-                    "❌",
-                    "Invalid hook argument, must be a boolean. Skipping.".bright_red()
-                );
-                None
-            }
-        })
-        .collect::<HashMap<String, bool>>();
-
-    // TODO validate hook data
-
+pub fn run_multi(data: &HashMap<String, String>, out_dir: &PathBuf, cli: &Cli, project: &Project) {
     let start_time = Instant::now();
 
-    // CR(devin): when looking at the below code, this likely should be pushed
-    // into the spackle lib itself, there are too many implementation details
-    // in the CLi that would also need to be replicated in any api/other client
-    // when by the time you get to actually rendering the template
-    // the fact this is touching like a util related module shows its
-    // breaking the ideal implementation boundaries.
+    println!("🖨️  Creating project files\n");
+    println!(
+        "{}",
+        format!("  📁 {}", out_dir.to_string_lossy().bold()).dimmed()
+    );
 
-    // TODO: refactor the data_entries and context boundaries after considering
-    // the api surface area
-    match copy::copy(&project_dir, out, &config.ignore, &slot_data) {
+    match project.copy_files(out_dir, &data) {
         Ok(r) => {
             println!(
-                "{} {} {} {}",
-                "🖨️  Copied",
+                "  Copied {} {} {}",
                 r.copied_count,
                 if r.copied_count == 1 { "file" } else { "files" },
                 format!("in {:?}", start_time.elapsed()).dimmed()
@@ -214,7 +239,7 @@ pub fn run_multi(
                     "{}",
                     format!(
                         "{} {} {}",
-                        "  Ignored",
+                        "    Ignored",
                         r.skipped_count,
                         if r.skipped_count == 1 {
                             "entry"
@@ -226,11 +251,9 @@ pub fn run_multi(
                     .dimmed()
                 );
             }
-
-            println!();
         }
         Err(e) => {
-            std::fs::remove_dir_all(out).unwrap();
+            let _ = fs::remove_dir_all(out_dir);
 
             eprintln!(
                 "❌ {}\n{}\n{}",
@@ -245,11 +268,10 @@ pub fn run_multi(
 
     let start_time = Instant::now();
 
-    match template::fill(&project_dir, &PathBuf::from(out), &slot_data) {
+    match project.render_templates(&PathBuf::from(out_dir), &data) {
         Ok(r) => {
             println!(
-                "{} {} {} {} {}\n",
-                "⛽ Processed",
+                "  Rendered {} {} {} {}\n",
                 r.len(),
                 if r.len() == 1 { "file" } else { "files" },
                 "in".dimmed(),
@@ -289,7 +311,7 @@ pub fn run_multi(
             }
         }
         Err(e) => {
-            std::fs::remove_dir_all(out).unwrap();
+            let _ = fs::remove_dir_all(out_dir);
 
             eprintln!(
                 "❌ {}\n{}",
@@ -299,7 +321,13 @@ pub fn run_multi(
         }
     }
 
-    if config.hooks.is_empty() {
+    // print done
+    println!(
+        "  ✅ done {}\n",
+        format!("{:?}", start_time.elapsed()).dimmed()
+    );
+
+    if project.config.hooks.is_empty() {
         println!("🪝  No hooks to run");
         return;
     }
@@ -318,11 +346,10 @@ pub fn run_multi(
     };
 
     runtime.block_on(async {
-        let stream = match hook::run_hooks_stream(&config.hooks, out, &slot_data, &hook_data, None)
-        {
+        let stream = match project.run_hooks_stream(out_dir, &data, None) {
             Ok(stream) => stream,
             Err(e) => {
-                fs::remove_dir_all(out).unwrap();
+                let _ = fs::remove_dir_all(out_dir);
 
                 eprintln!(
                     "  ❌ {}\n  {}",
@@ -348,8 +375,6 @@ pub fn run_multi(
                         kind: HookResultKind::Failed(error),
                         ..
                     } => {
-                        fs::remove_dir_all(out).unwrap();
-
                         eprintln!(
                             "    ❌ {}\n    {}",
                             format!("Hook {} failed", hook.key.bold()).bright_red(),
@@ -378,8 +403,7 @@ pub fn run_multi(
                         ..
                     } => {
                         println!(
-                            "{} {}\n",
-                            "    ✅ done",
+                            "    ✅ done {}\n",
                             format!("in {:?}", start_time.elapsed()).dimmed()
                         );
 

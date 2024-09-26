@@ -8,7 +8,7 @@ description = "name of the command"
 [[slots]]
 key = "description"
 type = "String"
-name = "command name"
-description = "name of the command"
+name = "command description"
+description = "description of the command"
 ---
 {{ cmd }} {{ description }}

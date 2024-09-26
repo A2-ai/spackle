@@ -2,14 +2,12 @@ use std::{
     collections::HashMap,
     fmt::{Debug, Display},
     fs, io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 use tera::{Context, Tera};
 
-use crate::get_project_name;
-
-use super::slot::Slot;
+use crate::slot::Slot;
 
 pub const TEMPLATE_EXT: &str = ".j2";
 
@@ -56,14 +54,14 @@ pub struct RenderedFile {
 }
 
 pub fn fill(
-    project_dir: &PathBuf,
-    out_dir: &PathBuf,
-    slot_data: &HashMap<String, String>,
+    project_dir: &Path,
+    out_dir: &Path,
+    data: &HashMap<String, String>,
 ) -> Result<Vec<Result<RenderedFile, FileError>>, tera::Error> {
     let glob = project_dir.join("**").join("*".to_owned() + TEMPLATE_EXT);
 
     let tera = Tera::new(&glob.to_string_lossy())?;
-    let context = Context::from_serialize(slot_data)?;
+    let context = Context::from_serialize(data)?;
 
     let template_names = tera.get_template_names().collect::<Vec<_>>();
     let rendered_templates = template_names.iter().map(|template_name| {
@@ -141,15 +139,16 @@ pub enum ValidateError {
 pub fn validate(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), ValidateError> {
     let glob = dir.join("**").join("*".to_owned() + TEMPLATE_EXT);
 
-    let tera = Tera::new(&glob.to_string_lossy()).map_err(|e| ValidateError::TeraError(e))?;
+    let tera = Tera::new(&glob.to_string_lossy()).map_err(ValidateError::TeraError)?;
     let mut context = Context::from_serialize(
         slots
             .iter()
             .map(|s| (s.key.clone(), ""))
             .collect::<HashMap<_, _>>(),
     )
-    .map_err(|e| ValidateError::TeraError(e))?;
-    context.insert("_project_name".to_string(), &get_project_name(dir));
+    .map_err(ValidateError::TeraError)?;
+    context.insert("_project_name".to_string(), &"".to_string());
+    context.insert("_output_name".to_string(), &"".to_string());
 
     let errors = tera
         .get_template_names()
@@ -168,11 +167,10 @@ pub fn validate(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), ValidateError> {
 
 #[cfg(test)]
 mod tests {
-    use tempdir::TempDir;
-
-    use crate::core::slot::SlotType;
+    use crate::slot::SlotType;
 
     use super::*;
+    use tempdir::TempDir;
 
     #[test]
     fn fill_proj1() {
@@ -200,8 +198,7 @@ mod tests {
             &vec![Slot {
                 key: "defined_field".to_string(),
                 r#type: SlotType::String,
-                name: None,
-                description: None,
+                ..Default::default()
             }],
         );
 
@@ -215,8 +212,7 @@ mod tests {
             &vec![Slot {
                 key: "defined_field".to_string(),
                 r#type: SlotType::String,
-                name: None,
-                description: None,
+                ..Default::default()
             }],
         );
 

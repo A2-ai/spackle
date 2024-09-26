@@ -8,7 +8,6 @@ key = "hook_2"
 command = ["true"]
 optional = { default = false }
 
-
 [[hooks]]
 key = "dep_hook_should_run"
 command = ["true"]

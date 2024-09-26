@@ -11,9 +11,19 @@ A spackle project is defined by a `spackle.toml` file at the root directory. Bel
 Universal slots are available in all slot environments (`.j2` file contents, file names, <span style="color: darkseagreen;">{s}</span> fields).
 
 - `_project_name` `string`
-  - The name of the project, defined by the name of the output directory
+  - The name of the project
+- `_output_name` `string`
+  - The name of the output path
 
 ## Project-level config
+
+### name `string`
+
+The name of the project. This also sets the `project_name` universal slot, so keep that in mind. If this isn't set, the project name will be inferred from the directory name.
+
+```toml
+name = "my_cool_project"
+```
 
 ### ignore `string[]`
 
@@ -57,6 +67,14 @@ The data type of the slot. Can be one of the following:
 type = "String"
 ```
 
+### needs `string[]`
+
+The slots that the slot depends on.
+
+```toml
+needs = ["some_slot", "other_slot"]
+```
+
 ### name `string`
 
 The human-friendly name of the slot.
@@ -82,6 +100,7 @@ Hooks are defined by one or more `[[hooks]]` table entries in the `spackle.toml`
 name = "create file"
 command = ["touch", "new_file"]
 optional = { default = true }
+needs = ["foo"]
 if = "{{foo}} != 'bar'"
 name = "Create a new file"
 description = "Create a new file called new_file"
@@ -117,13 +136,27 @@ When defined, the user can toggle the hook. `default` describes the default stat
 optional = { default = true }
 ```
 
+### needs `string[]`
+
+The items on which the hook depends. The hook will only be executed if all the dependencies are satisfied. A dependency is satisfied if the dependency is enabled and all of its own dependencies are satisfied.
+
+A slot is considered enabled if it has a non-default value (default values include `""`, `0`, and `false` for example).
+
+> Note: Because `if` is evaluated only on hook run time, it is not taken into account when determining satisfaction of `needs`.
+
+```toml
+needs = ["some_hook", "other_slot"]
+```
+
 ### if `string` <span style="color: darkseagreen;">{s}</span>
 
-The condition to execute the hook. Accepts values from slots.
+The condition on which to execute the hook. Accepts values from slots.
 
 ```toml
 if = "{{ foo }} != 'bar'"
 ```
+
+> Note: The `if` condition is evaluated directly before the hook is executed.
 
 #### Dependencies on other hooks
 

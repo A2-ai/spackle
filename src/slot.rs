@@ -2,11 +2,15 @@ use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt::Display};
 
+use crate::needs::{is_satisfied, Needy};
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Slot {
     pub key: String,
     #[serde(default)]
     pub r#type: SlotType,
+    #[serde(default)]
+    pub needs: Vec<String>,
     pub name: Option<String>,
     pub description: Option<String>,
 }
@@ -17,6 +21,18 @@ pub enum SlotType {
     #[default]
     String,
     Boolean,
+}
+
+impl Default for Slot {
+    fn default() -> Self {
+        Self {
+            key: "".to_string(),
+            r#type: SlotType::String,
+            needs: vec![],
+            name: None,
+            description: None,
+        }
+    }
 }
 
 impl Display for Slot {
@@ -35,6 +51,23 @@ impl Display for Slot {
                 .unwrap_or_default()
                 .truecolor(180, 180, 180),
         )
+    }
+}
+
+impl Needy for Slot {
+    fn key(&self) -> String {
+        self.key.clone()
+    }
+
+    fn is_enabled(&self, data: &HashMap<String, String>) -> bool {
+        let binding = String::new();
+        let value = data.get(&self.key).unwrap_or(&binding);
+
+        !value.is_empty() && value != "0" && value.to_lowercase() != "false"
+    }
+
+    fn is_satisfied(&self, items: &Vec<&dyn Needy>, data: &HashMap<String, String>) -> bool {
+        is_satisfied(&self.needs, items, data)
     }
 }
 
@@ -115,14 +148,12 @@ mod tests {
             Slot {
                 key: "key".to_string(),
                 r#type: SlotType::String,
-                name: None,
-                description: None,
+                ..Default::default()
             },
             Slot {
                 key: "key2".to_string(),
                 r#type: SlotType::String,
-                name: None,
-                description: None,
+                ..Default::default()
             },
         ];
 
@@ -140,14 +171,12 @@ mod tests {
             Slot {
                 key: "key".to_string(),
                 r#type: SlotType::String,
-                name: None,
-                description: None,
+                ..Default::default()
             },
             Slot {
                 key: "key2".to_string(),
                 r#type: SlotType::String,
-                name: None,
-                description: None,
+                ..Default::default()
             },
         ];
 
@@ -164,8 +193,7 @@ mod tests {
         let slots = vec![Slot {
             key: "key".to_string(),
             r#type: SlotType::String,
-            name: None,
-            description: None,
+            ..Default::default()
         }];
 
         let data = HashMap::from([("key", "value"), ("key2", "value2")])
@@ -182,14 +210,12 @@ mod tests {
             Slot {
                 key: "key".to_string(),
                 r#type: SlotType::Number,
-                name: None,
-                description: None,
+                ..Default::default()
             },
             Slot {
                 key: "key2".to_string(),
                 r#type: SlotType::Boolean,
-                name: None,
-                description: None,
+                ..Default::default()
             },
         ];
 
@@ -206,8 +232,7 @@ mod tests {
         let slots = vec![Slot {
             key: "key".to_string(),
             r#type: SlotType::Number,
-            name: None,
-            description: None,
+            ..Default::default()
         }];
 
         let data = HashMap::from([("key", "value")])
