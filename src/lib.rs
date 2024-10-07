@@ -50,14 +50,13 @@ impl std::error::Error for GenerateError {
 pub fn get_project_name(out_dir: &Path) -> String {
     let path = match out_dir.canonicalize() {
         Ok(path) => path,
-        Err(_) => return "".to_string(),
+        Err(_) => "project".into(),
     };
 
-    return path
-        .file_stem()
+    path.file_stem()
         .unwrap_or_default()
         .to_string_lossy()
-        .into_owned();
+        .to_string()
 }
 
 /// Generates a filled directory from the specified spackle project.
