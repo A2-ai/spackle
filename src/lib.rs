@@ -50,11 +50,12 @@ impl std::error::Error for GenerateError {
 pub fn get_project_name(out_dir: &Path) -> String {
     let path = match out_dir.canonicalize() {
         Ok(path) => path,
-        Err(_) => "project".into(),
+        // If the path cannot be canonicalized (e.g. not created yet), we can ignore
+        Err(_) => out_dir.to_path_buf(),
     };
 
     path.file_stem()
-        .unwrap_or_default()
+        .unwrap_or("project".as_ref())
         .to_string_lossy()
         .to_string()
 }

@@ -659,7 +659,7 @@ mod tests {
             ".",
             &HashMap::from([
                 ("field_1".to_string(), "echo".to_string()),
-                ("field_2".to_string(), "out1".to_string()),
+                ("field_2".to_string(), "project".to_string()),
             ]),
             &HashMap::new(),
             None,

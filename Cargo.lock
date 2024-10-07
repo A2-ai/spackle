@@ -1928,7 +1928,7 @@ dependencies = [
 
 [[package]]
 name = "spackle"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-process",
  "async-stream",
