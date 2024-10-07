@@ -46,25 +46,15 @@ impl std::error::Error for GenerateError {
     }
 }
 
-// TODO add to Project data struct
-// TODO add top-level config for forcing project name
-/// Gets the name of the project from the directory name
-pub fn get_project_name(project_dir: &Path) -> String {
-    let path = match project_dir.canonicalize() {
+// Gets the project name as the canonicalized path's file stem
+pub fn get_project_name(out_dir: &Path) -> String {
+    let path = match out_dir.canonicalize() {
         Ok(path) => path,
         Err(_) => return "".to_string(),
     };
 
-    if path.is_file() {
-        return path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-    }
-
     return path
-        .file_name()
+        .file_stem()
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();

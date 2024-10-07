@@ -118,7 +118,10 @@ pub fn run_hooks_stream(
     run_as_user: Option<User>,
 ) -> Result<impl Stream<Item = HookStreamResult>, Error> {
     let mut slot_data = slot_data.clone();
-    slot_data.insert("_project_name".to_string(), get_project_name(dir.as_ref()));
+    slot_data.insert(
+        "_project_name".to_string(),
+        get_project_name(&dir.as_ref().to_path_buf()),
+    );
 
     let mut skipped_hooks = Vec::new();
     let mut queued_hooks = Vec::new();

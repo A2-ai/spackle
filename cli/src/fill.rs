@@ -120,8 +120,6 @@ pub fn run(
         }
     }
 
-    slot_data.insert("_project_name".to_string(), get_project_name(project_dir));
-
     let out_path = match &out_path {
         Some(path) => path,
         None => &Input::with_theme(&ColorfulTheme::default())
@@ -133,6 +131,8 @@ pub fn run(
                 exit(1);
             }),
     };
+
+    slot_data.insert("_project_name".to_string(), get_project_name(&out_path));
 
     // Ensure the output path doesn't exist
     if out_path.exists() {

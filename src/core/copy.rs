@@ -81,16 +81,11 @@ pub fn copy(
             source: e.into(),
             path: src_path.to_path_buf(),
         })?;
-        let dst_path: PathBuf = Tera::one_off(
-            &dst_path_maybe_template.to_string_lossy(),
-            &context,
-            false,
-            // TODO: fixup unwrap - not sure what situations this could panic in
-            // assuming without need for escaping this should just replace a template
-            // if it exists but otherwise will just carry on forward.
-        )
-        .unwrap()
-        .into();
+        let dst_path: PathBuf =
+            match Tera::one_off(&dst_path_maybe_template.to_string_lossy(), &context, false) {
+                Ok(path) => path.into(),
+                Err(_) => dst_path_maybe_template.to_path_buf(),
+            };
 
         if entry.file_type().is_dir() {
             fs::create_dir_all(&dst_path).map_err(|e| Error {

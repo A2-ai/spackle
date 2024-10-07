@@ -7,8 +7,6 @@ use std::{
 };
 use tera::{Context, Tera};
 
-use crate::get_project_name;
-
 use super::slot::Slot;
 
 pub const TEMPLATE_EXT: &str = ".j2";
@@ -149,7 +147,7 @@ pub fn validate(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), ValidateError> {
             .collect::<HashMap<_, _>>(),
     )
     .map_err(|e| ValidateError::TeraError(e))?;
-    context.insert("_project_name".to_string(), &get_project_name(dir));
+    context.insert("_project_name".to_string(), "");
 
     let errors = tera
         .get_template_names()
