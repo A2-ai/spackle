@@ -9,6 +9,7 @@ pub struct Slot {
     pub r#type: SlotType,
     pub name: Option<String>,
     pub description: Option<String>,
+    pub default: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, strum_macros::Display, Default, Clone)]
@@ -38,6 +39,18 @@ impl Display for Slot {
     }
 }
 
+impl Default for Slot {
+    fn default() -> Self {
+        Slot {
+            key: "".to_string(),
+            r#type: SlotType::String,
+            name: None,
+            description: None,
+            default: None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Error {
     UnknownSlot(String),
@@ -61,6 +74,30 @@ impl Slot {
     pub fn get_name(&self) -> String {
         self.name.clone().unwrap_or(self.key.clone())
     }
+}
+
+pub fn validate(slots: &Vec<Slot>) -> Result<(), Error> {
+    for slot in slots {
+        if let Some(default_value) = &slot.default {
+            match slot.r#type {
+                SlotType::String => {
+                    // String always valid, no need to check
+                }
+                SlotType::Number => {
+                    if default_value.parse::<f64>().is_err() {
+                        return Err(Error::TypeMismatch(slot.key.clone(), "number".to_string()));
+                    }
+                }
+                SlotType::Boolean => {
+                    if default_value.parse::<bool>().is_err() {
+                        return Err(Error::TypeMismatch(slot.key.clone(), "boolean".to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 pub fn validate_data(data: &HashMap<String, String>, slots: &Vec<Slot>) -> Result<(), Error> {
@@ -114,15 +151,11 @@ mod tests {
         let slots = vec![
             Slot {
                 key: "key".to_string(),
-                r#type: SlotType::String,
-                name: None,
-                description: None,
+                ..Default::default()
             },
             Slot {
                 key: "key2".to_string(),
-                r#type: SlotType::String,
-                name: None,
-                description: None,
+                ..Default::default()
             },
         ];
 
@@ -139,15 +172,11 @@ mod tests {
         let slots = vec![
             Slot {
                 key: "key".to_string(),
-                r#type: SlotType::String,
-                name: None,
-                description: None,
+                ..Default::default()
             },
             Slot {
                 key: "key2".to_string(),
-                r#type: SlotType::String,
-                name: None,
-                description: None,
+                ..Default::default()
             },
         ];
 
@@ -163,9 +192,7 @@ mod tests {
     fn extra_data() {
         let slots = vec![Slot {
             key: "key".to_string(),
-            r#type: SlotType::String,
-            name: None,
-            description: None,
+            ..Default::default()
         }];
 
         let data = HashMap::from([("key", "value"), ("key2", "value2")])
@@ -182,14 +209,12 @@ mod tests {
             Slot {
                 key: "key".to_string(),
                 r#type: SlotType::Number,
-                name: None,
-                description: None,
+                ..Default::default()
             },
             Slot {
                 key: "key2".to_string(),
                 r#type: SlotType::Boolean,
-                name: None,
-                description: None,
+                ..Default::default()
             },
         ];
 
@@ -206,8 +231,7 @@ mod tests {
         let slots = vec![Slot {
             key: "key".to_string(),
             r#type: SlotType::Number,
-            name: None,
-            description: None,
+            ..Default::default()
         }];
 
         let data = HashMap::from([("key", "value")])

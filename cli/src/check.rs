@@ -3,6 +3,7 @@ use std::{error::Error, path::PathBuf, process::exit, time::Instant};
 use colored::Colorize;
 use spackle::core::{
     config::Config,
+    slot,
     template::{self, ValidateError},
 };
 
@@ -19,7 +20,7 @@ pub fn run(project_dir: &PathBuf, config: &Config) {
             match e {
                 ValidateError::TeraError(e) => {
                     eprintln!(
-                        "  {}\n  {}\n",
+                        "{}\n{}\n",
                         "❌ Error validating template files".bright_red(),
                         e.to_string().red()
                     );
@@ -27,7 +28,7 @@ pub fn run(project_dir: &PathBuf, config: &Config) {
                 ValidateError::RenderError(e) => {
                     for (templ, e) in e {
                         eprintln!(
-                            "  {}\n  {}\n",
+                            "{}\n{}\n",
                             format!("❌ Template {} has errors", templ.bright_red().bold())
                                 .bright_red(),
                             e.source().map(|e| e.to_string()).unwrap_or_default().red()
@@ -37,6 +38,20 @@ pub fn run(project_dir: &PathBuf, config: &Config) {
             }
 
             print_elapsed_time(start_time);
+            exit(1);
+        }
+    }
+
+    match slot::validate(&config.slots) {
+        Ok(()) => {
+            println!("  👌 {}\n", "Slot data is valid".bright_green());
+        }
+        Err(e) => {
+            eprintln!(
+                "{}\n{}\n",
+                "❌ Error validating slot configuration".bright_red(),
+                e.to_string().red()
+            );
             exit(1);
         }
     }

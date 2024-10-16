@@ -1,7 +1,8 @@
-use crate::{check, Cli};
+use crate::{check, util::file_path_completer::FilePathCompleter, Cli};
+use anyhow::{Context, Result};
 use colored::Colorize;
-use dialoguer::{theme::ColorfulTheme, Input};
 use fronma::parser::parse_with_engine;
+use inquire::{Confirm, CustomType, Text};
 use rocket::{futures::StreamExt, tokio};
 use spackle::{
     core::{
@@ -14,10 +15,10 @@ use spackle::{
     get_project_name,
 };
 use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant};
-use tera::{Context, Tera};
+use tera::Tera;
 use tokio::pin;
 
-fn collect_slot_data(slot: &Vec<String>, slots: Vec<Slot>) -> HashMap<String, String> {
+fn collect_slot_data(slot: &Vec<String>, slots: Vec<Slot>) -> Result<HashMap<String, String>> {
     let mut slot_data = slot
         .iter()
         .filter_map(|data| match data.split_once('=') {
@@ -40,56 +41,70 @@ fn collect_slot_data(slot: &Vec<String>, slots: Vec<Slot>) -> HashMap<String, St
     // for more slot info before validating
     if atty::is(atty::Stream::Stdout) {
         let missing_slots: Vec<Slot> = slots
+            .clone()
             .into_iter()
             .filter(|slot| !slot_data.contains_key(&slot.key))
             .collect();
 
-        missing_slots.iter().for_each(|slot| {
+        for slot in missing_slots {
             match &slot.r#type {
                 SlotType::String => {
-                    let input = Input::with_theme(&ColorfulTheme::default())
-                        .with_prompt(&slot.get_name())
-                        .interact_text()
-                        .unwrap();
+                    let slot_name = slot.get_name();
+                    let default_str = slot.default.clone().unwrap_or_default();
+                    let mut input = Text::new(&slot_name)
+                        .with_help_message(slot.description.as_deref().unwrap_or_default());
 
-                    slot_data.insert(slot.key.clone(), input);
+                    if let Some(_default) = slot.default {
+                        // We can unwrap here because we've done prior validation
+                        input = input.with_default(default_str.as_str());
+                    }
+
+                    let value = input
+                        .prompt()
+                        .with_context(|| format!("Error getting input for slot: {}", slot.key))?;
+
+                    slot_data.insert(slot.key.clone(), value.to_string());
                 }
                 SlotType::Boolean => {
-                    let input = Input::with_theme(&ColorfulTheme::default())
-                        .with_prompt(&slot.get_name())
-                        .validate_with(|input: &String| -> Result<(), &str> {
-                            // ensure input is a boolean
-                            if input.parse::<bool>().is_err() {
-                                return Err("Input must be a boolean".into());
-                            }
-                            Ok(())
-                        })
-                        .interact()
-                        .unwrap();
+                    let slot_name = slot.get_name();
+                    let mut input = Confirm::new(&slot_name)
+                        .with_help_message(slot.description.as_deref().unwrap_or_default());
 
-                    slot_data.insert(slot.key.clone(), input);
+                    if let Some(default) = slot.default {
+                        // We can unwrap here because we've done prior validation
+                        input = input.with_default(default.parse::<bool>().unwrap());
+                    }
+
+                    let value = input
+                        .prompt()
+                        .with_context(|| format!("Error getting input for slot: {}", slot.key))?;
+
+                    slot_data.insert(slot.key.clone(), value.to_string());
                 }
                 SlotType::Number => {
-                    let input = Input::with_theme(&ColorfulTheme::default())
-                        .with_prompt(&slot.get_name())
-                        .validate_with(|input: &String| -> Result<(), &str> {
-                            if input.parse::<i32>().is_err() {
-                                return Err("Input must be a number".into());
-                            }
-                            Ok(())
-                        })
-                        .interact_text()
-                        .unwrap();
+                    let slot_name = slot.get_name();
+                    let mut input = CustomType::<f64>::new(&slot_name)
+                        .with_error_message("Please type a valid number")
+                        .with_help_message(slot.description.as_deref().unwrap_or_default());
 
-                    slot_data.insert(slot.key.clone(), input);
+                    if let Some(default) = slot.default {
+                        // We can unwrap here because we've done prior validation
+                        input = input.with_default(default.parse::<f64>().unwrap());
+                    }
+
+                    let value = input
+                        .prompt()
+                        .with_context(|| format!("Error getting input for slot: {}", slot.key))?;
+
+                    slot_data.insert(slot.key.clone(), value.to_string());
                 }
             }
-        });
+        }
     }
 
     println!();
 
-    slot_data
+    Ok(slot_data)
 }
 
 pub fn run(
@@ -105,7 +120,13 @@ pub fn run(
 
     println!("");
 
-    let mut slot_data = collect_slot_data(slot, config.slots.clone());
+    let mut slot_data = match collect_slot_data(slot, config.slots.clone()) {
+        Ok(slot_data) => slot_data,
+        Err(e) => {
+            eprintln!("❌ {}", format!("{:?}", e).red());
+            exit(1);
+        }
+    };
 
     match slot::validate_data(&slot_data, &config.slots) {
         Ok(()) => {}
@@ -122,14 +143,23 @@ pub fn run(
 
     let out_path = match &out_path {
         Some(path) => path,
-        None => &Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("Enter the output path")
-            .interact_text()
-            .map(|p: String| PathBuf::from(p))
-            .unwrap_or_else(|e| {
-                eprintln!("❌ {}", e.to_string().red());
-                exit(1);
-            }),
+        // Cannot use CustomType here because PathBuf does not implement ToString
+        None => {
+            let path = &Text::new("Enter the output path")
+                .with_help_message("The path to output the filled project")
+                .with_autocomplete(FilePathCompleter::default())
+                .prompt();
+
+            println!();
+
+            match path {
+                Ok(p) => &PathBuf::from(p),
+                Err(e) => {
+                    eprintln!("❌ {}", e.to_string().red());
+                    exit(1);
+                }
+            }
+        }
     };
 
     slot_data.insert("_project_name".to_string(), get_project_name(&out_path));
@@ -434,7 +464,7 @@ pub fn run_single(slot_data: &HashMap<String, String>, out_path: &PathBuf, cli: 
     }
     .body;
 
-    let context = match Context::from_serialize(slot_data) {
+    let context = match tera::Context::from_serialize(slot_data) {
         Ok(context) => context,
         Err(e) => {
             eprintln!(
