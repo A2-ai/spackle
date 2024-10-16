@@ -5,6 +5,7 @@ use std::{path::PathBuf, process::exit};
 mod check;
 mod fill;
 mod info;
+mod util;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]

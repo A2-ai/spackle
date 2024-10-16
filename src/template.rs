@@ -7,7 +7,7 @@ use std::{
 };
 use tera::{Context, Tera};
 
-use crate::slot::Slot;
+use super::slot::Slot;
 
 pub const TEMPLATE_EXT: &str = ".j2";
 
@@ -147,8 +147,7 @@ pub fn validate(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), ValidateError> {
             .collect::<HashMap<_, _>>(),
     )
     .map_err(ValidateError::TeraError)?;
-    context.insert("_project_name".to_string(), &"".to_string());
-    context.insert("_output_name".to_string(), &"".to_string());
+    context.insert("_project_name".to_string(), "");
 
     let errors = tera
         .get_template_names()
@@ -167,10 +166,9 @@ pub fn validate(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), ValidateError> {
 
 #[cfg(test)]
 mod tests {
-    use crate::slot::SlotType;
+    use tempdir::TempDir;
 
     use super::*;
-    use tempdir::TempDir;
 
     #[test]
     fn fill_proj1() {
@@ -197,7 +195,6 @@ mod tests {
             &PathBuf::from("tests/data/proj1"),
             &vec![Slot {
                 key: "defined_field".to_string(),
-                r#type: SlotType::String,
                 ..Default::default()
             }],
         );
@@ -211,7 +208,6 @@ mod tests {
             &PathBuf::from("tests/data/proj2"),
             &vec![Slot {
                 key: "defined_field".to_string(),
-                r#type: SlotType::String,
                 ..Default::default()
             }],
         );

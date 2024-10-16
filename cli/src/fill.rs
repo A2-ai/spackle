@@ -1,21 +1,22 @@
-use crate::{check, Cli};
+use crate::{check, util::file_path_completer::FilePathCompleter, Cli};
+use anyhow::{Context, Result};
 use colored::Colorize;
-use dialoguer::{theme::ColorfulTheme, Input};
 use fronma::parser::parse_with_engine;
+use inquire::{Confirm, CustomType, Text};
 use rocket::{futures::StreamExt, tokio};
 use spackle::{
     config::{self},
+    get_output_name,
     hook::{self, HookError, HookResult, HookResultKind, HookStreamResult},
     slot::{self, Slot, SlotType},
     Project,
 };
 use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant};
-use tera::{Context, Tera};
+use tera::Tera;
 use tokio::pin;
 
-/// Collects all required data (slot and hook data) and prompts the user for any slots or hooks that need data that are not passed via the command line
-fn collect_data(flag_data: &Vec<String>, slots: &Vec<Slot>) -> HashMap<String, String> {
-    let mut collected = flag_data
+fn parse_flag_data(flag_data: &Vec<String>) -> HashMap<String, String> {
+    flag_data
         .iter()
         .filter_map(|e| match e.split_once('=') {
             Some((key, value)) => Some((key.to_string(), value.to_string())),
@@ -28,7 +29,15 @@ fn collect_data(flag_data: &Vec<String>, slots: &Vec<Slot>) -> HashMap<String, S
                 None
             }
         })
-        .collect::<HashMap<String, String>>();
+        .collect()
+}
+
+fn collect_data(flag_data: &Vec<String>, slots: &Vec<Slot>) -> Result<HashMap<String, String>> {
+    let mut collected: HashMap<String, String> = HashMap::new();
+
+    for (key, value) in parse_flag_data(flag_data) {
+        collected.insert(key, value);
+    }
 
     // at this point we've collected all the flags, so we should identify
     // if any additional slots are needed and if we're in a tty context prompt
@@ -41,58 +50,68 @@ fn collect_data(flag_data: &Vec<String>, slots: &Vec<Slot>) -> HashMap<String, S
             .filter(|slot| !collected.contains_key(&slot.key))
             .collect();
 
-        missing_slots.iter().for_each(|slot| {
+        for slot in missing_slots {
             match &slot.r#type {
                 SlotType::String => {
-                    let input = Input::with_theme(&ColorfulTheme::default())
-                        .with_prompt(&format!("{} ({})", slot.get_name(), slot.r#type))
-                        .interact_text()
-                        .unwrap();
+                    let slot_name = slot.get_name();
+                    let mut input = Text::new(&slot_name)
+                        .with_help_message(slot.description.as_deref().unwrap_or_default());
 
-                    collected.insert(slot.key.clone(), input);
+                    if let Some(default) = &slot.default {
+                        // We can unwrap here because we've done prior validation
+                        input = input.with_default(default);
+                    }
+
+                    let value = input
+                        .prompt()
+                        .with_context(|| format!("Error getting input for slot: {}", slot.key))?;
+
+                    collected.insert(slot.key.clone(), value.to_string());
                 }
                 SlotType::Boolean => {
-                    let input = Input::with_theme(&ColorfulTheme::default())
-                        .with_prompt(&format!("{} ({})", slot.get_name(), slot.r#type))
-                        .validate_with(|input: &String| -> Result<(), &str> {
-                            // ensure input is a boolean
-                            if input.parse::<bool>().is_err() {
-                                return Err("Input must be a boolean".into());
-                            }
-                            Ok(())
-                        })
-                        .interact()
-                        .unwrap();
+                    let slot_name = slot.get_name();
+                    let mut input = Confirm::new(&slot_name)
+                        .with_help_message(slot.description.as_deref().unwrap_or_default());
 
-                    collected.insert(slot.key.clone(), input);
+                    if let Some(default) = &slot.default {
+                        // We can unwrap here because we've done prior validation
+                        input = input.with_default(default.parse::<bool>().unwrap());
+                    }
+
+                    let value = input
+                        .prompt()
+                        .with_context(|| format!("Error getting input for slot: {}", slot.key))?;
+
+                    collected.insert(slot.key.clone(), value.to_string());
                 }
                 SlotType::Number => {
-                    let input = Input::with_theme(&ColorfulTheme::default())
-                        .with_prompt(&format!("{} ({})", slot.get_name(), slot.r#type))
-                        .validate_with(|input: &String| -> Result<(), &str> {
-                            if input.parse::<i32>().is_err() {
-                                return Err("Input must be a number".into());
-                            }
-                            Ok(())
-                        })
-                        .interact_text()
-                        .unwrap();
+                    let slot_name = slot.get_name();
+                    let mut input = CustomType::<f64>::new(&slot_name)
+                        .with_error_message("Please type a valid number")
+                        .with_help_message(slot.description.as_deref().unwrap_or_default());
 
-                    collected.insert(slot.key.clone(), input);
+                    if let Some(default) = &slot.default {
+                        // We can unwrap here because we've done prior validation
+                        input = input.with_default(default.parse::<f64>().unwrap());
+                    }
+
+                    let value = input
+                        .prompt()
+                        .with_context(|| format!("Error getting input for slot: {}", slot.key))?;
+
+                    collected.insert(slot.key.clone(), value.to_string());
                 }
             }
-        });
+        }
     }
 
     println!("  {}\n", "✅ done");
 
-    // TODO collect missing hooks
-
-    collected
+    Ok(collected)
 }
 
 pub fn run(
-    data: &Vec<String>,
+    flag_data: &Vec<String>,
     overwrite: &bool,
     out_path: &Option<PathBuf>,
     project: &Project,
@@ -103,13 +122,20 @@ pub fn run(
 
     println!("");
 
-    let data = collect_data(data, &project.config.slots);
+    let collected_data = match collect_data(flag_data, &project.config.slots) {
+        Ok(slot_data) => slot_data,
+        Err(e) => {
+            eprintln!("❌ {}", format!("{:?}", e).red());
+            exit(1);
+        }
+    };
 
-    let slot_data: HashMap<String, String> = data
+    let mut slot_data: HashMap<String, String> = collected_data
         .iter()
         .filter(|(key, _)| project.config.slots.iter().any(|slot| slot.key == **key))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
+
     if let Err(e) = slot::validate_data(&slot_data, &project.config.slots) {
         eprintln!(
             "{}\n{}",
@@ -132,7 +158,7 @@ pub fn run(
         exit(1);
     }
 
-    let hook_data: HashMap<String, String> = data
+    let hook_data: HashMap<String, String> = collected_data
         .iter()
         .filter(|(key, _)| project.config.hooks.iter().any(|hook| hook.key == **key))
         .map(|(k, v)| (k.clone(), v.clone()))
@@ -148,7 +174,7 @@ pub fn run(
     }
 
     // Check if any data entries don't align with slots or hooks
-    let unknown_data: Vec<&String> = data
+    let unknown_data: Vec<&String> = collected_data
         .iter()
         .filter(|(key, _)| !slot_data.contains_key(*key) && !hook_data.contains_key(*key))
         .map(|(key, _)| key)
@@ -173,15 +199,26 @@ pub fn run(
 
     let out_path = match &out_path {
         Some(path) => path,
-        None => &Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("output path")
-            .interact_text()
-            .map(|p: String| PathBuf::from(p))
-            .unwrap_or_else(|e| {
-                eprintln!("❌ {}", e.to_string().red());
-                exit(1);
-            }),
+        // Cannot use CustomType here because PathBuf does not implement ToString
+        None => {
+            let path = &Text::new("Enter the output path")
+                .with_help_message("The path to output the filled project")
+                .with_autocomplete(FilePathCompleter::default())
+                .prompt();
+
+            println!();
+
+            match path {
+                Ok(p) => &PathBuf::from(p),
+                Err(e) => {
+                    eprintln!("❌ {}", e.to_string().red());
+                    exit(1);
+                }
+            }
+        }
     };
+
+    slot_data.insert("_project_name".to_string(), get_output_name(&out_path));
 
     println!("");
 
@@ -210,9 +247,9 @@ pub fn run(
     }
 
     if cli.project_path.is_dir() {
-        run_multi(&data, out_path, cli, project);
+        run_multi(&slot_data, out_path, cli, project);
     } else {
-        run_single(&data, out_path, cli);
+        run_single(&slot_data, out_path, cli);
     }
 }
 
@@ -458,7 +495,7 @@ pub fn run_single(slot_data: &HashMap<String, String>, out_path: &PathBuf, cli: 
     }
     .body;
 
-    let context = match Context::from_serialize(slot_data) {
+    let context = match tera::Context::from_serialize(slot_data) {
         Ok(context) => context,
         Err(e) => {
             eprintln!(

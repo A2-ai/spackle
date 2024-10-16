@@ -1,0 +1,21 @@
+
+[[slots]]
+key = "default_string"
+type = "String"
+name = "Default string"
+description = "Default string"
+default = "default"
+
+[[slots]]
+key = "default_number"
+type = "Number"
+name = "Default number"
+description = "Default number"
+default = "notanumber"
+
+[[slots]]
+key = "default_boolean"
+type = "Boolean"
+name = "Default boolean"
+description = "Default boolean"
+default = "invalid"

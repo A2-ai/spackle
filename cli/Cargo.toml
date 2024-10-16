@@ -1,7 +1,8 @@
 [package]
 name = "spackle-cli"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
+repository = "https://github.com/a2-ai/spackle"
 
 [[bin]]
 name = "spackle"
@@ -14,7 +15,9 @@ colored = "2.1.0"
 rocket = { version = "0.5.1", features = ["json"] }
 rust-embed = "8.4.0"
 tera = "1.20.0"
-dialoguer = "0.11.0"
 atty = "0.2.14"
 toml = "0.8.19"
 fronma = { version = "0.2.0", features = ["toml"] }
+inquire = "0.7.5"
+anyhow = "1.0.89"
+fuzzy-matcher = "0.3.7"

@@ -11,9 +11,7 @@ A spackle project is defined by a `spackle.toml` file at the root directory. Bel
 Universal slots are available in all slot environments (`.j2` file contents, file names, <span style="color: darkseagreen;">{s}</span> fields).
 
 - `_project_name` `string`
-  - The name of the project
-- `_output_name` `string`
-  - The name of the output path
+  - The name of the output directory
 
 ## Project-level config
 
@@ -45,6 +43,7 @@ key = "slot_name"
 type = "string"
 name = "Slot name"
 description = "A description of the slot"
+default = "default value"
 ```
 
 ### key `string`
@@ -89,6 +88,16 @@ The human-friendly description of the slot.
 
 ```toml
 description = "A description of the slot"
+```
+
+### default `string`
+
+The default value of the slot. The CLI will use the default value if one is not provided by the user (e.g. they press enter without typing anything).
+
+For library consumers, is up to you to decide whether to use the default value or not. The generate function will not use the default value if the slot is not provided, and will instead error if a slot is not provided properly.
+
+```toml
+default = "default value"
 ```
 
 ## hooks `table`

@@ -10,6 +10,7 @@ use tokio::pin;
 use tokio_stream::{Stream, StreamExt};
 use users::User;
 
+use crate::get_output_name;
 use crate::needs::{is_satisfied, Needy};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -237,6 +238,12 @@ pub fn run_hooks_stream(
     data: &HashMap<String, String>,
     run_as_user: Option<User>,
 ) -> Result<impl Stream<Item = HookStreamResult>, Error> {
+    let mut slot_data = data.clone();
+    slot_data.insert(
+        "_project_name".to_string(),
+        get_output_name(&dir.as_ref().to_path_buf()),
+    );
+
     let mut skipped_hooks = Vec::new();
     let mut queued_hooks = Vec::new();
 
@@ -283,6 +290,7 @@ pub fn run_hooks_stream(
     let mut commands = Vec::new();
     for hook in templated_hooks {
         let cmd = match run_as_user {
+            // TODO spackle shouldn't need to depend on polyjuice, it should instead be able to receive an arbitrary Command from a consumer, who may choose to wrap it in polyjuice or not
             Some(ref user) => match polyjuice::cmd_as_user(&hook.command[0], user.clone()) {
                 Ok(cmd) => cmd,
                 Err(e) => {

@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use template::RenderedFile;
 use tokio_stream::Stream;
 use users::User;
 
@@ -44,6 +45,20 @@ impl std::error::Error for GenerateError {
             GenerateError::CopyError(e) => Some(e),
         }
     }
+}
+
+// Gets the output name as the canonicalized path's file stem
+pub fn get_output_name(out_dir: &Path) -> String {
+    let path = match out_dir.canonicalize() {
+        Ok(path) => path,
+        // If the path cannot be canonicalized (e.g. not created yet), we can ignore
+        Err(_) => out_dir.to_path_buf(),
+    };
+
+    path.file_stem()
+        .unwrap_or("project".as_ref())
+        .to_string_lossy()
+        .to_string()
 }
 
 #[derive(Debug)]
@@ -97,6 +112,39 @@ impl Project {
             .into_owned();
     }
 
+    /// Generates a filled directory from the specified spackle project.
+    ///
+    /// out_dir is the path to what will become the filled directory
+    pub fn generate(
+        project_dir: &PathBuf,
+        out_dir: &PathBuf,
+        slot_data: &HashMap<String, String>,
+    ) -> Result<Vec<RenderedFile>, GenerateError> {
+        if out_dir.exists() {
+            return Err(GenerateError::AlreadyExists(out_dir.clone()));
+        }
+
+        let config = config::load_dir(project_dir).map_err(GenerateError::BadConfig)?;
+
+        let mut slot_data = slot_data.clone();
+        slot_data.insert("_project_name".to_string(), get_output_name(out_dir));
+
+        // Copy all non-template files to the output directory
+        copy::copy(project_dir, &out_dir, &config.ignore, &slot_data)
+            .map_err(GenerateError::CopyError)?;
+
+        // Render template files to the output directory
+        // TODO improve returned error type here
+        let results = template::fill(project_dir, out_dir, &slot_data)
+            .map_err(|_| GenerateError::TemplateError)?;
+
+        if results.iter().any(|r| r.is_err()) {
+            return Err(GenerateError::TemplateError);
+        }
+
+        Ok(results.into_iter().filter_map(|r| r.ok()).collect())
+    }
+
     pub fn validate(&self) -> Result<(), template::ValidateError> {
         template::validate(&self.path, &self.config.slots)
     }
@@ -107,16 +155,7 @@ impl Project {
         data: &HashMap<String, String>,
     ) -> Result<copy::CopyResult, copy::Error> {
         let mut data = data.clone();
-        data.insert("_project_name".to_string(), self.get_name());
-        data.insert(
-            "_output_name".to_string(),
-            // TODO better handle unwrap
-            out_dir
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
-        );
+        data.insert("_project_name".to_string(), get_output_name(out_dir));
 
         copy::copy(&self.path, out_dir, &self.config.ignore, &data)
     }
@@ -127,16 +166,7 @@ impl Project {
         data: &HashMap<String, String>,
     ) -> Result<Vec<Result<template::RenderedFile, template::FileError>>, tera::Error> {
         let mut data = data.clone();
-        data.insert("_project_name".to_string(), self.get_name());
-        data.insert(
-            "_output_name".to_string(),
-            // TODO better handle unwrap
-            out_dir
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
-        );
+        data.insert("_project_name".to_string(), get_output_name(out_dir));
 
         template::fill(&self.path, out_dir, &data)
     }
@@ -151,16 +181,7 @@ impl Project {
         run_as_user: Option<User>,
     ) -> Result<impl Stream<Item = hook::HookStreamResult>, RunHooksError> {
         let mut data = slot_data.clone();
-        data.insert("_project_name".to_string(), self.get_name());
-        data.insert(
-            "_output_name".to_string(),
-            // TODO better handle unwrap
-            out_dir
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
-        );
+        data.insert("_project_name".to_string(), get_output_name(out_dir));
 
         let result = hook::run_hooks_stream(
             out_dir.to_owned(),
@@ -184,7 +205,7 @@ impl Project {
         run_as_user: Option<User>,
     ) -> Result<Vec<hook::HookResult>, hook::Error> {
         let mut data = data.clone();
-        data.insert("_project_name".to_string(), self.get_name());
+        data.insert("_project_name".to_string(), get_output_name(out_dir));
         data.insert(
             "_output_name".to_string(),
             // TODO better handle unwrap
@@ -204,54 +225,5 @@ impl Project {
         )?;
 
         Ok(result)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::env;
-
-    use crate::config::Config;
-
-    use super::*;
-
-    #[test]
-    fn project_get_name_explicit() {
-        let project = Project {
-            config: Config {
-                name: Some("some_name".to_string()),
-                ..Default::default()
-            },
-            path: PathBuf::from("."),
-        };
-
-        assert_eq!(project.get_name(), "some_name");
-    }
-
-    #[test]
-    fn project_get_name_inferred() {
-        let project = Project {
-            config: Config::default(),
-            path: PathBuf::from("tests/data/templated"),
-        };
-
-        assert_eq!(project.get_name(), "templated");
-    }
-
-    #[test]
-    fn project_get_name_cwd() {
-        let cwd = env::current_dir().unwrap();
-
-        env::set_current_dir(PathBuf::from("tests/data/templated")).unwrap();
-
-        let project = Project {
-            config: Config::default(),
-            path: PathBuf::from("."),
-        };
-
-        assert_eq!(project.get_name(), "templated");
-
-        // HACK find a better way to do this
-        env::set_current_dir(cwd).unwrap();
     }
 }

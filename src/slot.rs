@@ -13,6 +13,7 @@ pub struct Slot {
     pub needs: Vec<String>,
     pub name: Option<String>,
     pub description: Option<String>,
+    pub default: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, strum_macros::Display, Default, Clone)]
@@ -31,6 +32,7 @@ impl Default for Slot {
             needs: vec![],
             name: None,
             description: None,
+            default: None,
         }
     }
 }
@@ -96,6 +98,30 @@ impl Slot {
     }
 }
 
+pub fn validate(slots: &Vec<Slot>) -> Result<(), Error> {
+    for slot in slots {
+        if let Some(default_value) = &slot.default {
+            match slot.r#type {
+                SlotType::String => {
+                    // String always valid, no need to check
+                }
+                SlotType::Number => {
+                    if default_value.parse::<f64>().is_err() {
+                        return Err(Error::TypeMismatch(slot.key.clone(), "number".to_string()));
+                    }
+                }
+                SlotType::Boolean => {
+                    if default_value.parse::<bool>().is_err() {
+                        return Err(Error::TypeMismatch(slot.key.clone(), "boolean".to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub fn validate_data(data: &HashMap<String, String>, slots: &Vec<Slot>) -> Result<(), Error> {
     for entry in data.iter() {
         // Check if the data is assigned to a slot
@@ -147,12 +173,10 @@ mod tests {
         let slots = vec![
             Slot {
                 key: "key".to_string(),
-                r#type: SlotType::String,
                 ..Default::default()
             },
             Slot {
                 key: "key2".to_string(),
-                r#type: SlotType::String,
                 ..Default::default()
             },
         ];
@@ -170,12 +194,10 @@ mod tests {
         let slots = vec![
             Slot {
                 key: "key".to_string(),
-                r#type: SlotType::String,
                 ..Default::default()
             },
             Slot {
                 key: "key2".to_string(),
-                r#type: SlotType::String,
                 ..Default::default()
             },
         ];
@@ -192,7 +214,6 @@ mod tests {
     fn extra_data() {
         let slots = vec![Slot {
             key: "key".to_string(),
-            r#type: SlotType::String,
             ..Default::default()
         }];
 
