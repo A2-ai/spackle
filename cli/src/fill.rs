@@ -137,8 +137,6 @@ fn collect_data(
         collected.insert(hook.key.clone(), value.to_string());
     }
 
-    println!("  {}\n", "✅ done");
-
     Ok(collected)
 }
 
@@ -228,12 +226,12 @@ pub fn run(
         );
     }
 
-    println!("📮 Preparing output path\n");
-
     let out_path = match &out_path {
         Some(path) => path,
         // Cannot use CustomType here because PathBuf does not implement ToString
         None => {
+            println!("📮 Collecting output path\n");
+
             let path = &Text::new("Enter the output path")
                 .with_help_message("The path to output the filled project")
                 .with_autocomplete(FilePathCompleter::default())
