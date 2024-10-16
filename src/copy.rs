@@ -210,7 +210,7 @@ mod tests {
         fs::write(
             src_dir.join(format!("{}.tmpl", "{{template_name}}")),
             // copy will not do any replacement so contents should remain as is
-            "{{_project_name}}",
+            "{{_output_name}}",
         )
         .unwrap();
         assert!(src_dir.join("{{template_name}}.tmpl").exists());
@@ -221,7 +221,7 @@ mod tests {
             &vec![],
             &HashMap::from([
                 ("template_name".to_string(), "template".to_string()),
-                ("_project_name".to_string(), "foo".to_string()),
+                ("_output_name".to_string(), "foo".to_string()),
             ]),
         )
         .unwrap();

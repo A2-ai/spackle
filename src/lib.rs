@@ -116,6 +116,7 @@ impl Project {
     ///
     /// out_dir is the path to what will become the filled directory
     pub fn generate(
+        &self,
         project_dir: &PathBuf,
         out_dir: &PathBuf,
         slot_data: &HashMap<String, String>,
@@ -127,7 +128,8 @@ impl Project {
         let config = config::load_dir(project_dir).map_err(GenerateError::BadConfig)?;
 
         let mut slot_data = slot_data.clone();
-        slot_data.insert("_project_name".to_string(), get_output_name(out_dir));
+        slot_data.insert("_project_name".to_string(), self.get_name());
+        slot_data.insert("_output_name".to_string(), get_output_name(out_dir));
 
         // Copy all non-template files to the output directory
         copy::copy(project_dir, &out_dir, &config.ignore, &slot_data)
@@ -155,7 +157,8 @@ impl Project {
         data: &HashMap<String, String>,
     ) -> Result<copy::CopyResult, copy::Error> {
         let mut data = data.clone();
-        data.insert("_project_name".to_string(), get_output_name(out_dir));
+        data.insert("_project_name".to_string(), self.get_name());
+        data.insert("_output_name".to_string(), get_output_name(out_dir));
 
         copy::copy(&self.path, out_dir, &self.config.ignore, &data)
     }
@@ -166,7 +169,8 @@ impl Project {
         data: &HashMap<String, String>,
     ) -> Result<Vec<Result<template::RenderedFile, template::FileError>>, tera::Error> {
         let mut data = data.clone();
-        data.insert("_project_name".to_string(), get_output_name(out_dir));
+        data.insert("_project_name".to_string(), self.get_name());
+        data.insert("_output_name".to_string(), get_output_name(out_dir));
 
         template::fill(&self.path, out_dir, &data)
     }
@@ -181,7 +185,8 @@ impl Project {
         run_as_user: Option<User>,
     ) -> Result<impl Stream<Item = hook::HookStreamResult>, RunHooksError> {
         let mut data = data.clone();
-        data.insert("_project_name".to_string(), get_output_name(out_dir));
+        data.insert("_project_name".to_string(), self.get_name());
+        data.insert("_output_name".to_string(), get_output_name(out_dir));
 
         let result = hook::run_hooks_stream(
             out_dir.to_owned(),
@@ -205,16 +210,8 @@ impl Project {
         run_as_user: Option<User>,
     ) -> Result<Vec<hook::HookResult>, hook::Error> {
         let mut data = data.clone();
-        data.insert("_project_name".to_string(), get_output_name(out_dir));
-        data.insert(
-            "_output_name".to_string(),
-            // TODO better handle unwrap
-            out_dir
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
-        );
+        data.insert("_project_name".to_string(), self.get_name());
+        data.insert("_output_name".to_string(), get_output_name(out_dir));
 
         let result = hook::run_hooks(
             &self.config.hooks,

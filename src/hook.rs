@@ -10,7 +10,6 @@ use tokio::pin;
 use tokio_stream::{Stream, StreamExt};
 use users::User;
 
-use crate::get_output_name;
 use crate::needs::{is_satisfied, Needy};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -230,12 +229,6 @@ pub fn run_hooks_stream(
     data: &HashMap<String, String>,
     run_as_user: Option<User>,
 ) -> Result<impl Stream<Item = HookStreamResult>, Error> {
-    let mut slot_data = data.clone();
-    slot_data.insert(
-        "_project_name".to_string(),
-        get_output_name(&dir.as_ref().to_path_buf()),
-    );
-
     let mut skipped_hooks = Vec::new();
     let mut queued_hooks = Vec::new();
 
@@ -714,7 +707,7 @@ mod tests {
             },
             Hook {
                 key: "2".to_string(),
-                command: vec!["echo".to_string(), "{{ _project_name }}".to_string()],
+                command: vec!["echo".to_string(), "{{ _output_name }}".to_string()],
                 ..Hook::default()
             },
         ];
@@ -726,7 +719,7 @@ mod tests {
             &HashMap::from([
                 ("field_1".to_string(), "echo".to_string()),
                 ("field_2".to_string(), "test".to_string()),
-                ("_project_name".to_string(), "spackle".to_string()),
+                ("_output_name".to_string(), "spackle".to_string()),
             ]),
             None,
         )

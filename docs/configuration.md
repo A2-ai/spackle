@@ -6,18 +6,20 @@ A spackle project is defined by a `spackle.toml` file at the root directory. Bel
 
 <span style="color: darkseagreen;">{s}</span> = slot environment (`{{ }}` will be replaced by slot values)
 
-### Universal slots
+### Global slots
 
-Universal slots are available in all slot environments (`.j2` file contents, file names, <span style="color: darkseagreen;">{s}</span> fields).
+Global slots are available in all slot environments (`.j2` file contents, file names, <span style="color: darkseagreen;">{s}</span> fields).
 
 - `_project_name` `string`
+  - The name of the project itself
+- `_output_name` `string`
   - The name of the output directory
 
 ## Project-level config
 
 ### name `string`
 
-The name of the project. This also sets the `project_name` universal slot, so keep that in mind. If this isn't set, the project name will be inferred from the directory name.
+The name of the project. This also sets the `_project_name` global slot, so keep that in mind. If this isn't set, the project name will be inferred from the directory name.
 
 ```toml
 name = "my_cool_project"
