@@ -6,12 +6,13 @@ use std::{
     time::Duration,
 };
 use tera::{Context, Tera};
+use thiserror::Error;
 
 use super::slot::Slot;
 
 pub const TEMPLATE_EXT: &str = ".j2";
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub struct FileError {
     pub kind: FileErrorKind,
     pub file: String,

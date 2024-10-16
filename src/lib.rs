@@ -5,6 +5,7 @@ use std::{
 };
 
 use template::RenderedFile;
+use thiserror::Error;
 use tokio_stream::Stream;
 use users::User;
 
@@ -15,36 +16,18 @@ mod needs;
 pub mod slot;
 pub mod template;
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum GenerateError {
+    #[error("The output directory already exists: {0}")]
     AlreadyExists(PathBuf),
+    #[error("Error loading config: {0}")]
     BadConfig(config::Error),
+    #[error("Error copying files: {0}")]
     CopyError(copy::Error),
-    TemplateError,
-}
-
-impl Display for GenerateError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            GenerateError::AlreadyExists(dir) => {
-                write!(f, "Directory already exists: {}", dir.display())
-            }
-            GenerateError::BadConfig(e) => write!(f, "Error loading config: {}", e),
-            GenerateError::TemplateError => write!(f, "Error rendering template"),
-            GenerateError::CopyError(e) => write!(f, "Error copying files: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for GenerateError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            GenerateError::AlreadyExists(_) => None,
-            GenerateError::BadConfig(_) => None,
-            GenerateError::TemplateError => None,
-            GenerateError::CopyError(e) => Some(e),
-        }
-    }
+    #[error("Error rendering templates: {0}")]
+    TemplateError(#[from] tera::Error),
+    #[error("Error rendering file: {0}")]
+    FileError(#[from] template::FileError),
 }
 
 // Gets the output name as the canonicalized path's file stem
@@ -136,15 +119,20 @@ impl Project {
             .map_err(GenerateError::CopyError)?;
 
         // Render template files to the output directory
-        // TODO improve returned error type here
         let results = template::fill(project_dir, out_dir, &slot_data)
-            .map_err(|_| GenerateError::TemplateError)?;
+            .map_err(GenerateError::TemplateError)?;
 
-        if results.iter().any(|r| r.is_err()) {
-            return Err(GenerateError::TemplateError);
+        // Split vector into vector of rendered files and vector of errors
+        let mut okay_results = Vec::new();
+
+        for result in results {
+            match result {
+                Ok(rendered_file) => okay_results.push(rendered_file),
+                Err(error) => return Err(GenerateError::FileError(error)),
+            }
         }
 
-        Ok(results.into_iter().filter_map(|r| r.ok()).collect())
+        Ok(okay_results)
     }
 
     pub fn validate(&self) -> Result<(), template::ValidateError> {
