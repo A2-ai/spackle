@@ -13,6 +13,7 @@ use tokio_stream::Stream;
 use users::User;
 
 pub mod core;
+mod util;
 
 #[derive(Debug)]
 pub enum GenerateError {

@@ -162,6 +162,7 @@ pub fn run_hooks_stream(
     let mut commands = Vec::new();
     for hook in templated_hooks {
         let cmd = match run_as_user {
+            // TODO spackle shouldn't need to depend on polyjuice, it should instead be able to receive an arbitrary Command from a consumer, who may choose to wrap it in polyjuice or not
             Some(ref user) => match polyjuice::cmd_as_user(&hook.command[0], user.clone()) {
                 Ok(cmd) => cmd,
                 Err(e) => {

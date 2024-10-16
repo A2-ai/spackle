@@ -44,6 +44,7 @@ serde = { version = "1.0.202", features = ["derive"] }
 strum_macros = "0.26.2"
 tempdir = "0.3.7"
 tera = "1.19.1"
+thiserror = "1.0.64"
 tokio = { version = "1.38.0", features = ["macros", "rt", "rt-multi-thread"] }
 tokio-stream = "0.1.15"
 toml = "0.8.13"

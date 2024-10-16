@@ -168,8 +168,6 @@ pub fn validate(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), ValidateError> {
 mod tests {
     use tempdir::TempDir;
 
-    use crate::core::slot::SlotType;
-
     use super::*;
 
     #[test]
@@ -197,9 +195,7 @@ mod tests {
             &PathBuf::from("tests/data/proj1"),
             &vec![Slot {
                 key: "defined_field".to_string(),
-                r#type: SlotType::String,
-                name: None,
-                description: None,
+                ..Default::default()
             }],
         );
 
@@ -212,9 +208,7 @@ mod tests {
             &PathBuf::from("tests/data/proj2"),
             &vec![Slot {
                 key: "defined_field".to_string(),
-                r#type: SlotType::String,
-                name: None,
-                description: None,
+                ..Default::default()
             }],
         );
 

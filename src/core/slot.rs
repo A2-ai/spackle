@@ -9,6 +9,7 @@ pub struct Slot {
     pub r#type: SlotType,
     pub name: Option<String>,
     pub description: Option<String>,
+    pub default: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, strum_macros::Display, Default, Clone)]
@@ -35,6 +36,18 @@ impl Display for Slot {
                 .unwrap_or_default()
                 .truecolor(180, 180, 180),
         )
+    }
+}
+
+impl Default for Slot {
+    fn default() -> Self {
+        Slot {
+            key: "".to_string(),
+            r#type: SlotType::String,
+            name: None,
+            description: None,
+            default: None,
+        }
     }
 }
 
@@ -114,15 +127,11 @@ mod tests {
         let slots = vec![
             Slot {
                 key: "key".to_string(),
-                r#type: SlotType::String,
-                name: None,
-                description: None,
+                ..Default::default()
             },
             Slot {
                 key: "key2".to_string(),
-                r#type: SlotType::String,
-                name: None,
-                description: None,
+                ..Default::default()
             },
         ];
 
@@ -139,15 +148,11 @@ mod tests {
         let slots = vec![
             Slot {
                 key: "key".to_string(),
-                r#type: SlotType::String,
-                name: None,
-                description: None,
+                ..Default::default()
             },
             Slot {
                 key: "key2".to_string(),
-                r#type: SlotType::String,
-                name: None,
-                description: None,
+                ..Default::default()
             },
         ];
 
@@ -163,9 +168,7 @@ mod tests {
     fn extra_data() {
         let slots = vec![Slot {
             key: "key".to_string(),
-            r#type: SlotType::String,
-            name: None,
-            description: None,
+            ..Default::default()
         }];
 
         let data = HashMap::from([("key", "value"), ("key2", "value2")])
@@ -182,14 +185,12 @@ mod tests {
             Slot {
                 key: "key".to_string(),
                 r#type: SlotType::Number,
-                name: None,
-                description: None,
+                ..Default::default()
             },
             Slot {
                 key: "key2".to_string(),
                 r#type: SlotType::Boolean,
-                name: None,
-                description: None,
+                ..Default::default()
             },
         ];
 
@@ -206,8 +207,7 @@ mod tests {
         let slots = vec![Slot {
             key: "key".to_string(),
             r#type: SlotType::Number,
-            name: None,
-            description: None,
+            ..Default::default()
         }];
 
         let data = HashMap::from([("key", "value")])

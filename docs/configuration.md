@@ -35,6 +35,7 @@ key = "slot_name"
 type = "string"
 name = "Slot name"
 description = "A description of the slot"
+default = "default value"
 ```
 
 ### key `string`
@@ -71,6 +72,16 @@ The human-friendly description of the slot.
 
 ```toml
 description = "A description of the slot"
+```
+
+### default `string`
+
+The default value of the slot. The CLI will use the default value if one is not provided by the user (e.g. they press enter without typing anything).
+
+For library consumers, is up to you to decide whether to use the default value or not. The generate function will not use the default value if the slot is not provided, and will instead error if a slot is not provided properly.
+
+```toml
+default = "default value"
 ```
 
 ## hooks `table`
