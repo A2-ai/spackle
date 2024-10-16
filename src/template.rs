@@ -24,27 +24,16 @@ impl Display for FileError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum FileErrorKind {
+    #[error("Error rendering contents: {0}")]
     ErrorRenderingContents(tera::Error),
+    #[error("Error rendering name: {0}")]
     ErrorRenderingName(tera::Error),
+    #[error("Error creating destination: {0}")]
     ErrorCreatingDest(io::ErrorKind),
+    #[error("Error writing to destination: {0}")]
     ErrorWritingToDest(io::Error),
-}
-
-impl Display for FileErrorKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FileErrorKind::ErrorRenderingContents(e) => {
-                write!(f, "error rendering template contents: {}", e)
-            }
-            FileErrorKind::ErrorRenderingName(e) => {
-                write!(f, "error rendering template name: {}", e)
-            }
-            FileErrorKind::ErrorCreatingDest(e) => write!(f, "error creating directory: {}", e),
-            FileErrorKind::ErrorWritingToDest(e) => write!(f, "error writing file: {}", e),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

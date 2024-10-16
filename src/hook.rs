@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt::Display, path::Path};
 use std::{io, process};
 use tera::{Context, Tera};
+use thiserror::Error;
 use tokio::pin;
 use tokio_stream::{Stream, StreamExt};
 use users::User;
@@ -69,14 +70,11 @@ impl Needy for Hook {
     }
 
     fn is_enabled(&self, data: &HashMap<String, String>) -> bool {
-        // TODO verify that this is still the correct implementation
-        match &self.default {
-            Some(default) => data
-                .get(&self.key)
-                .map(|s: &String| s.parse::<bool>().unwrap_or(false))
-                .unwrap_or(*default),
-            None => true,
+        if data.contains_key(&self.key) {
+            return data[&self.key] == "true";
         }
+
+        self.default.unwrap_or(true)
     }
 
     fn is_satisfied(&self, items: &Vec<&dyn Needy>, data: &HashMap<String, String>) -> bool {
@@ -189,31 +187,16 @@ impl Display for SkipReason {
     }
 }
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum Error {
+    #[error("Error initializing runtime: {0}")]
     ErrorInitializingRuntime(io::Error),
+    #[error("Error rendering template: {0}")]
     ErrorRenderingTemplate(Hook, tera::Error),
+    #[error("Invalid conditional: {0}")]
     InvalidConditional(Hook, ConditionalError),
+    #[error("Setup failed: {0}")]
     SetupFailed(Hook, io::Error),
-}
-
-impl Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::ErrorInitializingRuntime(e) => {
-                write!(f, "error initializing runtime: {}", e)
-            }
-            Error::ErrorRenderingTemplate(hook, e) => {
-                write!(f, "error rendering template for hook {}: {}", hook.key, e)
-            }
-            Error::InvalidConditional(hook, e) => {
-                write!(f, "invalid conditional for hook {}: {}", hook.key, e)
-            }
-            Error::SetupFailed(hook, e) => {
-                write!(f, "setup failed for hook {}: {}", hook.key, e)
-            }
-        }
-    }
 }
 
 #[derive(Serialize, Debug)]
