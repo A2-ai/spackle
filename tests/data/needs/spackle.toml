@@ -6,7 +6,7 @@ needs = ["hook_1"]
 [[hooks]]
 key = "hook_1"
 command = ["true"]
-optional = { default = false }
+default = false
 
 [[hooks]]
 key = "dep_hook_run"

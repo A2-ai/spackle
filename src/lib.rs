@@ -177,10 +177,10 @@ impl Project {
     pub fn run_hooks_stream(
         &self,
         out_dir: &Path,
-        slot_data: &HashMap<String, String>,
+        data: &HashMap<String, String>,
         run_as_user: Option<User>,
     ) -> Result<impl Stream<Item = hook::HookStreamResult>, RunHooksError> {
-        let mut data = slot_data.clone();
+        let mut data = data.clone();
         data.insert("_project_name".to_string(), get_output_name(out_dir));
 
         let result = hook::run_hooks_stream(

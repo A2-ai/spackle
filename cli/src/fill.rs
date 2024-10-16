@@ -6,8 +6,7 @@ use inquire::{Confirm, CustomType, Text};
 use rocket::{futures::StreamExt, tokio};
 use spackle::{
     config::{self},
-    get_output_name,
-    hook::{self, HookError, HookResult, HookResultKind, HookStreamResult},
+    hook::{self, Hook, HookError, HookResult, HookResultKind, HookStreamResult},
     slot::{self, Slot, SlotType},
     Project,
 };
@@ -32,7 +31,11 @@ fn parse_flag_data(flag_data: &Vec<String>) -> HashMap<String, String> {
         .collect()
 }
 
-fn collect_data(flag_data: &Vec<String>, slots: &Vec<Slot>) -> Result<HashMap<String, String>> {
+fn collect_data(
+    flag_data: &Vec<String>,
+    slots: &Vec<Slot>,
+    hooks: &Vec<Hook>,
+) -> Result<HashMap<String, String>> {
     let mut collected: HashMap<String, String> = HashMap::new();
 
     for (key, value) in parse_flag_data(flag_data) {
@@ -43,7 +46,7 @@ fn collect_data(flag_data: &Vec<String>, slots: &Vec<Slot>) -> Result<HashMap<St
     // if any additional slots are needed and if we're in a tty context prompt
     // for more slot info before validating
     if atty::is(atty::Stream::Stdout) {
-        println!("📮 Collecting slot data\n");
+        println!("📮 Collecting data\n");
 
         let missing_slots: Vec<&Slot> = slots
             .iter()
@@ -54,8 +57,11 @@ fn collect_data(flag_data: &Vec<String>, slots: &Vec<Slot>) -> Result<HashMap<St
             match &slot.r#type {
                 SlotType::String => {
                     let slot_name = slot.get_name();
-                    let mut input = Text::new(&slot_name)
-                        .with_help_message(slot.description.as_deref().unwrap_or_default());
+                    let mut input = Text::new(&slot_name);
+
+                    if let Some(description) = &slot.description {
+                        input = input.with_help_message(description);
+                    }
 
                     if let Some(default) = &slot.default {
                         // We can unwrap here because we've done prior validation
@@ -70,8 +76,11 @@ fn collect_data(flag_data: &Vec<String>, slots: &Vec<Slot>) -> Result<HashMap<St
                 }
                 SlotType::Boolean => {
                     let slot_name = slot.get_name();
-                    let mut input = Confirm::new(&slot_name)
-                        .with_help_message(slot.description.as_deref().unwrap_or_default());
+                    let mut input = Confirm::new(&slot_name);
+
+                    if let Some(description) = &slot.description {
+                        input = input.with_help_message(description);
+                    }
 
                     if let Some(default) = &slot.default {
                         // We can unwrap here because we've done prior validation
@@ -87,8 +96,11 @@ fn collect_data(flag_data: &Vec<String>, slots: &Vec<Slot>) -> Result<HashMap<St
                 SlotType::Number => {
                     let slot_name = slot.get_name();
                     let mut input = CustomType::<f64>::new(&slot_name)
-                        .with_error_message("Please type a valid number")
-                        .with_help_message(slot.description.as_deref().unwrap_or_default());
+                        .with_error_message("Please type a valid number");
+
+                    if let Some(description) = &slot.description {
+                        input = input.with_help_message(description);
+                    }
 
                     if let Some(default) = &slot.default {
                         // We can unwrap here because we've done prior validation
@@ -103,6 +115,26 @@ fn collect_data(flag_data: &Vec<String>, slots: &Vec<Slot>) -> Result<HashMap<St
                 }
             }
         }
+    }
+
+    for hook in hooks {
+        let prompt = format!("Run {}?", hook.name.clone().unwrap_or(hook.key.clone()));
+        let mut input = Confirm::new(prompt.as_str());
+
+        if let Some(description) = &hook.description {
+            input = input.with_help_message(description);
+        }
+
+        if let Some(default) = hook.default {
+            // We can unwrap here because we've done prior validation
+            input = input.with_default(default)
+        }
+
+        let value = input
+            .prompt()
+            .with_context(|| format!("Error getting input for hook: {}", hook.key))?;
+
+        collected.insert(hook.key.clone(), value.to_string());
     }
 
     println!("  {}\n", "✅ done");
@@ -122,7 +154,8 @@ pub fn run(
 
     println!("");
 
-    let collected_data = match collect_data(flag_data, &project.config.slots) {
+    let collected_data = match collect_data(flag_data, &project.config.slots, &project.config.hooks)
+    {
         Ok(slot_data) => slot_data,
         Err(e) => {
             eprintln!("❌ {}", format!("{:?}", e).red());
@@ -130,7 +163,7 @@ pub fn run(
         }
     };
 
-    let mut slot_data: HashMap<String, String> = collected_data
+    let slot_data: HashMap<String, String> = collected_data
         .iter()
         .filter(|(key, _)| project.config.slots.iter().any(|slot| slot.key == **key))
         .map(|(k, v)| (k.clone(), v.clone()))
@@ -218,8 +251,6 @@ pub fn run(
         }
     };
 
-    slot_data.insert("_project_name".to_string(), get_output_name(&out_path));
-
     println!("");
 
     // Ensure the output path doesn't exist
@@ -247,7 +278,7 @@ pub fn run(
     }
 
     if cli.project_path.is_dir() {
-        run_multi(&slot_data, out_path, cli, project);
+        run_multi(&collected_data, out_path, cli, project);
     } else {
         run_single(&slot_data, out_path, cli);
     }

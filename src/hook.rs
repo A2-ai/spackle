@@ -18,16 +18,11 @@ pub struct Hook {
     pub key: String,
     pub command: Vec<String>,
     pub r#if: Option<String>,
-    pub optional: Option<HookConfigOptional>,
     #[serde(default)]
     pub needs: Vec<String>,
     pub name: Option<String>,
     pub description: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct HookConfigOptional {
-    pub default: bool,
+    pub default: Option<bool>,
 }
 
 impl Display for Hook {
@@ -36,14 +31,10 @@ impl Display for Hook {
             f,
             "{} {}\n{}",
             self.key.bold(),
-            if let Some(optional) = &self.optional {
+            if let Some(default) = &self.default {
                 format!(
-                    "optional, default {}",
-                    if optional.default {
-                        "on".green()
-                    } else {
-                        "off".red()
-                    }
+                    "default {}",
+                    if *default { "on".green() } else { "off".red() }
                 )
             } else {
                 "".to_string()
@@ -65,10 +56,10 @@ impl Default for Hook {
             key: "".to_string(),
             command: vec![],
             r#if: None,
-            optional: None,
             needs: vec![],
             name: None,
             description: None,
+            default: None,
         }
     }
 }
@@ -79,11 +70,12 @@ impl Needy for Hook {
     }
 
     fn is_enabled(&self, data: &HashMap<String, String>) -> bool {
-        match &self.optional {
-            Some(optional) => data
+        // TODO verify that this is still the correct implementation
+        match &self.default {
+            Some(default) => data
                 .get(&self.key)
                 .map(|s: &String| s.parse::<bool>().unwrap_or(false))
-                .unwrap_or(optional.default),
+                .unwrap_or(*default),
             None => true,
         }
     }
@@ -433,7 +425,6 @@ pub fn run_hooks(
 #[derive(Serialize, Debug)]
 pub enum ValidateError {
     UnknownKey(String),
-    NotOptional(String),
     NotABoolean(String),
 }
 
@@ -442,7 +433,6 @@ impl Display for ValidateError {
         match self {
             ValidateError::UnknownKey(key) => write!(f, "unknown key: {}", key),
             ValidateError::NotABoolean(key) => write!(f, "not a boolean: {}", key),
-            ValidateError::NotOptional(key) => write!(f, "not optional: {}", key),
         }
     }
 }
@@ -452,13 +442,8 @@ pub fn validate_data(
     hooks: &Vec<Hook>,
 ) -> Result<(), ValidateError> {
     for entry in data.iter() {
-        match hooks.iter().find(|hook| hook.key == *entry.0) {
-            None => return Err(ValidateError::UnknownKey(entry.0.clone())),
-            Some(hook) => {
-                if hook.optional.is_none() {
-                    return Err(ValidateError::NotOptional(entry.0.clone()));
-                }
-            }
+        if !hooks.iter().any(|hook| hook.key == *entry.0) {
+            return Err(ValidateError::UnknownKey(entry.0.clone()));
         }
 
         if entry.1.parse::<bool>().is_err() {
@@ -673,13 +658,13 @@ mod tests {
             Hook {
                 key: "2".to_string(),
                 command: vec!["echo".to_string(), "hello world".to_string()],
-                optional: Some(HookConfigOptional { default: false }),
+                default: Some(false),
                 ..Hook::default()
             },
             Hook {
                 key: "3".to_string(),
                 command: vec!["echo".to_string(), "hello world".to_string()],
-                optional: Some(HookConfigOptional { default: false }),
+                default: Some(false),
                 ..Hook::default()
             },
         ];
@@ -863,7 +848,7 @@ mod tests {
             Hook {
                 key: "hook".to_string(),
                 command: vec!["true".to_string()],
-                optional: Some(HookConfigOptional { default: false }),
+                default: Some(false),
                 ..Hook::default()
             },
             Hook {
@@ -955,7 +940,7 @@ mod tests {
             Hook {
                 key: "hook_a".to_string(),
                 command: vec!["true".to_string()],
-                optional: Some(HookConfigOptional { default: false }),
+                default: Some(false),
                 needs: vec!["slot_a".to_string()],
                 ..Hook::default()
             },
@@ -993,7 +978,7 @@ mod tests {
 
         let hooks = Vec::from([Hook {
             key: "hook_a".to_string(),
-            optional: Some(HookConfigOptional { default: false }),
+            default: Some(false),
             ..Hook::default()
         }]);
 
@@ -1005,18 +990,6 @@ mod tests {
         let data = HashMap::from([("hook_a".to_string(), "true".to_string())]);
 
         let hooks = Vec::new();
-
-        validate_data(&data, &hooks).expect_err("validate_data should have failed");
-    }
-
-    #[test]
-    fn test_validate_data_not_optional() {
-        let data = HashMap::from([("hook_a".to_string(), "true".to_string())]);
-
-        let hooks = Vec::from([Hook {
-            key: "hook_a".to_string(),
-            ..Hook::default()
-        }]);
 
         validate_data(&data, &hooks).expect_err("validate_data should have failed");
     }
