@@ -76,6 +76,30 @@ impl Slot {
     }
 }
 
+pub fn validate(slots: &Vec<Slot>) -> Result<(), Error> {
+    for slot in slots {
+        if let Some(default_value) = &slot.default {
+            match slot.r#type {
+                SlotType::String => {
+                    // String always valid, no need to check
+                }
+                SlotType::Number => {
+                    if default_value.parse::<f64>().is_err() {
+                        return Err(Error::TypeMismatch(slot.key.clone(), "number".to_string()));
+                    }
+                }
+                SlotType::Boolean => {
+                    if default_value.parse::<bool>().is_err() {
+                        return Err(Error::TypeMismatch(slot.key.clone(), "boolean".to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub fn validate_data(data: &HashMap<String, String>, slots: &Vec<Slot>) -> Result<(), Error> {
     for entry in data.iter() {
         // Check if the data is assigned to a slot
