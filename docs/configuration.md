@@ -137,12 +137,12 @@ The command to execute. The first element is the command and the rest are argume
 command = ["echo", "Hello {{ foo }}"]
 ```
 
-### optional `{ default = bool }`
+### default `boolean`
 
-When defined, the user can toggle the hook. `default` describes the default state of the hook.
+The default value of the hook. The CLI will use the default value if one is not provided by the user (e.g. they press enter without typing anything).
 
 ```toml
-optional = { default = true }
+default = false
 ```
 
 ### needs `string[]`
