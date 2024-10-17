@@ -14,7 +14,7 @@ pub fn run(project: &Project) {
 
     match template::validate(&project.path, &project.config.slots) {
         Ok(()) => {
-            println!("  {}\n", "👌 Template files are valid".dimmed());
+            println!("  {}", "👌 Template files are valid".dimmed());
         }
         Err(e) => {
             match e {
@@ -44,7 +44,7 @@ pub fn run(project: &Project) {
 
     match slot::validate(&project.config.slots) {
         Ok(()) => {
-            println!("  👌 {}\n", "Slot data is valid".bright_green());
+            println!("  {}\n", "👌 Slot data is valid".dimmed());
         }
         Err(e) => {
             eprintln!(

@@ -2,7 +2,7 @@ use crate::{check, util::file_path_completer::FilePathCompleter, Cli};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use fronma::parser::parse_with_engine;
-use inquire::{Confirm, CustomType, Text};
+use inquire::{validator::Validation, Confirm, CustomType, Text};
 use rocket::{futures::StreamExt, tokio};
 use spackle::{
     config::{self},
@@ -137,6 +137,8 @@ fn collect_data(
         collected.insert(hook.key.clone(), value.to_string());
     }
 
+    println!();
+
     Ok(collected)
 }
 
@@ -233,6 +235,13 @@ pub fn run(
             println!("📮 Collecting output path\n");
 
             let path = &Text::new("Enter the output path")
+                .with_validator(|s: &str| {
+                    if s.is_empty() {
+                        Ok(Validation::Invalid("Output path cannot be empty".into()))
+                    } else {
+                        Ok(Validation::Valid)
+                    }
+                })
                 .with_help_message("The path to output the filled project")
                 .with_autocomplete(FilePathCompleter::default())
                 .prompt();
@@ -248,8 +257,6 @@ pub fn run(
             }
         }
     };
-
-    println!("");
 
     // Ensure the output path doesn't exist
     if *overwrite {
@@ -285,11 +292,7 @@ pub fn run(
 pub fn run_multi(data: &HashMap<String, String>, out_dir: &PathBuf, cli: &Cli, project: &Project) {
     let start_time = Instant::now();
 
-    println!("🖨️  Creating project files\n");
-    println!(
-        "{}",
-        format!("  📁 {}", out_dir.to_string_lossy().bold()).dimmed()
-    );
+    println!("🖨️  Writing output {}\n", out_dir.to_string_lossy().bold());
 
     match project.copy_files(out_dir, &data) {
         Ok(r) => {
@@ -337,7 +340,7 @@ pub fn run_multi(data: &HashMap<String, String>, out_dir: &PathBuf, cli: &Cli, p
     match project.render_templates(&PathBuf::from(out_dir), &data) {
         Ok(r) => {
             println!(
-                "  Rendered {} {} {} {}\n",
+                "\n  Rendered {} {} {} {}\n",
                 r.len(),
                 if r.len() == 1 { "file" } else { "files" },
                 "in".dimmed(),
@@ -437,13 +440,12 @@ pub fn run_multi(data: &HashMap<String, String>, out_dir: &PathBuf, cli: &Cli, p
                 }
                 HookStreamResult::HookDone(r) => match r {
                     HookResult {
-                        hook,
                         kind: HookResultKind::Failed(error),
                         ..
                     } => {
                         eprintln!(
-                            "    ❌ {}\n    {}",
-                            format!("Hook {} failed", hook.key.bold()).bright_red(),
+                            "    ❌ {}\n    {}\n",
+                            "failed".bright_red(),
                             error.to_string().red()
                         );
 
@@ -461,8 +463,6 @@ pub fn run_multi(data: &HashMap<String, String>, out_dir: &PathBuf, cli: &Cli, p
                                 );
                             }
                         }
-
-                        exit(1);
                     }
                     HookResult {
                         kind: HookResultKind::Completed { stdout, stderr },
