@@ -38,7 +38,7 @@ pub fn get_output_name(out_dir: &Path) -> String {
         Err(_) => out_dir.to_path_buf(),
     };
 
-    path.file_stem()
+    path.file_name()
         .unwrap_or("project".as_ref())
         .to_string_lossy()
         .to_string()
@@ -210,5 +210,16 @@ impl Project {
         )?;
 
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_output_name() {
+        let path = Path::new("/path/to/output.name");
+        assert_eq!(get_output_name(path), "output.name");
     }
 }
