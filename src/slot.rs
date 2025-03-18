@@ -73,23 +73,14 @@ impl Needy for Slot {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("unknown slot: {0}")]
     UnknownSlot(String),
+    #[error("type mismatch for key {0}: expected a {1}")]
     TypeMismatch(String, String),
+    #[error("slot was not defined: {0}")]
     UndefinedSlot(String),
-}
-
-impl Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::UnknownSlot(key) => write!(f, "unknown slot: {}", key),
-            Error::TypeMismatch(key, r#type) => {
-                write!(f, "type mismatch for key {}: expected a {}", key, r#type)
-            }
-            Error::UndefinedSlot(key) => write!(f, "slot was not defined: {}", key),
-        }
-    }
 }
 
 impl Slot {

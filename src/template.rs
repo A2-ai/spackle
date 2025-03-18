@@ -119,8 +119,11 @@ pub fn fill(
     Ok(rendered_templates.collect::<Vec<_>>())
 }
 
+#[derive(Error, Debug)]
 pub enum ValidateError {
+    #[error("Error validating template files: {0}")]
     TeraError(tera::Error),
+    #[error("Error rendering one or more templates")]
     RenderError(Vec<(String, tera::Error)>),
 }
 
