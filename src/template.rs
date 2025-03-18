@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    error::Error,
     fmt::{Debug, Display},
     fs, io,
     path::{Path, PathBuf},
@@ -119,12 +120,31 @@ pub fn fill(
     Ok(rendered_templates.collect::<Vec<_>>())
 }
 
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum ValidateError {
-    #[error("Error validating template files: {0}")]
     TeraError(tera::Error),
-    #[error("Error rendering one or more templates")]
     RenderError(Vec<(String, tera::Error)>),
+}
+
+// Add Display implementation for ValidateError
+impl Display for ValidateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ValidateError::TeraError(e) => write!(f, "Error validating template files: {}", e),
+            ValidateError::RenderError(errors) => {
+                writeln!(f, "Error rendering one or more templates:")?;
+                for (template, error) in errors {
+                    writeln!(
+                        f,
+                        "  {}: {}",
+                        template,
+                        error.source().map(|e| e.to_string()).unwrap_or_default()
+                    )?;
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 // Validates the templates in the directory against the slots
