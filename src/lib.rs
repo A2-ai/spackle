@@ -155,10 +155,6 @@ impl Project {
         Ok(okay_results)
     }
 
-    pub fn validate(&self) -> Result<(), template::ValidateError> {
-        template::validate(&self.path, &self.config.slots)
-    }
-
     pub fn copy_files(
         &self,
         out_dir: &Path,
