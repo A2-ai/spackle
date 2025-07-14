@@ -1,6 +1,7 @@
 use fronma::{engines::Toml, parser::parse_with_engine};
 use serde::Deserialize;
 use std::{collections::HashSet, fs, io, path::Path};
+use thiserror::Error;
 
 use crate::{hook::Hook, slot::Slot};
 
@@ -17,23 +18,16 @@ pub struct Config {
 
 pub const CONFIG_FILE: &str = "spackle.toml";
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum Error {
+    #[error("Error reading file\n{0}")]
     ReadError(io::Error),
+    #[error("Error parsing contents\n{0}")]
     ParseError(toml::de::Error),
+    #[error("Error parsing single file\n{0:?}")]
     FronmaError(fronma::error::Error),
+    #[error("Duplicate keys found\n{0}")]
     DuplicateKey(String),
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::ReadError(e) => write!(f, "Error reading file\n{}", e),
-            Error::ParseError(e) => write!(f, "Error parsing contents\n{}", e),
-            Error::FronmaError(e) => write!(f, "Error parsing single file\n{:?}", e),
-            Error::DuplicateKey(e) => write!(f, "Duplicate keys found\n{}", e),
-        }
-    }
 }
 
 pub fn load(path: impl AsRef<Path>) -> Result<Config, Error> {

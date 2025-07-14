@@ -17,6 +17,12 @@ pub mod slot;
 pub mod template;
 
 #[derive(Error, Debug)]
+pub enum LoadError {
+    #[error("Error loading config from {path}: {error}")]
+    ConfigError { path: PathBuf, error: config::Error },
+}
+
+#[derive(Error, Debug)]
 pub enum CheckError {
     #[error("Error validating template files: {0}")]
     TemplateError(template::ValidateError),
@@ -68,10 +74,16 @@ impl Display for RunHooksError {
 }
 
 // Loads the project from the specified directory or path and validates it
-pub fn load_project(path: &PathBuf) -> Result<Project, config::Error> {
-    let config = config::load(path)?;
+pub fn load_project(path: &PathBuf) -> Result<Project, LoadError> {
+    let config = config::load(path).map_err(|e| LoadError::ConfigError {
+        path: path.to_owned(),
+        error: e,
+    })?;
 
-    config.validate()?;
+    config.validate().map_err(|e| LoadError::ConfigError {
+        path: path.to_owned(),
+        error: e,
+    })?;
 
     Ok(Project {
         config,
@@ -244,6 +256,15 @@ mod tests {
         let project = load_project(&PathBuf::from("tests/data/proj2")).unwrap();
         let result = project.check();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_check_load_config_error() {
+        let path = PathBuf::from("tests/data/bad_config");
+        let result = load_project(&path);
+        assert!(
+            result.is_err_and(|e| matches!(e, LoadError::ConfigError { path: p, .. } if p == path))
+        );
     }
 
     #[test]
