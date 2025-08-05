@@ -42,7 +42,7 @@ Slots are defined by one or more `[[slots]]` table entries in the `spackle.toml`
 ```toml
 [[slots]]
 key = "slot_name"
-type = "string"
+type = "String"
 name = "Slot name"
 description = "A description of the slot"
 default = "default value"
