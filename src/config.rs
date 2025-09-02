@@ -1,6 +1,10 @@
 use fronma::{engines::Toml, parser::parse_with_engine};
 use serde::Deserialize;
-use std::{collections::HashSet, fs, io, path::Path};
+use std::{
+    collections::HashSet,
+    fs, io,
+    path::{Path, PathBuf},
+};
 use thiserror::Error;
 
 use crate::{hook::Hook, slot::Slot};
@@ -20,8 +24,8 @@ pub const CONFIG_FILE: &str = "spackle.toml";
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("Error reading file\n{0}")]
-    ReadError(io::Error),
+    #[error("Error reading file {file:?}:\n{error}")]
+    ReadError { file: PathBuf, error: io::Error },
     #[error("Error parsing contents\n{0}")]
     ParseError(toml::de::Error),
     #[error("Error parsing single file\n{0:?}")]
@@ -42,7 +46,10 @@ pub fn load(path: impl AsRef<Path>) -> Result<Config, Error> {
 pub fn load_dir(dir: impl AsRef<Path>) -> Result<Config, Error> {
     let config_path = dir.as_ref().join(CONFIG_FILE);
 
-    let config_str = fs::read_to_string(config_path).map_err(Error::ReadError)?;
+    let config_str = fs::read_to_string(config_path.clone()).map_err(|e| Error::ReadError {
+        file: config_path.clone(),
+        error: e,
+    })?;
 
     let config = toml::from_str(&config_str).map_err(Error::ParseError)?;
 
@@ -50,7 +57,10 @@ pub fn load_dir(dir: impl AsRef<Path>) -> Result<Config, Error> {
 }
 
 pub fn load_file(file: impl AsRef<Path>) -> Result<Config, Error> {
-    let file_contents = fs::read_to_string(file).map_err(Error::ReadError)?;
+    let file_contents = fs::read_to_string(file.as_ref()).map_err(|e| Error::ReadError {
+        file: file.as_ref().to_path_buf(),
+        error: e,
+    })?;
 
     parse_with_engine::<Config, Toml>(&file_contents)
         .map(|parsed| parsed.headers)
