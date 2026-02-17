@@ -1510,7 +1510,7 @@ dependencies = [
 [[package]]
 name = "polyjuice"
 version = "0.1.0"
-source = "git+https://github.com/a2-ai/polyjuice#29cab5558d4c5d30c996a8e2dedcec2a32aa7654"
+source = "git+https://github.com/a2-ai/polyjuice?tag=v0.1.0#29cab5558d4c5d30c996a8e2dedcec2a32aa7654"
 dependencies = [
  "users",
 ]
