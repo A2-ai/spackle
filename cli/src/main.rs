@@ -1,4 +1,4 @@
-use clap::{command, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use colored::Colorize;
 use spackle::Project;
 use std::{path::PathBuf, process::exit};
