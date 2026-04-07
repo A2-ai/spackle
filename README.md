@@ -32,6 +32,24 @@ Visit the below page for a full manual on how to configure a spackle project:
 
 ### [Configuration manual](docs/configuration.md)
 
-## Contributing
+## Install
 
-`cargo run`
+```shell
+brew install a2-ai/tap/spackle
+```
+
+## Development
+
+```shell
+# Setup git hooks
+just setup
+
+# Run the CLI
+just run -- --help
+
+# Run tests
+just test
+
+# Install locally
+just install
+```
