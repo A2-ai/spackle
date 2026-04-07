@@ -1,0 +1,161 @@
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      release:
+        required: true
+        type: boolean
+        default: false
+    secrets:
+      GORELEASER_KEY:
+        required: true
+      ORG_HOMEBREW_TAP_APP_ID:
+        required: false
+      ORG_HOMEBREW_TAP_APP_KEY:
+        required: false
+      POLYJUICE_DEPLOY_KEY:
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  # Split step - build binaries on each platform
+  prepare:
+    name: Prepare
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux
+          - os: macos-latest
+            platform: darwin
+          - os: windows-latest
+            platform: windows
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Grant access to private repository
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.POLYJUICE_DEPLOY_KEY }}
+
+      - name: Install libpam0g-dev
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libpam0g-dev
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install cargo-zigbuild
+        run: cargo binstall cargo-zigbuild
+
+      - name: Set release flags
+        if: inputs.release != true
+        run: |
+          echo "release_flags=--snapshot" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Run GoReleaser Split
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser-pro
+          version: latest
+          args: release --clean --split ${{ env.release_flags }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}
+
+      - name: List files in dist directory
+        run: find dist -type f | sort
+        shell: bash
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.platform }}
+          path: dist/${{ matrix.platform }}
+          retention-days: 1
+
+  # Merge step - combine artifacts and create release
+  release:
+    name: Release
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Download all build artifacts
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: build-*
+          path: dist
+          merge-multiple: false
+
+      # Rename folders to remove build- prefix
+      - name: Rename artifact folders
+        run: |
+          cd dist
+          for dir in build-*; do
+            if [ -d "$dir" ]; then
+              mv "$dir" "${dir#build-}"
+            fi
+          done
+
+      - name: List artifact files
+        run: find dist -type f | sort
+
+      - name: Generate tap token
+        if: inputs.release == true
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.ORG_HOMEBREW_TAP_APP_ID }}
+          private-key: ${{ secrets.ORG_HOMEBREW_TAP_APP_KEY }}
+          owner: a2-ai
+          repositories: homebrew-tap
+
+      - name: Set release flags
+        if: inputs.release != true
+        run: |
+          echo "release_flags=--snapshot" >> $GITHUB_ENV
+
+      - name: Run GoReleaser Merge
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser-pro
+          version: latest
+          args: continue --merge
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}
+          TAP_GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+
+      - name: Pull build artifacts up
+        run: |
+          find dist -type f -name "spackle_*" -not -path "*/\.*" -not -path "dist/spackle_*" -exec mv {} dist/ \; || true
+          ls -la dist/
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: dist
+          retention-days: 1
