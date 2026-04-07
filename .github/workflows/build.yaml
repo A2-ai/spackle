@@ -34,12 +34,12 @@ jobs:
       CARGO_NET_GIT_FETCH_WITH_CLI: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Grant access to private repository
-        uses: webfactory/ssh-agent@v0.9.0
+        uses: webfactory/ssh-agent@v0.10.0
         with:
           ssh-private-key: ${{ secrets.POLYJUICE_DEPLOY_KEY }}
 
@@ -80,7 +80,7 @@ jobs:
         shell: bash
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-${{ matrix.platform }}
           path: dist/${{ matrix.platform }}
@@ -93,13 +93,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       # Download all build artifacts
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: build-*
           path: dist
@@ -121,7 +121,7 @@ jobs:
       - name: Generate tap token
         if: inputs.release == true
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.ORG_HOMEBREW_TAP_APP_ID }}
           private-key: ${{ secrets.ORG_HOMEBREW_TAP_APP_KEY }}
@@ -150,7 +150,7 @@ jobs:
           ls -la dist/
 
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release
           path: dist
