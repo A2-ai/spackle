@@ -54,3 +54,11 @@ homebrew_casks:
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     homepage: https://github.com/a2-ai/spackle
     description: A frictionless project templating tool.
+    # Remove quarantine from the binary
+    # https://goreleaser.com/customization/homebrew_casks/?h=private+homebrew#signing-and-notarizing
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/spackle"]
+          end
