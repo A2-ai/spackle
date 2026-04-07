@@ -15,13 +15,13 @@ jobs:
       CARGO_NET_GIT_FETCH_WITH_CLI: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Cache rust
         uses: Swatinem/rust-cache@v2
 
       - name: Grant access to private repository
-        uses: webfactory/ssh-agent@v0.9.0
+        uses: webfactory/ssh-agent@v0.10.0
         with:
           ssh-private-key: ${{ secrets.POLYJUICE_DEPLOY_KEY }}
 
