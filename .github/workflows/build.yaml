@@ -10,8 +10,6 @@ on:
     secrets:
       GORELEASER_KEY:
         required: true
-      ORG_HOMEBREW_TAP_APP_ID:
-        required: false
       ORG_HOMEBREW_TAP_APP_KEY:
         required: false
       POLYJUICE_DEPLOY_KEY:
@@ -125,7 +123,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ secrets.ORG_HOMEBREW_TAP_APP_ID }}
+          app-id: ${{ vars.ORG_HOMEBREW_TAP_APP_ID }}
           private-key: ${{ secrets.ORG_HOMEBREW_TAP_APP_KEY }}
           owner: a2-ai
           repositories: homebrew-tap

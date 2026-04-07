@@ -34,6 +34,5 @@ jobs:
       release: true
     secrets:
       GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}
-      ORG_HOMEBREW_TAP_APP_ID: ${{ secrets.ORG_HOMEBREW_TAP_APP_ID }}
       ORG_HOMEBREW_TAP_APP_KEY: ${{ secrets.ORG_HOMEBREW_TAP_APP_KEY }}
       POLYJUICE_DEPLOY_KEY: ${{ secrets.POLYJUICE_DEPLOY_KEY }}
