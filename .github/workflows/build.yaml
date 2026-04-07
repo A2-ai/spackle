@@ -31,8 +31,6 @@ jobs:
             platform: linux
           - os: macos-latest
             platform: darwin
-          - os: windows-latest
-            platform: windows
     runs-on: ${{ matrix.os }}
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: true

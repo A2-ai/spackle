@@ -23,21 +23,10 @@ builds:
       - aarch64-unknown-linux-gnu
       - x86_64-apple-darwin
       - aarch64-apple-darwin
-  - id: windows
-    builder: rust
-    # Use native cargo build for MSVC targets to avoid zig linker flag incompatibilities on Windows runners.
-    command: build
-    flags:
-      - --release
-      - -p=spackle-cli
-    targets:
-      - x86_64-pc-windows-msvc
-      - aarch64-pc-windows-msvc
 
 archives:
   - ids:
       - default
-      - windows
     formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_
@@ -45,9 +34,6 @@ archives:
       {{- if eq .Arch "amd64" }}x86_64
       {{- else if eq .Arch "386" }}i386
       {{- else }}{{ .Arch }}{{ end }}
-    format_overrides:
-      - goos: windows
-        formats: [zip]
 
 changelog:
   sort: asc
@@ -59,7 +45,7 @@ changelog:
 release:
   prerelease: auto
 
-brews:
+homebrew_casks:
   - ids:
       - default
     repository:
@@ -68,6 +54,3 @@ brews:
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     homepage: https://github.com/a2-ai/spackle
     description: A frictionless project templating tool.
-    license: MIT
-    install: |
-      bin.install "spackle"
