@@ -16,7 +16,7 @@ rocket = { version = "0.5.1", features = ["json"] }
 rust-embed = "8.11.0"
 tera = "1.20.1"
 atty = "0.2.14"
-toml = "0.8.19"
+toml = "0.9.6"
 fronma = { version = "0.2.0", features = ["toml"] }
 inquire = "0.7.5"
 anyhow = "1.0.102"

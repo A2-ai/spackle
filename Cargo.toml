@@ -22,7 +22,7 @@ tera = "1.20.1"
 thiserror = "1.0.64"
 tokio = { version = "1.51.0", features = ["macros", "rt", "rt-multi-thread"] }
 tokio-stream = "0.1.18"
-toml = "0.8.13"
+toml = "0.9.6"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 users = "0.11.0"
