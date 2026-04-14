@@ -16,7 +16,7 @@ fronma = { version = "0.2.0", features = ["toml"] }
 getrandom = { version = "0.2.15", features = ["js"] }
 polyjuice = { git = "https://github.com/a2-ai/polyjuice", tag = "v0.1.0" }
 serde = { version = "1.0.228", features = ["derive"] }
-strum_macros = "0.26.2"
+strum_macros = "0.28.0"
 tempdir = "0.3.7"
 tera = "1.20.1"
 thiserror = "1.0.64"
