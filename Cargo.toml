@@ -13,7 +13,7 @@ async-process = "2.5.0"
 async-stream = "0.3.6"
 colored = "2.1.0"
 fronma = { version = "0.2.0", features = ["toml"] }
-getrandom = { version = "0.2.15", features = ["js"] }
+getrandom = { version = "0.2.17", features = ["js"] }
 polyjuice = { git = "https://github.com/a2-ai/polyjuice", tag = "v0.1.0" }
 serde = { version = "1.0.228", features = ["derive"] }
 strum_macros = "0.26.2"
