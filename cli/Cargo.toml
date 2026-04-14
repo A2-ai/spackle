@@ -10,14 +10,14 @@ path = "src/main.rs"
 
 [dependencies]
 spackle = { path = "../" }
-clap = { version = "4.5.60", features = ["derive"] }
-colored = "2.1.0"
+clap = { version = "4.6.0", features = ["derive"] }
+colored = "3.1.1"
 rocket = { version = "0.5.1", features = ["json"] }
 rust-embed = "8.11.0"
 tera = "1.20.1"
 atty = "0.2.14"
-toml = "0.8.19"
+toml = "1.1.2"
 fronma = { version = "0.2.0", features = ["toml"] }
-inquire = "0.7.5"
+inquire = "0.9.4"
 anyhow = "1.0.102"
 fuzzy-matcher = "0.3.7"
