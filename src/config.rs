@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::{hook::Hook, slot::Slot};
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(serde::Serialize, Deserialize, Debug, Default)]
 pub struct Config {
     pub name: Option<String>,
     #[serde(default)]
@@ -32,6 +32,12 @@ pub enum Error {
     FronmaError(fronma::error::Error),
     #[error("Duplicate keys found\n{0}")]
     DuplicateKey(String),
+}
+
+/// Parse a spackle config from an already-loaded TOML string.
+/// Used by WASM bindings where the caller handles file I/O.
+pub fn parse(toml_str: &str) -> Result<Config, Error> {
+    toml::from_str(toml_str).map_err(Error::ParseError)
 }
 
 pub fn load(path: impl AsRef<Path>) -> Result<Config, Error> {
@@ -104,10 +110,12 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(target_arch = "wasm32"))]
     use tempdir::TempDir;
 
     use super::*;
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn load_empty() {
         let dir = TempDir::new("spackle").unwrap().into_path();
@@ -119,6 +127,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn dup_key() {
         let dir = Path::new("tests/data/conf_dup_key");
@@ -126,5 +135,85 @@ mod tests {
         let config = load_dir(dir).expect("Expected ok");
 
         config.validate().expect_err("Expected error");
+    }
+
+    // --- Table-driven tests for parse() ---
+
+    #[test]
+    fn parse_table() {
+        struct Case {
+            name: &'static str,
+            toml: &'static str,
+            expect_ok: bool,
+            expect_slots: usize,
+            expect_hooks: usize,
+        }
+
+        let cases = vec![
+            Case {
+                name: "empty config",
+                toml: "",
+                expect_ok: true,
+                expect_slots: 0,
+                expect_hooks: 0,
+            },
+            Case {
+                name: "one slot",
+                toml: r#"
+[[slots]]
+key = "name"
+type = "String"
+"#,
+                expect_ok: true,
+                expect_slots: 1,
+                expect_hooks: 0,
+            },
+            Case {
+                name: "slot + hook",
+                toml: r#"
+[[slots]]
+key = "x"
+type = "Number"
+default = "42"
+
+[[hooks]]
+key = "init"
+command = ["echo", "hi"]
+default = true
+"#,
+                expect_ok: true,
+                expect_slots: 1,
+                expect_hooks: 1,
+            },
+            Case {
+                name: "with name and ignore",
+                toml: r#"
+name = "my-project"
+ignore = [".git", "target"]
+
+[[slots]]
+key = "a"
+"#,
+                expect_ok: true,
+                expect_slots: 1,
+                expect_hooks: 0,
+            },
+            Case {
+                name: "invalid toml",
+                toml: "[[[ broken",
+                expect_ok: false,
+                expect_slots: 0,
+                expect_hooks: 0,
+            },
+        ];
+
+        for c in cases {
+            let result = parse(c.toml);
+            assert_eq!(result.is_ok(), c.expect_ok, "case {}", c.name);
+            if let Ok(cfg) = result {
+                assert_eq!(cfg.slots.len(), c.expect_slots, "case {}: slots", c.name);
+                assert_eq!(cfg.hooks.len(), c.expect_hooks, "case {}: hooks", c.name);
+            }
+        }
     }
 }

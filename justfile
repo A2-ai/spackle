@@ -7,5 +7,16 @@ run *args="":
 test:
     cargo test --workspace
 
+test-wasm:
+    cargo test --workspace --features wasm
+
 install:
     cargo install --path=cli
+
+# --- WASM ---
+
+build-wasm:
+    wasm-pack build --target web --out-dir poc/pkg --features wasm
+
+poc: build-wasm
+    cd poc && bun ./index.ts

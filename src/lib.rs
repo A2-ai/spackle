@@ -6,15 +6,22 @@ use std::{
 
 use template::RenderedFile;
 use thiserror::Error;
+
+#[cfg(not(target_arch = "wasm32"))]
 use tokio_stream::Stream;
+#[cfg(not(target_arch = "wasm32"))]
 use users::User;
 
 pub mod config;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod copy;
 pub mod hook;
-mod needs;
+pub mod needs;
 pub mod slot;
 pub mod template;
+
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 #[derive(Error, Debug)]
 pub enum LoadError {
@@ -22,6 +29,7 @@ pub enum LoadError {
     ConfigError { path: PathBuf, error: config::Error },
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Error, Debug)]
 pub enum CheckError {
     #[error("Error validating template files: {0}")]
@@ -30,6 +38,7 @@ pub enum CheckError {
     SlotError(slot::Error),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Error, Debug)]
 pub enum GenerateError {
     #[error("The output directory already exists: {0}")]
@@ -58,12 +67,14 @@ pub fn get_output_name(out_dir: &Path) -> String {
         .to_string()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub enum RunHooksError {
     BadConfig(config::Error),
     HookError(hook::Error),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Display for RunHooksError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -73,7 +84,7 @@ impl Display for RunHooksError {
     }
 }
 
-// Loads the project from the specified directory or path and validates it
+#[cfg(not(target_arch = "wasm32"))]
 pub fn load_project(path: &PathBuf) -> Result<Project, LoadError> {
     let config = config::load(path).map_err(|e| LoadError::ConfigError {
         path: path.to_owned(),
@@ -115,6 +126,7 @@ impl Project {
             .into_owned();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn check(&self) -> Result<(), CheckError> {
         if let Err(e) = template::validate(&self.path, &self.config.slots) {
             return Err(CheckError::TemplateError(e));
@@ -130,6 +142,7 @@ impl Project {
     /// Generates a filled directory from the specified spackle project.
     ///
     /// out_dir is the path to what will become the filled directory
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn generate(
         &self,
         project_dir: &PathBuf,
@@ -167,6 +180,7 @@ impl Project {
         Ok(okay_results)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn copy_files(
         &self,
         out_dir: &Path,
@@ -179,6 +193,7 @@ impl Project {
         copy::copy(&self.path, out_dir, &self.config.ignore, &data)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn render_templates(
         &self,
         out_dir: &Path,
@@ -191,9 +206,7 @@ impl Project {
         template::fill(&self.path, out_dir, &data)
     }
 
-    /// Runs the hooks in the generated spackle project.
-    ///
-    /// out_dir is the path to the filled directory
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn run_hooks_stream(
         &self,
         out_dir: &Path,
@@ -216,9 +229,7 @@ impl Project {
         Ok(result)
     }
 
-    /// Runs the hooks in the generated spackle project.
-    ///
-    /// out_dir is the path to the filled directory
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn run_hooks(
         &self,
         out_dir: &Path,
