@@ -134,3 +134,100 @@ never need to branch on response structure.
 **`render_templates` preserves the original template path.** Each
 success entry has `original_path` (e.g. `{{slot_1}}.j2`) distinct from
 `rendered_path` (e.g. `hello`) so callers can map output back to source.
+
+## Why not WASI?
+
+WASI (WebAssembly System Interface) is a standardized set of syscalls
+for WASM modules that includes filesystem access, environment variables,
+and clocks. It's a reasonable question whether spackle could target WASI
+instead of `wasm32-unknown-unknown` and skip the TypeScript I/O layer.
+
+| Target | Filesystem | Processes | Clock | Maturity |
+|--------|-----------|-----------|-------|----------|
+| `wasm32-unknown-unknown` | no | no | no | Stable, well-supported |
+| `wasm32-wasip1` | yes (sandboxed) | no | yes | Stable in Rust, runtime support varies |
+| `wasm32-wasip2` (component model) | yes | no | yes | Experimental |
+
+With WASI, the host (Bun, wasmtime, etc.) grants the WASM module access
+to specific directories at startup. Rust's `std::fs` just works —
+`fs::read_to_string`, `walkdir`, all of it — because the Rust standard
+library has a WASI backend. `config::load_dir`, `template::fill`, and
+`copy::copy` would all compile and work since they only use `std::fs` +
+`walkdir` + `tera`.
+
+**What WASI still can't do:** spawn processes. There's no `fork`/`exec`
+equivalent in any WASI version. Hooks would still need the TypeScript
+host regardless.
+
+**Why we didn't go that route:**
+
+- **wasm-pack doesn't support WASI.** It only targets
+  `wasm32-unknown-unknown`. A WASI build needs a different pipeline
+  (plain `cargo build` + manual JS glue or `jco` for the component
+  model).
+- **Bun's WASI support is experimental.** `Bun.WASI` exists but is
+  flagged unstable — the API has changed between releases.
+- **The split we have is cleaner.** TypeScript handling I/O and Rust
+  handling computation is a natural boundary. If you give WASM
+  filesystem access, the question becomes "why not just ship a native
+  binary?" — and at that point you're back to the original spackle CLI.
+
+If the WASI toolchain matures (wasm-pack support, stable Bun runtime),
+revisiting this could collapse the I/O layer. But for now,
+`wasm32-unknown-unknown` + TypeScript host is the pragmatic choice.
+
+## Next steps
+
+### 1. Scaffold `spackle-web/` from vibestack-starter
+
+Clone the vibestack-starter template into `spackle-web/`. Strip the demo
+routes (`files-loader`, `files-cache`, `server-fn`). Rename references
+from `vibestack-starter` to `spackle-web`. Run `bun install`.
+
+### 2. Typed WASM wrapper (`spackle-web/src/server/spackleWasm.ts`)
+
+Create a server-side module that:
+
+- Loads the WASM module **once** on first call (not per-request).
+- Defines Zod schemas for every WASM return shape (`SpackleConfig`,
+  `ValidationResult`, `RenderedTemplate[]`, `HookPlanEntry[]`).
+- Exports typed async methods — `parseConfig`, `checkProject`,
+  `validateSlotData`, `renderTemplates`, `evaluateHooks` — that call
+  the raw WASM exports internally and parse the JSON through Zod.
+- No raw JSON strings leak past this boundary. The rest of the server
+  works with typed TypeScript objects.
+
+The `just build-wasm` output (`poc/pkg/` or a new `spackle-web/pkg/`)
+is the input to this module.
+
+### 3. Server functions
+
+TanStack Start `createServerFn` handlers that compose the typed WASM
+wrapper with host I/O:
+
+- **`getProjectInfo`** — read `spackle.toml` from disk → `parseConfig`
+- **`checkProject`** — read `spackle.toml` + walk `.j2` files → `checkProject`
+- **`validateSlotData`** — `parseConfig` → `validateSlotData`
+- **`generateProject`** — read templates → `renderTemplates` → write
+  output files to disk → `evaluateHooks` → spawn commands via
+  `Bun.spawn` for each hook with `should_run: true`
+- **`listTemplates`** — read the template root directory
+
+### 4. Routes
+
+File-based routes following vibestack-starter conventions:
+
+- `src/routes/index.tsx` — template list (cards, "All" / "My templates")
+- `src/routes/templates/$slug.tsx` — template detail, slot form, generate
+- `src/routes/templates/$slug.edit.tsx` — file tree editor, save as new
+  version
+
+### 5. Hook execution
+
+The PoC currently plans hooks (`evaluate_hooks`) but does not execute
+them. The server function in step 3 (`generateProject`) will:
+
+1. Call `evaluateHooks` to get the plan.
+2. For each entry with `should_run: true`, call `Bun.spawn(entry.command, { cwd: outDir })`.
+3. Capture stdout/stderr and stream status back to the client (SSE or
+   polling — TBD based on TanStack Start capabilities).
