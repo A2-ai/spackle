@@ -51,11 +51,12 @@ pub fn fill(
 ) -> Result<Vec<Result<RenderedFile, FileError>>, tera::Error> {
     let glob = project_dir.join("**").join("*".to_owned() + TEMPLATE_EXT);
 
-    let tera = Tera::new(&glob.to_string_lossy())?;
+    let mut tera = Tera::new();
+    tera.load_from_glob(&glob.to_string_lossy())?;
+
     let context = Context::from_serialize(data)?;
 
-    let template_names = tera.get_template_names().collect::<Vec<_>>();
-    let rendered_templates = template_names.iter().map(|template_name| {
+    let rendered_templates = tera.templates.iter().map(|(template_name, _)| {
         let start_time = std::time::Instant::now();
 
         // Render the file contents
@@ -72,8 +73,8 @@ pub fn fill(
         // Render the file name
         let mut template_name = template_name.to_string();
         if template_name.ends_with(TEMPLATE_EXT) {
-            let mut tera = tera.clone();
-            template_name = match tera.render_str(&template_name, &context) {
+            let tera = tera.clone();
+            template_name = match tera.render_str(&template_name, &context, false) {
                 Ok(s) => s,
                 Err(e) => {
                     return Err(FileError {
@@ -152,9 +153,10 @@ impl Display for ValidateError {
 pub fn validate(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), ValidateError> {
     let glob = dir.join("**").join("*".to_owned() + TEMPLATE_EXT);
 
-    let tera = Tera::new(&glob.to_string_lossy()).map_err(ValidateError::TeraError)?;
+    let mut tera = Tera::new();
+    tera.load_from_glob(&glob.to_string_lossy()).map_err(ValidateError::TeraError)?;
     let mut context = Context::from_serialize(
-        slots
+        &slots
             .iter()
             .map(|s| (s.key.clone(), ""))
             .collect::<HashMap<_, _>>(),
@@ -164,8 +166,9 @@ pub fn validate(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), ValidateError> {
     context.insert("_output_name".to_string(), "");
 
     let errors = tera
-        .get_template_names()
-        .filter_map(|template_name| match tera.render(template_name, &context) {
+        .templates
+        .iter()
+        .filter_map(|(template_name, _)| match tera.render(template_name, &context) {
             Ok(_) => None,
             Err(e) => Some((template_name.to_string(), e)),
         })
