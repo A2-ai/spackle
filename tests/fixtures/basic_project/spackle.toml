@@ -1,0 +1,14 @@
+name = "basic-project"
+ignore = ["drafts"]
+
+[[slots]]
+key = "greeting"
+type = "String"
+
+[[slots]]
+key = "target"
+type = "String"
+
+[[slots]]
+key = "filename"
+type = "String"

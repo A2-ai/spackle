@@ -1,0 +1,18 @@
+---
+source: tests/templating.rs
+expression: contents
+---
+[
+    (
+        "README.md",
+        "# basic-project\n\nHELLO, world!\n\nOutput name: basic_project_out\n",
+    ),
+    (
+        "docs/static.md",
+        "This is a static doc file.\n\nTokens like {{ greeting }} should be copied verbatim because this file is\nnot a `.j2` template.\n",
+    ),
+    (
+        "src/dynamic.txt",
+        "hello from basic-project\n",
+    ),
+]

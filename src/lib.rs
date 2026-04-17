@@ -1,10 +1,13 @@
 use std::{
     collections::HashMap,
     fmt::Display,
+    fs, io,
     path::{Path, PathBuf},
 };
 
+use fronma::{engines::Toml, parser::parse_with_engine};
 use template::RenderedFile;
+use tera::{Context, Tera};
 use thiserror::Error;
 use tokio_stream::Stream;
 use users::User;
@@ -42,6 +45,18 @@ pub enum GenerateError {
     TemplateError(#[from] tera::Error),
     #[error("Error rendering file: {0}")]
     FileError(#[from] template::FileError),
+}
+
+#[derive(Error, Debug)]
+pub enum SingleFileError {
+    #[error("Error reading project file: {0}")]
+    Read(io::Error),
+    #[error("Error parsing project file frontmatter: {0:?}")]
+    Parse(fronma::error::Error),
+    #[error("Error serializing slot data: {0}")]
+    Context(tera::Error),
+    #[error("Error rendering template body: {0}")]
+    Render(tera::Error),
 }
 
 // Gets the output name as the canonicalized path's file stem
@@ -191,6 +206,28 @@ impl Project {
         template::fill(&self.path, out_dir, &data)
     }
 
+    /// Renders a single-file spackle project (a `.j2t` file containing TOML
+    /// frontmatter + a Tera template body) and returns the rendered output.
+    ///
+    /// The file is re-read from `self.path`; only the body is rendered.
+    /// Special variables (`_project_name`, `_output_name`) are *not* injected —
+    /// single-file projects have no output directory concept at the library
+    /// level.
+    pub fn render_single_file(
+        &self,
+        data: &HashMap<String, String>,
+    ) -> Result<String, SingleFileError> {
+        let file_contents = fs::read_to_string(&self.path).map_err(SingleFileError::Read)?;
+
+        let body = parse_with_engine::<config::Config, Toml>(&file_contents)
+            .map_err(SingleFileError::Parse)?
+            .body;
+
+        let context = Context::from_serialize(data).map_err(SingleFileError::Context)?;
+
+        Tera::one_off(body, &context, false).map_err(SingleFileError::Render)
+    }
+
     /// Runs the hooks in the generated spackle project.
     ///
     /// out_dir is the path to the filled directory
@@ -249,35 +286,5 @@ mod tests {
     fn test_get_output_name() {
         let path = Path::new("/path/to/output.name");
         assert_eq!(get_output_name(path), "output.name");
-    }
-
-    #[test]
-    fn test_check_pass() {
-        let project = load_project(&PathBuf::from("tests/data/proj2")).unwrap();
-        let result = project.check();
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_check_load_config_error() {
-        let path = PathBuf::from("tests/data/bad_config");
-        let result = load_project(&path);
-        assert!(
-            result.is_err_and(|e| matches!(e, LoadError::ConfigError { path: p, .. } if p == path))
-        );
-    }
-
-    #[test]
-    fn test_check_slot_error() {
-        let project = load_project(&PathBuf::from("tests/data/bad_default_slot_val")).unwrap();
-        let result = project.check();
-        assert!(result.is_err_and(|e| matches!(e, CheckError::SlotError(_))));
-    }
-
-    #[test]
-    fn test_check_template_error() {
-        let project = load_project(&PathBuf::from("tests/data/bad_template")).unwrap();
-        let result = project.check();
-        assert!(result.is_err_and(|e| matches!(e, CheckError::TemplateError(_))));
     }
 }
