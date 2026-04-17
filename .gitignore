@@ -1,2 +1,5 @@
 target
 render
+.DS_Store
+*.snap.new
+.*.pending-snap

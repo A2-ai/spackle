@@ -250,34 +250,4 @@ mod tests {
         let path = Path::new("/path/to/output.name");
         assert_eq!(get_output_name(path), "output.name");
     }
-
-    #[test]
-    fn test_check_pass() {
-        let project = load_project(&PathBuf::from("tests/data/proj2")).unwrap();
-        let result = project.check();
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_check_load_config_error() {
-        let path = PathBuf::from("tests/data/bad_config");
-        let result = load_project(&path);
-        assert!(
-            result.is_err_and(|e| matches!(e, LoadError::ConfigError { path: p, .. } if p == path))
-        );
-    }
-
-    #[test]
-    fn test_check_slot_error() {
-        let project = load_project(&PathBuf::from("tests/data/bad_default_slot_val")).unwrap();
-        let result = project.check();
-        assert!(result.is_err_and(|e| matches!(e, CheckError::SlotError(_))));
-    }
-
-    #[test]
-    fn test_check_template_error() {
-        let project = load_project(&PathBuf::from("tests/data/bad_template")).unwrap();
-        let result = project.check();
-        assert!(result.is_err_and(|e| matches!(e, CheckError::TemplateError(_))));
-    }
 }

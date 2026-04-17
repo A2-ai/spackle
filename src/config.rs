@@ -104,17 +104,17 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use tempdir::TempDir;
+    use tempfile::TempDir;
 
     use super::*;
 
     #[test]
     fn load_empty() {
-        let dir = TempDir::new("spackle").unwrap().into_path();
+        let dir = TempDir::new().unwrap();
 
-        fs::write(dir.join("spackle.toml"), "").unwrap();
+        fs::write(dir.path().join("spackle.toml"), "").unwrap();
 
-        let result = load_dir(&dir);
+        let result = load_dir(dir.path());
 
         assert!(result.is_ok());
     }
