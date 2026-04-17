@@ -8,6 +8,7 @@
 //! same pattern as nmparser.
 
 use std::collections::HashMap;
+use std::path::Path;
 use wasm_bindgen::prelude::*;
 
 use crate::{config, hook, slot, template};
@@ -209,6 +210,77 @@ pub fn evaluate_hooks(config_json: &str, slot_data_json: &str) -> String {
     serde_json::to_string(&plan).unwrap_or_else(|e| error_json(&e.to_string()))
 }
 
+/// Compute the spackle output name for a given output directory path.
+///
+/// Mirrors `crate::get_output_name`: returns the final path component
+/// (file_name), falling back to "project" if the path has none.
+///
+/// Input: an output directory path (as the host would pass it).
+/// Output: a bare JSON string, e.g. `"my-output"`.
+#[wasm_bindgen]
+pub fn get_output_name(out_dir: &str) -> String {
+    let name = crate::get_output_name(Path::new(out_dir));
+    serde_json::to_string(&name).unwrap_or_else(|e| error_json(&e.to_string()))
+}
+
+/// Compute the project name for a given config + project directory.
+///
+/// Mirrors `Project::get_name`: if the config has a `name`, return it;
+/// otherwise fall back to the project directory's file_stem.
+///
+/// Input:
+///   - config_json: JSON of the parsed config (output of parse_config)
+///   - project_dir: the project directory path (as the host would pass it)
+/// Output: a bare JSON string, e.g. `"my-project"`, or `{"error":"..."}`
+///   if config_json is malformed.
+#[wasm_bindgen]
+pub fn get_project_name(config_json: &str, project_dir: &str) -> String {
+    let cfg: config::Config = match serde_json::from_str(config_json) {
+        Ok(c) => c,
+        Err(e) => return error_json(&format!("invalid config_json: {}", e)),
+    };
+    let name = project_name_from_config(&cfg, project_dir);
+    serde_json::to_string(&name).unwrap_or_else(|e| error_json(&e.to_string()))
+}
+
+/// Render a single string through the same tera engine used for templates.
+///
+/// Used by the host to render templated filenames on non-`.j2` files
+/// (matches `copy::copy` behavior: filename rendered, contents left alone).
+/// For `.j2` files the host should use `render_templates` instead.
+///
+/// Input:
+///   - template: the string to render (e.g. "{{ _project_name }}/file")
+///   - data_json: JSON object of variables
+/// Output: a bare JSON string with the rendered result, or `{"error":"..."}`.
+#[wasm_bindgen]
+pub fn render_string(template: &str, data_json: &str) -> String {
+    let data: HashMap<String, String> = match serde_json::from_str(data_json) {
+        Ok(d) => d,
+        Err(e) => return error_json(&format!("invalid data_json: {}", e)),
+    };
+    let context = match tera::Context::from_serialize(&data) {
+        Ok(c) => c,
+        Err(e) => return error_json(&e.to_string()),
+    };
+    match tera::Tera::one_off(template, &context, false) {
+        Ok(s) => serde_json::to_string(&s).unwrap_or_else(|e| error_json(&e.to_string())),
+        Err(e) => error_json(&e.to_string()),
+    }
+}
+
+// Pure helper so we can unit-test this without the wasm_bindgen layer.
+fn project_name_from_config(cfg: &config::Config, project_dir: &str) -> String {
+    if let Some(name) = &cfg.name {
+        return name.clone();
+    }
+    Path::new(project_dir)
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
+}
+
 // --- internal helpers ---
 
 #[derive(serde::Deserialize)]
@@ -338,6 +410,83 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// get_output_name must return a bare JSON string mirroring
+    /// `crate::get_output_name` behavior (file_name, fallback "project").
+    #[test]
+    fn get_output_name_contract() {
+        struct Case {
+            input: &'static str,
+            expected: &'static str,
+        }
+        let cases = vec![
+            Case { input: "/tmp/my-output", expected: "my-output" },
+            Case { input: "my-output", expected: "my-output" },
+            Case { input: "a/b/c.name", expected: "c.name" },
+            Case { input: "/", expected: "project" },
+        ];
+        for c in cases {
+            let result = get_output_name(c.input);
+            let parsed: String = serde_json::from_str(&result)
+                .unwrap_or_else(|e| panic!("input {:?}: not a JSON string: {} raw={}", c.input, e, result));
+            assert_eq!(parsed, c.expected, "input {:?}", c.input);
+        }
+    }
+
+    /// get_project_name: config.name wins, otherwise fall back to
+    /// project_dir file_stem. Malformed config returns {error}.
+    #[test]
+    fn get_project_name_contract() {
+        // Config with explicit name wins.
+        let cfg_named = r#"{"name":"from-config","ignore":[],"slots":[],"hooks":[]}"#;
+        let result = get_project_name(cfg_named, "/ignored/project-dir");
+        let parsed: String = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed, "from-config");
+
+        // Config without a name falls back to the project_dir file_stem.
+        let cfg_nameless = r#"{"name":null,"ignore":[],"slots":[],"hooks":[]}"#;
+        let result = get_project_name(cfg_nameless, "/tmp/my-project");
+        let parsed: String = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed, "my-project");
+
+        // file_stem strips the extension.
+        let result = get_project_name(cfg_nameless, "/tmp/my.project.git");
+        let parsed: String = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed, "my.project");
+
+        // Malformed config → {error} envelope (not a bare JSON string).
+        let result = get_project_name("NOT JSON", "/tmp/x");
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(parsed.get("error").is_some(), "bad config should return {{error}}: {}", result);
+    }
+
+    #[test]
+    fn render_string_contract() {
+        // Happy path: variable substitution.
+        let result = render_string("hello {{ name }}", r#"{"name":"world"}"#);
+        let parsed: String = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed, "hello world");
+
+        // Templated filename path.
+        let result = render_string("{{ _project_name }}/file", r#"{"_project_name":"proj"}"#);
+        let parsed: String = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed, "proj/file");
+
+        // No variables to substitute — literal passthrough.
+        let result = render_string("plain", "{}");
+        let parsed: String = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed, "plain");
+
+        // Missing variable → error envelope.
+        let result = render_string("{{ missing }}", "{}");
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(parsed.get("error").is_some(), "missing var should return error: {}", result);
+
+        // Bad JSON → error envelope.
+        let result = render_string("x", "NOT JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(parsed.get("error").is_some(), "bad data_json should error: {}", result);
     }
 
     /// evaluate_hooks: verify template_errors are surfaced and block

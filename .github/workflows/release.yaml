@@ -41,3 +41,42 @@ jobs:
       GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}
       ORG_HOMEBREW_TAP_APP_KEY: ${{ secrets.ORG_HOMEBREW_TAP_APP_KEY }}
       POLYJUICE_DEPLOY_KEY: ${{ secrets.POLYJUICE_DEPLOY_KEY }}
+
+  wasm-artifact:
+    name: WASM artifact
+    needs: check-version
+    runs-on: ubuntu-latest
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Cache rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Grant access to private repository
+        uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.POLYJUICE_DEPLOY_KEY }}
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      # Build all three targets so downstream consumers (browser / Bun /
+      # Vite) can import the one that matches their runtime. wasm-pack
+      # already passes --release to cargo by default; do NOT re-specify.
+      - name: Build WASM (web)
+        run: wasm-pack build --target web --out-dir dist/web --features wasm
+      - name: Build WASM (nodejs)
+        run: wasm-pack build --target nodejs --out-dir dist/nodejs --features wasm
+      - name: Build WASM (bundler)
+        run: wasm-pack build --target bundler --out-dir dist/bundler --features wasm
+
+      - name: Package tarball
+        run: tar -czf spackle-wasm-${{ github.ref_name }}.tgz -C dist .
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: spackle-wasm-*.tgz

@@ -19,4 +19,7 @@ build-wasm:
     wasm-pack build --target web --out-dir poc/pkg --features wasm
 
 poc: build-wasm
-    cd poc && bun ./index.ts
+    cd poc && bun run scripts/demo.ts
+
+test-poc: build-wasm
+    cd poc && bun install && bun test

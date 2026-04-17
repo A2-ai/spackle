@@ -1,2 +1,6 @@
 target
 render
+
+# WASM PoC
+poc/node_modules
+poc/output

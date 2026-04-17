@@ -2,14 +2,19 @@
 
 ## What this is
 
-A minimal TypeScript script (`poc/index.ts`) that exercises spackle's core
-logic compiled to WASM. Run it with:
+A Bun-based TypeScript PoC (`poc/`) that compiles spackle's core logic to
+WASM and drives it end-to-end, including hook execution via `Bun.spawn`.
+Every WASM export is exercised by automated `bun test` cases so we know
+the artifact is consumable from TypeScript before we attach it to a
+release.
 
 ```bash
-just poc          # builds WASM + runs the script
+just poc          # builds WASM + runs scripts/demo.ts
+just test-poc     # builds WASM + runs bun test
 # or manually:
 just build-wasm   # wasm-pack → poc/pkg/
-cd poc && bun ./index.ts
+cd poc && bun test
+cd poc && bun run scripts/demo.ts
 ```
 
 ## Architecture: why this doesn't call `Project::generate()` directly
@@ -49,10 +54,58 @@ Instead, this PoC splits the work between two runtimes:
 
 The TypeScript host reads files, passes their contents as strings into
 the WASM module for computation, gets JSON results back, then writes
-output files. Hook execution is planned via WASM (`evaluate_hooks`
-returns which hooks would run and with what commands) but actual
-subprocess spawning is not yet implemented in the PoC — that is a
-future step for the full web app.
+output files and (optionally) runs hooks via `Bun.spawn`.
+
+## Where the WASM↔TS line lives
+
+The `poc/src/` layout is the canonical reference — every file is on one
+side of the line and says so in its header:
+
+```
+poc/src/
+├── wasm/                   // WASM-SIDE — pure computation. No I/O.
+│   ├── types.ts            // interfaces mirroring Rust structs
+│   ├── index.ts            // loadSpackleWasm() — singleton init + typed client
+│   └── ...
+├── host/                   // HOST-SIDE — requires Node/Bun I/O.
+│   ├── fs.ts               // readSpackleConfig, walkTemplates,
+│   │                       // writeRenderedFiles, copyNonTemplates
+│   └── hooks.ts            // executeHookPlan (Bun.spawn)
+└── spackle.ts              // ORCHESTRATION — composes wasm + host
+                            // into check() and generate()
+```
+
+`poc/src/spackle.ts#generate` is the single place where the two sides
+meet. Every line is annotated `// WASM` or `// HOST` so the boundary is
+visible at a glance:
+
+```ts
+const toml = await readSpackleConfig(projectDir);              // HOST
+const config = wasm.parseConfig(toml);                         // WASM
+const templates = await walkTemplates(projectDir, config.ignore); // HOST
+const rendered = wasm.renderTemplates(templates, fullData, configJson); // WASM
+// Copy first, then render — matches native: templates win on path collisions.
+await copyNonTemplates(projectDir, outDir, config.ignore, fullData, wasm); // HOST
+await writeRenderedFiles(outDir, rendered);                    // HOST
+const plan = wasm.evaluateHooks(configJson, fullData);         // WASM
+for await (const r of executeHookPlan(plan, outDir)) { ... }   // HOST
+```
+
+`generate()` matches native `Project::generate` semantics by default:
+
+- **Output-dir protection** — errors if `outDir` already exists. Opt-in
+  with `{ overwrite: true }`.
+- **Template-error fail-fast** — throws on the first render failure
+  before writing anything. Opt-in to partial writes with
+  `{ allowTemplateErrors: true }` (useful for UIs that want to surface
+  every failure at once).
+- **Copy → render order** — non-templates copied first, templates
+  written second so they overwrite on collision.
+
+If you are building the eventual `spackle-web/` server, lift these
+functions as-is — `wasm/` and `host/` are import-stable boundaries,
+`spackle.ts` is the reference implementation, and the bun tests are
+your regression suite.
 
 ## What the PoC exercises
 
@@ -97,7 +150,7 @@ All changes are additive — the existing CLI and native API are untouched.
 
 **Source — WASM bindings (`src/wasm.rs`):**
 
-Seven `#[wasm_bindgen]` exports, all JSON-in/JSON-out:
+Ten `#[wasm_bindgen]` exports, all JSON-in/JSON-out:
 
 | Export | Purpose |
 |--------|---------|
@@ -108,13 +161,20 @@ Seven `#[wasm_bindgen]` exports, all JSON-in/JSON-out:
 | `validate_slot_data(config_json, slot_data_json)` | → `{ valid, errors }` |
 | `render_templates(templates_json, slot_data_json, config_json)` | → `[{ original_path, rendered_path, content }]` |
 | `evaluate_hooks(config_json, slot_data_json)` | → `[{ key, command, should_run, skip_reason, template_errors }]` |
+| `render_string(template, data_json)` | One-off tera render — used by the host for filename-templated non-`.j2` files |
+| `get_output_name(out_dir)` | Mirrors `crate::get_output_name` — derives project name from an output dir |
+| `get_project_name(config_json, project_dir)` | Mirrors `Project::get_name` — config.name ?? project_dir file_stem |
 
 **Tests:**
 - `cargo test` (no features): 39 tests, all existing + new in-memory
   function tests. No WASM-specific tests run.
-- `cargo test --features wasm` (or `just test-wasm`): 41 tests, adds
-  `check_project` JSON contract test and `evaluate_hooks` template-error
-  semantics test.
+- `cargo test --features wasm` (or `just test-wasm`): 44 tests, adds
+  WASM JSON contract tests (`check_project`, `evaluate_hooks`,
+  `get_output_name`, `get_project_name`, `render_string`).
+- `bun test` (or `just test-poc`): 30 tests across
+  `poc/tests/{wasm,host,e2e}.test.ts` — proves the WASM artifact is
+  loadable from Bun and that orchestration produces spackle-equivalent
+  output including hook subprocess execution.
 
 ## Behavioral notes
 
@@ -176,58 +236,65 @@ If the WASI toolchain matures (wasm-pack support, stable Bun runtime),
 revisiting this could collapse the I/O layer. But for now,
 `wasm32-unknown-unknown` + TypeScript host is the pragmatic choice.
 
-## Next steps
+## Consuming the WASM artifact from another repo
+
+Every tagged release attaches a tarball with all three wasm-pack targets
+(`web`, `nodejs`, `bundler`) as a single archive. Install with Bun:
+
+```bash
+bun add https://github.com/a2-ai/spackle/releases/download/v<X.Y.Z>/spackle-wasm-v<X.Y.Z>.tgz
+```
+
+The tarball extracts to `web/`, `nodejs/`, and `bundler/` — import from
+the one that matches your runtime. For a Bun server, `nodejs/` is
+usually cleanest; for a Vite/TanStack Start app, use `bundler/` with
+`vite-plugin-wasm`.
+
+The `poc/src/wasm/index.ts` wrapper + `poc/src/host/` helpers are
+designed to be lifted verbatim into a consumer repo — treat them as the
+reference integration.
+
+## Next steps (follow-up PRs)
 
 ### 1. Scaffold `spackle-web/` from vibestack-starter
 
-Clone the vibestack-starter template into `spackle-web/`. Strip the demo
-routes (`files-loader`, `files-cache`, `server-fn`). Rename references
-from `vibestack-starter` to `spackle-web`. Run `bun install`.
+Clone `vibestack-starter` into `spackle-web/`. Strip the demo routes
+(`files-loader`, `files-cache`, `server-fn`). Rename references from
+`vibestack-starter` to `spackle-web`. Run `bun install`.
 
-### 2. Typed WASM wrapper (`spackle-web/src/server/spackleWasm.ts`)
+### 2. Lift the PoC helpers into `spackle-web/src/`
 
-Create a server-side module that:
+- `poc/src/wasm/*` → `spackle-web/src/server/wasm/*` (server-side, loaded
+  once per process).
+- `poc/src/host/*` → `spackle-web/src/server/host/*`.
+- `poc/src/spackle.ts` → `spackle-web/src/server/spackle.ts` — called
+  from TanStack Start `createServerFn` handlers.
 
-- Loads the WASM module **once** on first call (not per-request).
-- Defines Zod schemas for every WASM return shape (`SpackleConfig`,
-  `ValidationResult`, `RenderedTemplate[]`, `HookPlanEntry[]`).
-- Exports typed async methods — `parseConfig`, `checkProject`,
-  `validateSlotData`, `renderTemplates`, `evaluateHooks` — that call
-  the raw WASM exports internally and parse the JSON through Zod.
-- No raw JSON strings leak past this boundary. The rest of the server
-  works with typed TypeScript objects.
-
-The `just build-wasm` output (`poc/pkg/` or a new `spackle-web/pkg/`)
-is the input to this module.
+Consider adding Zod schemas on top of the hand-written interfaces in
+`wasm/types.ts` when the WASM boundary starts serving client-triggered
+requests (runtime validation on untrusted input).
 
 ### 3. Server functions
 
-TanStack Start `createServerFn` handlers that compose the typed WASM
-wrapper with host I/O:
+TanStack Start `createServerFn` handlers that wrap the orchestration:
 
-- **`getProjectInfo`** — read `spackle.toml` from disk → `parseConfig`
-- **`checkProject`** — read `spackle.toml` + walk `.j2` files → `checkProject`
-- **`validateSlotData`** — `parseConfig` → `validateSlotData`
-- **`generateProject`** — read templates → `renderTemplates` → write
-  output files to disk → `evaluateHooks` → spawn commands via
-  `Bun.spawn` for each hook with `should_run: true`
-- **`listTemplates`** — read the template root directory
+- **`getProjectInfo`** — `check()` on a project directory.
+- **`validateSlotData`** — proxy for `wasm.validateSlotData`.
+- **`generateProject`** — `generate(..., { runHooks: true })`, streaming
+  each `HookOutcome` back to the client over SSE.
+- **`listTemplates`** — read the template root directory.
 
 ### 4. Routes
 
 File-based routes following vibestack-starter conventions:
 
-- `src/routes/index.tsx` — template list (cards, "All" / "My templates")
-- `src/routes/templates/$slug.tsx` — template detail, slot form, generate
-- `src/routes/templates/$slug.edit.tsx` — file tree editor, save as new
-  version
+- `src/routes/index.tsx` — template list.
+- `src/routes/templates/$slug.tsx` — template detail, slot form, generate.
+- `src/routes/templates/$slug.edit.tsx` — file tree editor.
 
-### 5. Hook execution
+### 5. Streaming hook output to the client
 
-The PoC currently plans hooks (`evaluate_hooks`) but does not execute
-them. The server function in step 3 (`generateProject`) will:
-
-1. Call `evaluateHooks` to get the plan.
-2. For each entry with `should_run: true`, call `Bun.spawn(entry.command, { cwd: outDir })`.
-3. Capture stdout/stderr and stream status back to the client (SSE or
-   polling — TBD based on TanStack Start capabilities).
+`executeHookPlan` already yields one outcome per hook as an async
+iterator — hook it up to an SSE stream or `ReadableStream` from the
+server function so the UI can render hook stdout as it arrives, rather
+than waiting for the whole batch.

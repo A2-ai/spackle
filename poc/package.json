@@ -2,5 +2,14 @@
   "name": "spackle-wasm-poc",
   "version": "0.0.1",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "demo": "bun scripts/demo.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
 }

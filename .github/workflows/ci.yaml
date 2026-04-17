@@ -30,3 +30,68 @@ jobs:
 
       - name: Run clippy
         run: cargo clippy --workspace
+
+      - name: Run WASM-feature tests
+        run: cargo test --workspace --features wasm
+
+  wasm-poc:
+    name: WASM PoC (bun test)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Cache rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Grant access to private repository
+        uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.POLYJUICE_DEPLOY_KEY }}
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      # Build all three release targets so nodejs/bundler can't silently
+      # break while only `web` is exercised by bun test. `web` lands in
+      # poc/pkg so the tests can pick it up; the other two build into
+      # throwaway dirs purely to catch compile failures.
+      - name: Build WASM (web) for bun test
+        run: wasm-pack build --target web --out-dir poc/pkg --features wasm
+      - name: Build WASM (nodejs) smoke
+        run: wasm-pack build --target nodejs --out-dir /tmp/spackle-wasm-nodejs --features wasm
+      - name: Build WASM (bundler) smoke
+        run: wasm-pack build --target bundler --out-dir /tmp/spackle-wasm-bundler --features wasm
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install bun deps
+        working-directory: poc
+        run: bun install --frozen-lockfile
+
+      - name: Run bun test
+        working-directory: poc
+        run: bun test
+
+      - name: Type-check poc
+        working-directory: poc
+        run: bunx tsc --noEmit
+
+      # Import-smoke the nodejs target via Bun — catches runtime-import
+      # breakage (wrong shape of exported __wbg_init, etc.) even though
+      # we don't run the full bun test against that target. Rebuilds are
+      # free because wasm-pack ran above.
+      - name: Smoke-test nodejs target from Bun
+        run: |
+          cat > /tmp/nodejs-smoke.mjs <<'EOF'
+          import { parse_config, get_output_name } from "/tmp/spackle-wasm-nodejs/spackle.js";
+          const cfg = JSON.parse(parse_config('name = "smoke"'));
+          if (cfg.name !== "smoke") throw new Error("parse_config failed: " + JSON.stringify(cfg));
+          const name = JSON.parse(get_output_name("/tmp/my-out"));
+          if (name !== "my-out") throw new Error("get_output_name failed: " + name);
+          console.log("nodejs target smoke test passed");
+          EOF
+          bun /tmp/nodejs-smoke.mjs
