@@ -1,17 +1,14 @@
 use crate::{check, util::file_path_completer::FilePathCompleter, Cli};
 use anyhow::{Context, Result};
 use colored::Colorize;
-use fronma::parser::parse_with_engine;
 use inquire::{validator::Validation, Confirm, CustomType, Text};
 use rocket::{futures::StreamExt, tokio};
 use spackle::{
-    config::{self},
     hook::{self, Hook, HookError, HookResult, HookResultKind, HookStreamResult},
     slot::{self, Slot, SlotType},
     Project,
 };
 use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant};
-use tera::Tera;
 use tokio::pin;
 
 fn parse_flag_data(flag_data: &Vec<String>) -> HashMap<String, String> {
@@ -285,7 +282,7 @@ pub fn run(
     if cli.project_path.is_dir() {
         run_multi(&collected_data, out_path, cli, project);
     } else {
-        run_single(&slot_data, out_path, cli);
+        run_single(&slot_data, out_path, cli, project);
     }
 }
 
@@ -500,64 +497,29 @@ pub fn run_multi(data: &HashMap<String, String>, out_dir: &PathBuf, cli: &Cli, p
     });
 }
 
-pub fn run_single(slot_data: &HashMap<String, String>, out_path: &PathBuf, cli: &Cli) {
+pub fn run_single(
+    slot_data: &HashMap<String, String>,
+    out_path: &PathBuf,
+    cli: &Cli,
+    project: &Project,
+) {
     let start_time = Instant::now();
 
-    let file_contents = match fs::read_to_string(&cli.project_path) {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!(
-                "❌ {}\n{}",
-                "Error reading project file".bright_red(),
-                e.to_string().red()
-            );
-            exit(1);
-        }
-    };
-
-    let body = match parse_with_engine::<config::Config, fronma::engines::Toml>(&file_contents) {
+    let result = match project.render_single_file(slot_data) {
         Ok(result) => result,
         Err(e) => {
-            eprintln!("❌ {}\n{:#?}", "Error parsing project file".bright_red(), e);
-            exit(1);
-        }
-    }
-    .body;
-
-    let context = match tera::Context::from_serialize(slot_data) {
-        Ok(context) => context,
-        Err(e) => {
-            eprintln!(
-                "❌ {}\n{}",
-                "Error parsing context".bright_red(),
-                e.to_string().red()
-            );
+            eprintln!("❌ {}\n{}", "Error rendering template".bright_red(), e.to_string().red());
             exit(1);
         }
     };
 
-    let result = match Tera::one_off(body, &context, false) {
-        Ok(result) => result,
-        Err(e) => {
-            eprintln!(
-                "❌ {}\n{}",
-                "Error rendering template".bright_red(),
-                e.to_string().red()
-            );
-            exit(1);
-        }
-    };
-
-    match fs::write(&out_path, result.clone()) {
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!(
-                "❌ {}\n{}",
-                "Error writing output file".bright_red(),
-                e.to_string().red()
-            );
-            exit(1);
-        }
+    if let Err(e) = fs::write(out_path, &result) {
+        eprintln!(
+            "❌ {}\n{}",
+            "Error writing output file".bright_red(),
+            e.to_string().red()
+        );
+        exit(1);
     }
 
     println!(

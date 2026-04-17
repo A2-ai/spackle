@@ -4,6 +4,10 @@
 //! (`spackle.toml` plus template/regular files) to a temp directory so each
 //! test scenario is self-contained and readable top-to-bottom.
 
+// Rust compiles this module separately for each integration test binary,
+// so helpers used by one binary but not another look like dead code.
+#![allow(dead_code)]
+
 use std::{fs, path::PathBuf};
 
 use tempfile::TempDir;
