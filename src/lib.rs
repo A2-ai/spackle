@@ -1,8 +1,9 @@
 use std::{
     collections::HashMap,
-    fmt::Display,
     path::{Path, PathBuf},
 };
+#[cfg(not(target_arch = "wasm32"))]
+use std::fmt::Display;
 
 use template::RenderedFile;
 use thiserror::Error;
@@ -13,12 +14,28 @@ use tokio_stream::Stream;
 use users::User;
 
 pub mod config;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
 pub mod copy;
 pub mod hook;
 pub mod needs;
 pub mod slot;
 pub mod template;
+
+#[cfg(any(feature = "wasm", feature = "wasip2"))]
+pub mod api;
+
+#[cfg(all(target_arch = "wasm32", target_os = "wasi"))]
+pub mod hook_wasip2;
+
+// cargo-component auto-generates `src/bindings.rs` from `wit/spackle.wit`.
+// Only the wasip2 build uses it; on other targets the file is present
+// but not referenced.
+#[cfg(feature = "wasip2")]
+#[allow(warnings)]
+mod bindings;
+
+#[cfg(all(target_arch = "wasm32", target_os = "wasi", feature = "wasip2"))]
+mod component;
 
 #[cfg(feature = "wasm")]
 pub mod wasm;
@@ -29,7 +46,7 @@ pub enum LoadError {
     ConfigError { path: PathBuf, error: config::Error },
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
 #[derive(Error, Debug)]
 pub enum CheckError {
     #[error("Error validating template files: {0}")]
@@ -38,7 +55,7 @@ pub enum CheckError {
     SlotError(slot::Error),
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
 #[derive(Error, Debug)]
 pub enum GenerateError {
     #[error("The output directory already exists: {0}")]
@@ -84,7 +101,7 @@ impl Display for RunHooksError {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
 pub fn load_project(path: &PathBuf) -> Result<Project, LoadError> {
     let config = config::load(path).map_err(|e| LoadError::ConfigError {
         path: path.to_owned(),
@@ -126,7 +143,7 @@ impl Project {
             .into_owned();
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
     pub fn check(&self) -> Result<(), CheckError> {
         if let Err(e) = template::validate(&self.path, &self.config.slots) {
             return Err(CheckError::TemplateError(e));
@@ -142,7 +159,7 @@ impl Project {
     /// Generates a filled directory from the specified spackle project.
     ///
     /// out_dir is the path to what will become the filled directory
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
     pub fn generate(
         &self,
         project_dir: &PathBuf,
@@ -180,7 +197,7 @@ impl Project {
         Ok(okay_results)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
     pub fn copy_files(
         &self,
         out_dir: &Path,
@@ -193,7 +210,7 @@ impl Project {
         copy::copy(&self.path, out_dir, &self.config.ignore, &data)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
     pub fn render_templates(
         &self,
         out_dir: &Path,

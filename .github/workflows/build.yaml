@@ -86,10 +86,107 @@ jobs:
           path: dist/${{ matrix.platform }}
           retention-days: 1
 
+  # WASM artifact — built once on ubuntu, packed as an npm-style tarball
+  # so downstream repos (eventual spackle-web) can `bun add <url>` it.
+  # Uses the `nodejs` wasm-pack target since that's what a Bun server
+  # will consume; web/bundler targets are still built/smoke-tested in
+  # ci.yaml on every PR but aren't shipped as release assets yet.
+  wasm:
+    name: WASM
+    runs-on: ubuntu-latest
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Grant access to private repository
+        uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.POLYJUICE_DEPLOY_KEY }}
+
+      - name: Cache rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build WASM (nodejs target)
+        # wasm-pack emits a valid npm package.json in the output dir —
+        # we hand that dir to `bun pm pack` as-is.
+        run: wasm-pack build --target nodejs --out-dir dist-wasm/pkg --features wasm
+
+      - name: Pack WASM tarball
+        run: |
+          cd dist-wasm/pkg
+          bun pm pack --destination ..
+          ls -la ..
+
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: wasm
+          path: dist-wasm/spackle-*.tgz
+          retention-days: 1
+
+  # WASI Preview 2 component — smoke test only for now. The artifact isn't
+  # attached to releases yet (shape still settling; see WASM.md). This job
+  # proves the cargo-component build + jco transpile still produce a
+  # working wasip2 artifact on every PR.
+  wasip2:
+    name: WASIP2
+    runs-on: ubuntu-latest
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Grant access to private repository
+        uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.POLYJUICE_DEPLOY_KEY }}
+
+      - name: Cache rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Add wasm32-wasip2 target
+        run: rustup target add wasm32-wasip2
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install cargo-component
+        run: cargo binstall -y cargo-component
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install just
+        uses: extractions/setup-just@v3
+
+      - name: Run wasip2 smoke tests (Node reference)
+        run: just test-wasip2
+
+      # Bun path uses --no-wasi-shim jco output + custom WASI shim.
+      # Runs 6 component smoke tests + shim containment unit tests +
+      # `bun build --compile` smoke (the compile check catches asset-
+      # embedding drift that `bun run` alone would miss).
+      - name: Run wasip2 smoke tests (Bun reference + compile-mode)
+        run: just test-wasip2-bun
+
   # Merge step - combine artifacts and create release
   release:
     name: Release
-    needs: prepare
+    needs: [prepare, wasm]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -115,8 +212,16 @@ jobs:
             fi
           done
 
+      # Download the WASM tarball into the path goreleaser's
+      # `release.extra_files` glob expects (./dist-wasm/spackle-*.tgz).
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: wasm
+          path: dist-wasm
+
       - name: List artifact files
-        run: find dist -type f | sort
+        run: find dist dist-wasm -type f | sort
 
       - name: Generate tap token
         if: inputs.release == true

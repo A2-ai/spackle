@@ -4,3 +4,6 @@ render
 # WASM PoC
 poc/node_modules
 poc/output
+poc/pkg
+poc/wasip2-pkg
+poc/wasip2-pkg-no-shim

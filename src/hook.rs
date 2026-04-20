@@ -90,7 +90,7 @@ impl Needy for Hook {
 }
 
 impl Hook {
-    fn evaluate_conditional(
+    pub(crate) fn evaluate_conditional(
         &self,
         context: &HashMap<String, String>,
     ) -> Result<bool, ConditionalError> {

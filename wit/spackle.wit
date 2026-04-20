@@ -1,0 +1,71 @@
+package a2ai:spackle;
+
+/// Host-provided capabilities. The component imports these and the
+/// TypeScript harness implements them (subprocess spawn via Bun.spawn).
+interface host {
+    record command-result {
+        stdout: list<u8>,
+        stderr: list<u8>,
+        exit-code: s32,
+    }
+
+    /// Run a command synchronously on behalf of the component.
+    /// `args` is a list of arguments (not including the command itself).
+    /// `env` is a list of (name, value) pairs — merged with the host
+    /// process's environment by the host implementation.
+    run-command: func(
+        cmd: string,
+        args: list<string>,
+        cwd: string,
+        env: list<tuple<string, string>>,
+    ) -> result<command-result, string>;
+}
+
+/// Primary contract exported to the host. All payloads are JSON strings
+/// so the component can evolve its schemas without churning the WIT.
+interface api {
+    /// Validate a project directory: parses spackle.toml, checks slot
+    /// config, validates template references against slot keys.
+    ///
+    /// Returns JSON:
+    ///   on success: `{ "valid": true, "config": { "name", "ignore", "slots", "hooks" } }`
+    ///   on failure: `{ "valid": false, "errors": ["..."] }`
+    ///
+    /// Including the parsed config on success lets the host render forms
+    /// and pre-validate slot values without parsing TOML itself.
+    check: func(project-dir: string) -> string;
+
+    /// Validate slot data against the config loaded from `project-dir`.
+    ///
+    /// `slot-data-json` is a JSON object of `{ slot_key: string_value }`.
+    ///
+    /// Returns JSON:
+    ///   `{ "valid": true }` or `{ "valid": false, "errors": ["..."] }`
+    validate-slot-data: func(project-dir: string, slot-data-json: string) -> string;
+
+    /// Generate a filled project directory at `out-dir`.
+    ///
+    /// Requires:
+    ///   - `project-dir` readable under the WASI preopen grant
+    ///   - `out-dir` NOT to exist — it is created from scratch (matches
+    ///     native `Project::generate` semantics)
+    ///   - `slot-data-json` to validate against the project's slot config
+    ///     (caller should have run `validate-slot-data` first)
+    ///   - `run-hooks = true` causes post-generation hooks to be executed
+    ///     via the host-imported `run-command` function
+    ///
+    /// Returns JSON:
+    ///   `{ "ok": true, "rendered": [...], "hook_results": [...] }`
+    ///   `{ "ok": false, "error": "..." }`
+    generate: func(
+        project-dir: string,
+        out-dir: string,
+        slot-data-json: string,
+        run-hooks: bool,
+    ) -> string;
+}
+
+world spackle {
+    import host;
+    export api;
+}

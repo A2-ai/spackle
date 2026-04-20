@@ -8,6 +8,7 @@
     "demo": "bun scripts/demo.ts"
   },
   "devDependencies": {
+    "@bytecodealliance/jco": "^1.18.0",
     "@types/bun": "latest",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0"

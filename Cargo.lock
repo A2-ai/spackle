@@ -2086,6 +2086,7 @@ dependencies = [
  "users",
  "walkdir",
  "wasm-bindgen",
+ "wit-bindgen-rt",
 ]
 
 [[package]]
@@ -2953,6 +2954,15 @@ dependencies = [
  "anyhow",
  "heck",
  "wit-parser",
+]
+
+[[package]]
+name = "wit-bindgen-rt"
+version = "0.44.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "653c85dd7aee6fe6f4bded0d242406deadae9819029ce6f7d258c920c384358a"
+dependencies = [
+ "bitflags",
 ]
 
 [[package]]
