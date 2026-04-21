@@ -8,6 +8,33 @@ on:
   pull_request:
 
 jobs:
+  format-lint:
+    name: Format and Lint
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+
+      - name: TS Typecheck
+        run: bun run typecheck
+
+      - name: TS Lint
+        run: bun run lint
+
+      - name: TS Format check
+        run: bun run fmt:check
+
+      - name: TS Test
+        run: bun run test
+
+      - name: Rust Format check
+        run: cargo fmt --check
+
+      - name: Rust Clippy
+        run: cargo clippy --workspace
+
   test:
     name: Test
     runs-on: ubuntu-latest
