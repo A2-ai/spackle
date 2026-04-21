@@ -347,4 +347,178 @@ mod tests {
         assert!(dirs.contains(&"sub".to_string()));
         assert!(dirs.contains(&"sub/also-empty".to_string()));
     }
+
+    // --- soundness of individual FileSystem methods ---
+
+    #[test]
+    fn read_file_missing_errors() {
+        let fs = MemoryFs::new();
+        let err = fs.read_file(Path::new("/nope")).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn write_file_overwrites_existing() {
+        let fs = MemoryFs::new();
+        fs.create_dir_all(Path::new("/d")).unwrap();
+        fs.write_file(Path::new("/d/x"), b"first").unwrap();
+        fs.write_file(Path::new("/d/x"), b"second").unwrap();
+        assert_eq!(fs.read_file(Path::new("/d/x")).unwrap(), b"second");
+    }
+
+    #[test]
+    fn copy_file_roundtrip() {
+        let fs = MemoryFs::new();
+        fs.create_dir_all(Path::new("/a")).unwrap();
+        fs.create_dir_all(Path::new("/b")).unwrap();
+        fs.write_file(Path::new("/a/src"), b"hello").unwrap();
+
+        fs.copy_file(Path::new("/a/src"), Path::new("/b/dst")).unwrap();
+        assert_eq!(fs.read_file(Path::new("/b/dst")).unwrap(), b"hello");
+        // Source survives — this is a copy, not a move.
+        assert_eq!(fs.read_file(Path::new("/a/src")).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn copy_file_missing_source_errors() {
+        let fs = MemoryFs::new();
+        fs.create_dir_all(Path::new("/b")).unwrap();
+        let err = fs
+            .copy_file(Path::new("/nowhere"), Path::new("/b/dst"))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn copy_file_missing_destination_parent_errors() {
+        let fs = MemoryFs::new();
+        fs.create_dir_all(Path::new("/a")).unwrap();
+        fs.write_file(Path::new("/a/src"), b"x").unwrap();
+        let err = fs
+            .copy_file(Path::new("/a/src"), Path::new("/missing-parent/dst"))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn list_dir_missing_errors() {
+        let fs = MemoryFs::new();
+        let err = fs.list_dir(Path::new("/absent")).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn list_dir_empty_dir_returns_empty() {
+        let fs = MemoryFs::new();
+        fs.create_dir_all(Path::new("/empty")).unwrap();
+        assert!(fs.list_dir(Path::new("/empty")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn stat_file_returns_byte_size() {
+        let fs = MemoryFs::new();
+        fs.create_dir_all(Path::new("/d")).unwrap();
+        fs.write_file(Path::new("/d/f"), b"abcdef").unwrap();
+        let st = fs.stat(Path::new("/d/f")).unwrap();
+        assert_eq!(st.file_type, FileType::File);
+        assert_eq!(st.size, 6);
+    }
+
+    #[test]
+    fn stat_dir_returns_directory_type() {
+        let fs = MemoryFs::new();
+        fs.create_dir_all(Path::new("/d/sub")).unwrap();
+        let st = fs.stat(Path::new("/d/sub")).unwrap();
+        assert_eq!(st.file_type, FileType::Directory);
+    }
+
+    // --- bundle helpers under edge conditions ---
+
+    #[test]
+    fn from_bundle_empty_produces_empty_fs() {
+        let fs = MemoryFs::from_bundle(vec![]);
+        assert!(fs.into_bundle().is_empty());
+    }
+
+    #[test]
+    fn into_bundle_is_sorted_by_path() {
+        let fs = MemoryFs::from_bundle(vec![
+            BundleEntry {
+                path: "/zzz".into(),
+                bytes: b"z".to_vec(),
+            },
+            BundleEntry {
+                path: "/aaa".into(),
+                bytes: b"a".to_vec(),
+            },
+            BundleEntry {
+                path: "/mmm".into(),
+                bytes: b"m".to_vec(),
+            },
+        ]);
+        let out = fs.into_bundle();
+        assert_eq!(
+            out.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(),
+            vec!["/aaa", "/mmm", "/zzz"]
+        );
+    }
+
+    #[test]
+    fn drain_subtree_with_no_matches_returns_empty() {
+        let fs = MemoryFs::from_bundle(vec![BundleEntry {
+            path: "/project/a.txt".into(),
+            bytes: b"a".to_vec(),
+        }]);
+        let (files, dirs) = fs.drain_subtree(Path::new("/nothing-here"));
+        assert!(files.is_empty());
+        assert!(dirs.is_empty());
+    }
+
+    // --- end-to-end: drive spackle::Project::generate through MemoryFs ---
+    //
+    // Core generation logic (copy, template::fill, config::load) is already
+    // covered by `cargo test -p spackle`. This test just confirms MemoryFs
+    // satisfies the `FileSystem` contract closely enough that a real
+    // end-to-end generate succeeds and produces the expected output.
+
+    #[test]
+    fn end_to_end_generate_against_memory_fs() {
+        use std::collections::HashMap;
+
+        let project_toml = br#"name = "demo"
+[[slots]]
+key = "name"
+type = "String"
+"#;
+        let template = b"hello from {{ name }}\n";
+
+        let fs = MemoryFs::from_bundle(vec![
+            BundleEntry {
+                path: "/project/spackle.toml".into(),
+                bytes: project_toml.to_vec(),
+            },
+            BundleEntry {
+                path: "/project/{{name}}.txt.j2".into(),
+                bytes: template.to_vec(),
+            },
+        ]);
+
+        let project_dir = PathBuf::from("/project");
+        let out_dir = PathBuf::from("/output");
+
+        let project = spackle::load_project(&fs, &project_dir).expect("load_project");
+        project.check(&fs).expect("check passes");
+
+        let data = HashMap::from([("name".to_string(), "world".to_string())]);
+        project
+            .generate(&fs, &project_dir, &out_dir, &data)
+            .expect("generate succeeds");
+
+        let (files, _dirs) = fs.drain_subtree(&out_dir);
+        let rendered = files
+            .iter()
+            .find(|e| e.path == "world.txt")
+            .expect("output file at rendered path 'world.txt'");
+        assert_eq!(rendered.bytes, b"hello from world\n");
+    }
 }
