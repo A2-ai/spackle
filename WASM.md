@@ -1,6 +1,6 @@
 # Spackle WASM — contributor architecture
 
-Internal notes for people modifying the wasm path. Consumer-facing docs live under [`/docs/wasm/`](docs/wasm/).
+Internal notes for people modifying the wasm path. Consumer-facing docs live under [`/docs/ts/`](docs/wasm/).
 
 For the running implementation log, see [`SUMMARY.md`](SUMMARY.md).
 
@@ -8,11 +8,11 @@ For the running implementation log, see [`SUMMARY.md`](SUMMARY.md).
 
 ## One-paragraph architecture
 
-`crates/spackle-wasm/` is a `cdylib` crate that depends on `spackle` via path. It exposes three `#[wasm_bindgen]` functions — `check`, `validate_slot_data`, `generate` — that take a **project bundle** (`Array<{path, bytes: Uint8Array}>`), hydrate an in-process `MemoryFs` from it, run the requested operation against that fs through the generic `spackle::fs::FileSystem` trait, and return a serialized result. `generate` additionally returns an output bundle. Rust never touches the host filesystem; the TS host (`wasm/`) reads projects into bundles and writes output bundles back to disk on its side. Fundamentally: Rust is a pure compute step.
+`crates/spackle-wasm/` is a `cdylib` crate that depends on `spackle` via path. It exposes three `#[wasm_bindgen]` functions — `check`, `validate_slot_data`, `generate` — that take a **project bundle** (`Array<{path, bytes: Uint8Array}>`), hydrate an in-process `MemoryFs` from it, run the requested operation against that fs through the generic `spackle::fs::FileSystem` trait, and return a serialized result. `generate` additionally returns an output bundle. Rust never touches the host filesystem; the TS host (`ts/`) reads projects into bundles and writes output bundles back to disk on its side. Fundamentally: Rust is a pure compute step.
 
 ```
 ┌───────────────────────────────────────────────────────┐
-│  TS host  (wasm/src/)                                 │
+│  TS host  (ts/src/)                                   │
 │                                                       │
 │  DiskFs   — readProject(dir) → Bundle                 │
 │           — writeOutput(dir, Bundle)                  │
@@ -57,12 +57,12 @@ spackle/
 │   └── spackle-wasm/        # cdylib, wasm-bindgen exports + MemoryFs
 │       ├── src/lib.rs       # three #[wasm_bindgen] exports + init
 │       └── src/memory_fs.rs # MemoryFs impls spackle::fs::FileSystem
-├── wasm/                    # @a2-ai/spackle npm package
+├── ts/                      # @a2-ai/spackle npm-shaped TS package
 │   ├── src/                 # TS orchestration + host helpers
 │   ├── tests/               # bun test (end-to-end via pkg/nodejs)
 │   ├── scripts/             # build.ts, demo.ts
 │   └── pkg/                 # wasm-pack outputs (nodejs, web, bundler)
-├── docs/wasm/               # consumer-facing docs
+├── docs/ts/                 # consumer-facing docs
 ├── examples/                # one full bun-script + framework stubs
 └── tests/                   # Rust integration + fixtures/
 ```
@@ -88,26 +88,26 @@ cargo test --workspace
 # Build the wasm crate for inspection (outputs /tmp/smoke).
 wasm-pack build crates/spackle-wasm --target nodejs --out-dir /tmp/smoke
 
-# Full wasm package build — all three targets into wasm/pkg/{nodejs,web,bundler}.
-cd wasm && bun run scripts/build.ts
+# Full TS package build — all three wasm-pack targets into ts/pkg/{nodejs,web,bundler}.
+cd ts && bun run scripts/build.ts
 
 # Bun test suite against the nodejs-target output.
-cd wasm && bun test
+cd ts && bun test
 ```
 
 ---
 
 ## Adding a new wasm-pack target
 
-`wasm/scripts/build.ts` iterates a hard-coded array of targets. Add the new target to that array; the generated `pkg/<target>/` dir is automatically gitignored. To expose it as a subpath export, add it to `wasm/package.json`'s `exports` map (`./pkg/<target>: "./pkg/<target>/spackle_wasm.js"`).
+`ts/scripts/build.ts` iterates a hard-coded array of targets. Add the new target to that array; the generated `pkg/<target>/` dir is automatically gitignored. To expose it as a subpath export, add it to `ts/package.json`'s `exports` map (`./pkg/<target>: "./pkg/<target>/spackle_wasm.js"`).
 
-Consumer-facing guidance on which target to pick lives in [`/docs/wasm/runtime-targets.md`](docs/wasm/runtime-targets.md).
+Consumer-facing guidance on which target to pick lives in [`/docs/ts/runtime-targets.md`](docs/wasm/runtime-targets.md).
 
 ---
 
 ## Hooks — deferred
 
-Hook *planning* (`spackle::hook::evaluate_hook_plan`) is pure and lives in the core crate. Hook *execution* requires spawning subprocesses, which needs a host-side bridge (the same shape as a future `JsHooks` callback adapter). Not wired in this milestone: `generate(..., runHooks=true)` returns `{ ok: false, error: "hooks are unsupported in this milestone" }`. The placeholder JS types live in [`wasm/src/host/hooks.ts`](wasm/src/host/hooks.ts).
+Hook *planning* (`spackle::hook::evaluate_hook_plan`) is pure and lives in the core crate. Hook *execution* requires spawning subprocesses, which needs a host-side bridge (the same shape as a future `JsHooks` callback adapter). Not wired in this milestone: `generate(..., runHooks=true)` returns `{ ok: false, error: "hooks are unsupported in this milestone" }`. The placeholder JS types live in [`ts/src/host/hooks.ts`](ts/src/host/hooks.ts).
 
 ---
 

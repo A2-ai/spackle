@@ -19,7 +19,7 @@ That executor needs its own bridge (a future `JsHooks` analogue of the `SpackleF
 ## What's in the repo today
 
 - `spackle::hook::evaluate_hook_plan` — pure hook *planning* (expanding templates against slot data, resolving `if` conditionals, computing `needs`) lives in the core crate and is already callable from wasm if we expose it. No execution, no side effects.
-- `wasm/src/host/hooks.ts` — placeholder types (`SpackleHooks` interface, `HookResult`, `throwUnsupportedHooks()` helper). Reserved for when the bridge lands.
+- `ts/src/host/hooks.ts` — placeholder types (`SpackleHooks` interface, `HookResult`, `throwUnsupportedHooks()` helper). Reserved for when the bridge lands.
 
 ## What it will look like
 

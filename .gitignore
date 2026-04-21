@@ -2,10 +2,10 @@ target
 render
 
 # WASM package outputs (wasm-pack, tsc, bun).
-wasm/node_modules
-wasm/output
-wasm/pkg
-wasm/dist
+ts/node_modules
+ts/output
+ts/pkg
+ts/dist
 
 # Example workspaces
 examples/**/node_modules

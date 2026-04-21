@@ -50,7 +50,7 @@ release:
   # Scoped packages get their `/` rewritten to `-` by `bun pm pack`, so
   # the produced filename is `a2-ai-spackle-<version>.tgz`.
   extra_files:
-    - glob: ./dist-wasm/*.tgz
+    - glob: ./dist-ts/*.tgz
 
 homebrew_casks:
   - ids:

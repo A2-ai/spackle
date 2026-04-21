@@ -63,27 +63,27 @@ jobs:
       # wrapper imports eagerly from pkg/nodejs/); web and bundler are
       # compile-smokes until a browser/bundler example exercises them.
       - name: Build WASM (nodejs) for bun test
-        run: wasm-pack build crates/spackle-wasm --target nodejs --out-dir ../../wasm/pkg/nodejs
+        run: wasm-pack build crates/spackle-wasm --target nodejs --out-dir ../../ts/pkg/nodejs
       - name: Build WASM (web) smoke
-        run: wasm-pack build crates/spackle-wasm --target web --out-dir ../../wasm/pkg/web
+        run: wasm-pack build crates/spackle-wasm --target web --out-dir ../../ts/pkg/web
       - name: Build WASM (bundler) smoke
-        run: wasm-pack build crates/spackle-wasm --target bundler --out-dir ../../wasm/pkg/bundler
+        run: wasm-pack build crates/spackle-wasm --target bundler --out-dir ../../ts/pkg/bundler
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
       - name: Install bun deps
-        working-directory: wasm
+        working-directory: ts
         run: bun install --frozen-lockfile
 
       - name: Run bun test
-        working-directory: wasm
+        working-directory: ts
         run: bun test
 
       - name: Type-check wasm package
-        working-directory: wasm
+        working-directory: ts
         run: bunx tsc --noEmit
 
       - name: Build TS dist (typings)
-        working-directory: wasm
+        working-directory: ts
         run: bunx tsc -p tsconfig.build.json

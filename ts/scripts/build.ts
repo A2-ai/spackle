@@ -6,17 +6,17 @@
 //              For browsers that fetch the `.wasm` file directly.
 // - bundler  — ESM, delegates wasm loading to the bundler (webpack, vite).
 //
-// Output lands in `wasm/pkg/<target>/` (gitignored). Shipping all three
+// Output lands in `ts/pkg/<target>/` (gitignored). Shipping all three
 // lets consumers import `@a2-ai/spackle/pkg/<t>` matching their runtime.
 //
-// Run: `cd wasm && bun run scripts/build.ts` (or `just build-wasm`).
+// Run: `cd ts && bun run scripts/build.ts` (or `just build-wasm`).
 
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
-const WASM_DIR = join(import.meta.dir, "..");
-const CRATE = join(WASM_DIR, "..", "crates", "spackle-wasm");
-const PKG_ROOT = join(WASM_DIR, "pkg");
+const TS_DIR = join(import.meta.dir, "..");
+const CRATE = join(TS_DIR, "..", "crates", "spackle-wasm");
+const PKG_ROOT = join(TS_DIR, "pkg");
 
 const targets = ["nodejs", "web", "bundler"] as const;
 

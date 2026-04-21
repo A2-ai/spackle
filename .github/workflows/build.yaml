@@ -114,38 +114,38 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
-      # Build all three wasm-pack targets into wasm/pkg/ (matches the
+      # Build all three wasm-pack targets into ts/pkg/ (matches the
       # shape the published npm package uses at runtime).
       - name: Build WASM (nodejs)
-        run: wasm-pack build crates/spackle-wasm --target nodejs --out-dir ../../wasm/pkg/nodejs
+        run: wasm-pack build crates/spackle-wasm --target nodejs --out-dir ../../ts/pkg/nodejs
       - name: Build WASM (web)
-        run: wasm-pack build crates/spackle-wasm --target web --out-dir ../../wasm/pkg/web
+        run: wasm-pack build crates/spackle-wasm --target web --out-dir ../../ts/pkg/web
       - name: Build WASM (bundler)
-        run: wasm-pack build crates/spackle-wasm --target bundler --out-dir ../../wasm/pkg/bundler
+        run: wasm-pack build crates/spackle-wasm --target bundler --out-dir ../../ts/pkg/bundler
 
-      - name: Install wasm TS deps
-        working-directory: wasm
+      - name: Install TS deps
+        working-directory: ts
         run: bun install --frozen-lockfile
 
       - name: Emit TS dist
-        working-directory: wasm
+        working-directory: ts
         run: bunx tsc -p tsconfig.build.json
 
       # Pack the whole wasm package (src, dist, pkg, README) into an
       # npm-style tarball. `.npmignore` excludes tests / scripts /
       # tsconfig / lockfile.
-      - name: Pack WASM tarball
+      - name: Pack TS tarball
         run: |
-          mkdir -p dist-wasm
-          cd wasm
-          bun pm pack --destination ../dist-wasm
-          ls -la ../dist-wasm
+          mkdir -p dist-ts
+          cd ts
+          bun pm pack --destination ../dist-ts
+          ls -la ../dist-ts
 
-      - name: Upload WASM artifact
+      - name: Upload TS artifact
         uses: actions/upload-artifact@v7
         with:
-          name: wasm
-          path: dist-wasm/*.tgz
+          name: ts
+          path: dist-ts/*.tgz
           retention-days: 1
 
   # Merge step - combine artifacts and create release
@@ -178,15 +178,15 @@ jobs:
           done
 
       # Download the WASM tarball into the path goreleaser's
-      # `release.extra_files` glob expects (./dist-wasm/spackle-*.tgz).
-      - name: Download WASM artifact
+      # `release.extra_files` glob expects (./dist-ts/spackle-*.tgz).
+      - name: Download TS artifact
         uses: actions/download-artifact@v8
         with:
-          name: wasm
-          path: dist-wasm
+          name: ts
+          path: dist-ts
 
       - name: List artifact files
-        run: find dist dist-wasm -type f | sort
+        run: find dist dist-ts -type f | sort
 
       - name: Generate tap token
         if: inputs.release == true
