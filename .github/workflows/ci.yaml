@@ -54,14 +54,16 @@ jobs:
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
-      # Build all three release targets so nodejs/bundler can't silently
-      # break while only `web` is exercised by bun test. `web` lands in
-      # poc/pkg so the tests can pick it up; the other two build into
-      # throwaway dirs purely to catch compile failures.
-      - name: Build WASM (web) for bun test
-        run: wasm-pack build --target web --out-dir poc/pkg --features wasm
-      - name: Build WASM (nodejs) smoke
-        run: wasm-pack build --target nodejs --out-dir /tmp/spackle-wasm-nodejs --features wasm
+      # Build all three release targets so nodejs/web/bundler can't
+      # silently break. `nodejs` lands in poc/pkg because `wasm/index.ts`
+      # imports eagerly (the nodejs target instantiates at import time —
+      # web/bundler require an async init step and would crash under
+      # bun test without it). The other two build into throwaway dirs
+      # purely to catch compile regressions.
+      - name: Build WASM (nodejs) for bun test
+        run: wasm-pack build --target nodejs --out-dir poc/pkg --features wasm
+      - name: Build WASM (web) smoke
+        run: wasm-pack build --target web --out-dir /tmp/spackle-wasm-web --features wasm
       - name: Build WASM (bundler) smoke
         run: wasm-pack build --target bundler --out-dir /tmp/spackle-wasm-bundler --features wasm
 
@@ -79,19 +81,3 @@ jobs:
       - name: Type-check poc
         working-directory: poc
         run: bunx tsc --noEmit
-
-      # Import-smoke the nodejs target via Bun — catches runtime-import
-      # breakage (wrong shape of exported __wbg_init, etc.) even though
-      # we don't run the full bun test against that target. Rebuilds are
-      # free because wasm-pack ran above.
-      - name: Smoke-test nodejs target from Bun
-        run: |
-          cat > /tmp/nodejs-smoke.mjs <<'EOF'
-          import { parse_config, get_output_name } from "/tmp/spackle-wasm-nodejs/spackle.js";
-          const cfg = JSON.parse(parse_config('name = "smoke"'));
-          if (cfg.name !== "smoke") throw new Error("parse_config failed: " + JSON.stringify(cfg));
-          const name = JSON.parse(get_output_name("/tmp/my-out"));
-          if (name !== "my-out") throw new Error("get_output_name failed: " + name);
-          console.log("nodejs target smoke test passed");
-          EOF
-          bun /tmp/nodejs-smoke.mjs
