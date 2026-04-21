@@ -26,34 +26,37 @@ wasm = [
 colored = "3.1.1"
 fronma = { version = "0.2.0", features = ["toml"] }
 serde = { version = "1.0.228", features = ["derive"] }
+# Used by `src/wasm.rs` for JSON response encoding. Tiny dep; compiled
+# even on native builds so the helpers that serialize `Config` for the
+# wasm path don't need feature-gating.
+serde_json = "1.0"
 strum_macros = "0.28.0"
 thiserror = "2.0.18"
 toml = "1.1.2"
-tracing = "0.1.44"
-# Used by `src/api.rs` (JSON-in/JSON-out helpers consumed by wasm.rs).
-# Always compiled; tiny dep, not worth feature-gating.
-serde_json = "1.0"
-# wasm-bindgen integration (enabled by `wasm` feature). `js-sys` is the
-# runtime dep used by `src/wasm_fs.rs` for the `JsFs` adapter bridge.
+# wasm-bindgen integration (enabled by `wasm` feature). `js-sys` is
+# used by `src/wasm_fs.rs` for the `JsFs` adapter bridge.
 wasm-bindgen = { version = "0.2", optional = true }
 js-sys = { version = "0.3", optional = true }
 serde-wasm-bindgen = { version = "0.6", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 
 # Native-only — these require OS APIs that wasm32 doesn't have.
-# `StdFs` (in src/fs.rs) and the CLI both depend on them.
+# Used by native hook execution (`hook::run_hooks_stream`) and `StdFs`.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 async-process = "2.5.0"
 async-stream = "0.3.6"
-getrandom = { version = "0.4.2", features = ["wasm_js"] }
 polyjuice = { git = "https://github.com/a2-ai/polyjuice", tag = "v0.1.0" }
-tempdir = "0.3.7"
 tera = "1.20.1"
 tokio = { version = "1.52.0", features = ["macros", "rt", "rt-multi-thread"] }
 tokio-stream = "0.1.18"
-tracing-subscriber = "0.3.23"
 users = "0.11.0"
-walkdir = "2.5.0"
+
+[dev-dependencies]
+insta = "1"
+tempfile = "3"
+# Used by the integration-test harness in `tests/common/` for walking
+# generated output trees. Not imported by lib code.
+walkdir = "2"
 
 # wasm32-unknown-unknown (wasm-bindgen primary path).
 # - Full tera (builtins on — matches native behavior).

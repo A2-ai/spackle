@@ -125,7 +125,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     #[cfg(not(target_arch = "wasm32"))]
-    use tempdir::TempDir;
+    use tempfile::TempDir;
 
     use super::*;
     use crate::fs::StdFs;
@@ -133,11 +133,12 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn load_empty() {
-        let dir = TempDir::new().unwrap();
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
 
         std::fs::write(dir.join("spackle.toml"), "").unwrap();
 
-        let result = load_dir(&StdFs::new(), &dir);
+        let result = load_dir(&StdFs::new(), dir);
 
         assert!(result.is_ok());
     }

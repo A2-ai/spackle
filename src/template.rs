@@ -275,61 +275,12 @@ pub fn validate<F: FileSystem>(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(not(target_arch = "wasm32"))]
-    use tempdir::TempDir;
-
     use super::*;
 
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn fill_proj1() {
-        let dir = TempDir::new("spackle").unwrap().into_path();
-
-        let result = fill(
-            &crate::fs::StdFs::new(),
-            &PathBuf::from("tests/data/proj1"),
-            &dir.join("proj1_filled"),
-            &HashMap::from([
-                ("person_name".to_string(), "Joe Bloggs".to_string()),
-                ("person_age".to_string(), "42".to_string()),
-                ("file_name".to_string(), "main".to_string()),
-            ]),
-        );
-
-        println!("{:?}", result);
-
-        assert!(result.is_ok());
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn validate_dir_proj1() {
-        let result = validate(
-            &crate::fs::StdFs::new(),
-            &PathBuf::from("tests/data/proj1"),
-            &vec![Slot {
-                key: "defined_field".to_string(),
-                ..Default::default()
-            }],
-        );
-
-        assert!(result.is_err());
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn validate_dir_proj2() {
-        let result = validate(
-            &crate::fs::StdFs::new(),
-            &PathBuf::from("tests/data/proj2"),
-            &vec![Slot {
-                key: "defined_field".to_string(),
-                ..Default::default()
-            }],
-        );
-
-        assert!(result.is_ok());
-    }
+    // Disk-backed end-to-end coverage for `fill` + `validate` lives in
+    // `tests/templating.rs` against `tests/fixtures/basic_project` — it's
+    // thorough enough that duplicating it here (against private mirror
+    // fixtures) just adds drift risk.
 
     // --- Table-driven tests for in-memory functions ---
 

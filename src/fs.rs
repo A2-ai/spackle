@@ -3,9 +3,9 @@
 //! All fs operations in spackle's core go through the `FileSystem` trait
 //! so the crate isn't pinned to `std::fs`. Two in-tree implementations:
 //!
-//!   - [`StdFs`] — wraps `std::fs` + `walkdir::WalkDir`. Native-only
-//!     (cfg-gated to `not(target_arch = "wasm32")`). Used by the
-//!     CLI and by any Rust code running outside wasm.
+//!   - [`StdFs`] — wraps `std::fs`. Native-only (cfg-gated to
+//!     `not(target_arch = "wasm32")`). Used by the CLI and by any
+//!     Rust code running outside wasm.
 //!   - [`MockFs`] — in-memory, for unit tests that don't want a tmpdir.
 //!
 //! For wasm builds the adapter is [`crate::wasm_fs::JsFs`] (cfg-gated
@@ -97,7 +97,7 @@ fn walk_inner<F: FileSystem + ?Sized>(
     Ok(())
 }
 
-// --- StdFs: std::fs + walkdir backend ---
+// --- StdFs: std::fs backend ---
 //
 // Native-only. wasm32 builds never include StdFs — they use `JsFs`
 // (see `src/wasm_fs.rs`) which delegates fs operations to a host-
@@ -112,11 +112,11 @@ mod std_fs {
     use super::*;
     use std::fs;
 
-    /// Native filesystem backend wrapping `std::fs` + `walkdir`. Not
-    /// compiled for wasm targets — wasm builds use
-    /// [`crate::wasm_fs::JsFs`] which delegates fs operations to a JS
-    /// adapter. That keeps `std::fs` (and any transitive fs-ish imports)
-    /// out of the wasm binary entirely.
+    /// Native filesystem backend wrapping `std::fs`. Not compiled for
+    /// wasm targets — wasm builds use [`crate::wasm_fs::JsFs`] which
+    /// delegates fs operations to a JS adapter. That keeps `std::fs`
+    /// (and any transitive fs-ish imports) out of the wasm binary
+    /// entirely.
     pub struct StdFs;
 
     impl StdFs {
@@ -406,9 +406,10 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn std_fs_stat_does_not_follow_symlinks() {
-        use tempdir::TempDir;
+        use tempfile::TempDir;
 
-        let dir = TempDir::new("spackle-stat").unwrap().into_path();
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
         let real = dir.join("real");
         std::fs::create_dir(&real).unwrap();
         let link = dir.join("link");

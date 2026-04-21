@@ -506,7 +506,8 @@ pub fn run_single(
 ) {
     let start_time = Instant::now();
 
-    let result = match project.render_single_file(slot_data) {
+    let fs = spackle::fs::StdFs::new();
+    let result = match project.render_single_file(&fs, slot_data) {
         Ok(result) => result,
         Err(e) => {
             eprintln!("❌ {}\n{}", "Error rendering template".bright_red(), e.to_string().red());

@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    io,
     path::{Path, PathBuf},
 };
 #[cfg(not(target_arch = "wasm32"))]
@@ -61,6 +62,19 @@ pub enum GenerateError {
     TemplateError(#[from] tera::Error),
     #[error("Error rendering file: {0}")]
     FileError(#[from] template::FileError),
+}
+
+/// Errors surfaced by [`Project::render_single_file`].
+#[derive(Error, Debug)]
+pub enum SingleFileError {
+    #[error("Error reading project file: {0}")]
+    Read(io::Error),
+    #[error("Error parsing project file frontmatter: {0:?}")]
+    Parse(fronma::error::Error),
+    #[error("Error serializing slot data: {0}")]
+    Context(tera::Error),
+    #[error("Error rendering template body: {0}")]
+    Render(tera::Error),
 }
 
 /// Derive a human-readable output name from `out_dir`.
@@ -215,6 +229,34 @@ impl Project {
         template::fill(fs, &self.path, out_dir, &data)
     }
 
+    /// Render a single-file (`.j2t`) project into a string.
+    ///
+    /// Single-file projects carry TOML frontmatter (delimited by `---`)
+    /// followed by a Tera template body. There's no output directory and
+    /// no `_project_name` / `_output_name` special vars — the body is
+    /// rendered purely against the passed `data`.
+    ///
+    /// Reads `self.path` through the provided `FileSystem` so the same
+    /// method works natively and in wasm (where the JS adapter supplies
+    /// the fs).
+    pub fn render_single_file<F: fs::FileSystem>(
+        &self,
+        fs: &F,
+        data: &HashMap<String, String>,
+    ) -> Result<String, SingleFileError> {
+        let bytes = fs.read_file(&self.path).map_err(SingleFileError::Read)?;
+        let file_contents = String::from_utf8(bytes).map_err(|e| {
+            SingleFileError::Read(io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+        })?;
+
+        let body = parse_with_engine::<config::Config, Toml>(&file_contents)
+            .map_err(SingleFileError::Parse)?
+            .body;
+
+        let context = Context::from_serialize(data).map_err(SingleFileError::Context)?;
+        Tera::one_off(body, &context, false).map_err(SingleFileError::Render)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub fn run_hooks_stream(
         &self,
@@ -271,39 +313,7 @@ mod tests {
         assert_eq!(get_output_name(path), "output.name");
     }
 
-    use crate::fs::StdFs;
-
-    #[test]
-    fn test_check_pass() {
-        let fs = StdFs::new();
-        let project = load_project(&fs, &PathBuf::from("tests/data/proj2")).unwrap();
-        let result = project.check(&fs);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_check_load_config_error() {
-        let fs = StdFs::new();
-        let path = PathBuf::from("tests/data/bad_config");
-        let result = load_project(&fs, &path);
-        assert!(
-            result.is_err_and(|e| matches!(e, LoadError::ConfigError { path: p, .. } if p == path))
-        );
-    }
-
-    #[test]
-    fn test_check_slot_error() {
-        let fs = StdFs::new();
-        let project = load_project(&fs, &PathBuf::from("tests/data/bad_default_slot_val")).unwrap();
-        let result = project.check(&fs);
-        assert!(result.is_err_and(|e| matches!(e, CheckError::SlotError(_))));
-    }
-
-    #[test]
-    fn test_check_template_error() {
-        let fs = StdFs::new();
-        let project = load_project(&fs, &PathBuf::from("tests/data/bad_template")).unwrap();
-        let result = project.check(&fs);
-        assert!(result.is_err_and(|e| matches!(e, CheckError::TemplateError(_))));
-    }
+    // End-to-end `load_project` + `Project::check` coverage lives in
+    // `tests/templating.rs` and `tests/single_file.rs` — those exercise
+    // the real fixture tree and the new fs-trait signatures together.
 }
