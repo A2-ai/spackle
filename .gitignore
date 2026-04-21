@@ -1,8 +1,14 @@
 target
 render
 
-# WASM poc outputs
-poc/node_modules
-poc/output
-poc/pkg
+# WASM package outputs (wasm-pack, tsc, bun).
+wasm/node_modules
+wasm/output
+wasm/pkg
+wasm/dist
+
+# Example workspaces
+examples/**/node_modules
+examples/**/output
+
 .DS_Store

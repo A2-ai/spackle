@@ -24,18 +24,6 @@ pub mod needs;
 pub mod slot;
 pub mod template;
 
-/// Pure error-kind mapping helpers for the `SpackleFs` contract.
-/// Native-testable (no js-sys); `wasm_fs.rs` uses it via the `wasm32`
-/// cfg-gated module.
-#[cfg(feature = "wasm")]
-pub mod wasm_fs_kind;
-
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub mod wasm_fs;
-
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub mod wasm;
-
 #[derive(Error, Debug)]
 pub enum LoadError {
     #[error("Error loading config from {path}: {error}")]

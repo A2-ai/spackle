@@ -1,0 +1,26 @@
+[package]
+name = "spackle-wasm"
+version = "0.0.1"
+edition = "2021"
+repository = "https://github.com/a2-ai/spackle"
+description = "wasm-bindgen surface for spackle. Bundle-in / bundle-out pure-function exports."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+spackle = { path = "../.." }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_bytes = "0.11"
+serde_json = "1.0"
+thiserror = "2.0.18"
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+serde-wasm-bindgen = "0.6"
+console_error_panic_hook = "0.1"
+
+# wasm32 toolchain bits: tera → rand transitively needs a random source;
+# on the `unknown` target only the JS shim works.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
+# Release profile is defined at the workspace root (root Cargo.toml).

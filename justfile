@@ -7,26 +7,37 @@ run *args="":
 test:
     cargo test --workspace
 
-test-wasm:
-    cargo test --workspace --features wasm
+# Smoke-compile the wasm crate on wasm32-unknown-unknown to catch
+# wasm-target regressions without running wasm-pack.
+check-wasm-target:
+    cargo build -p spackle-wasm --target wasm32-unknown-unknown
 
 install:
     cargo install --path=cli
 
-# --- WASM (wasm-bindgen primary path) ---
+# --- WASM (@a2-ai/spackle-wasm) ---
 #
-# Rust drives generation through a JS-provided `SpackleFs` adapter.
-# See `poc/src/host/{disk-fs,memory-fs,spackle-fs}.ts` for the reference
-# adapters and `src/wasm_fs.rs` for the Rust bridge.
+# `crates/spackle-wasm` is the cdylib that exposes the three bundle-in /
+# bundle-out exports. `wasm/` is the published TypeScript package that
+# wraps it. See `WASM.md` for architecture, `docs/wasm/` for consumer docs.
 
+# Build all three wasm-pack targets (nodejs, web, bundler) into
+# `wasm/pkg/<target>/`. One command; consumes the script.
 build-wasm:
-    wasm-pack build --target nodejs --out-dir poc/pkg --features wasm
+    cd wasm && bun run scripts/build.ts
 
-poc: build-wasm
-    cd poc && bun install && bun run scripts/demo.ts
+# Build the TS dist with typings. Run AFTER build-wasm since the dist
+# imports from pkg/nodejs/.
+build-wasm-ts: build-wasm
+    cd wasm && bunx tsc -p tsconfig.build.json
 
-test-poc: build-wasm
-    cd poc && bun install && bun test tests/spackle.test.ts tests/disk-fs.test.ts tests/memory-fs.test.ts
+# Run the wasm package's demo script. Builds wasm first.
+wasm-demo: build-wasm
+    cd wasm && bun install && bun run scripts/demo.ts
+
+# Run the wasm package's bun test suite. Builds wasm first.
+test-wasm-pkg: build-wasm
+    cd wasm && bun install && bun test
 
 # Legacy wasip2/component-model detour has been archived to
 # `archive/wasip2-detour/` — not built, not tested. See SUMMARY.md for

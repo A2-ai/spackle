@@ -45,10 +45,12 @@ changelog:
 release:
   prerelease: auto
   # Attach the WASM tarball built by the `wasm` job in build.yaml. The
-  # tarball is an npm-style package (wasm-pack nodejs target + `bun pm
-  # pack`) installable via: bun add <release-asset-url>
+  # tarball is an npm-style `@a2-ai/spackle-wasm` package (all three wasm-pack
+  # targets + TS dist + src) installable via: bun add <release-asset-url>
+  # Scoped packages get their `/` rewritten to `-` by `bun pm pack`, so
+  # the produced filename is `a2-ai-spackle-<version>.tgz`.
   extra_files:
-    - glob: ./dist-wasm/spackle-*.tgz
+    - glob: ./dist-wasm/*.tgz
 
 homebrew_casks:
   - ids:

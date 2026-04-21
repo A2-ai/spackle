@@ -1,0 +1,35 @@
+{
+  "name": "@a2-ai/spackle-wasm",
+  "version": "0.0.1",
+  "description": "spackle project templating, as a WebAssembly module for JS hosts.",
+  "repository": "https://github.com/a2-ai/spackle",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./pkg/nodejs": "./pkg/nodejs/spackle_wasm.js",
+    "./pkg/web": "./pkg/web/spackle_wasm.js",
+    "./pkg/bundler": "./pkg/bundler/spackle_wasm.js"
+  },
+  "files": [
+    "src",
+    "pkg",
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "build:ts": "tsc -p tsconfig.build.json",
+    "test": "bun test",
+    "demo": "bun scripts/demo.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

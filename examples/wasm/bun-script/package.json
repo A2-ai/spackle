@@ -1,0 +1,15 @@
+{
+  "name": "spackle-example-bun-script",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun generate.ts"
+  },
+  "dependencies": {
+    "@a2-ai/spackle-wasm": "file:../../../wasm"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

@@ -1,270 +1,119 @@
-# Spackle WASM architecture
+# Spackle WASM — contributor architecture
 
-Spackle compiles to `wasm32-unknown-unknown` via wasm-bindgen. A JS
-host provides a filesystem adapter implementing the `SpackleFs`
-contract; Rust uses that adapter to read config, walk templates,
-render outputs, and write generated files. The host does not pre-read
-or post-write — its only job is to back the adapter.
+Internal notes for people modifying the wasm path. Consumer-facing docs live under [`/docs/wasm/`](docs/wasm/).
 
-For a running log of how we got here (four phases of refactor), see
-[`SUMMARY.md`](SUMMARY.md). For reference adapters + runnable demo, see
-[`poc/README.md`](poc/README.md). For the in-flight spec, see
-[`plan.md`](plan.md).
+For the running implementation log, see [`SUMMARY.md`](SUMMARY.md).
 
 ---
 
-## Architecture
+## One-paragraph architecture
+
+`crates/spackle-wasm/` is a `cdylib` crate that depends on `spackle` via path. It exposes three `#[wasm_bindgen]` functions — `check`, `validate_slot_data`, `generate` — that take a **project bundle** (`Array<{path, bytes: Uint8Array}>`), hydrate an in-process `MemoryFs` from it, run the requested operation against that fs through the generic `spackle::fs::FileSystem` trait, and return a serialized result. `generate` additionally returns an output bundle. Rust never touches the host filesystem; the TS host (`wasm/`) reads projects into bundles and writes output bundles back to disk on its side. Fundamentally: Rust is a pure compute step.
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  JS host (Node or Bun)                                   │
-│                                                          │
-│  Implements SpackleFs:                                   │
-│   • readFile, writeFile, createDirAll                    │
-│   • listDir, copyFile, exists, stat                      │
-│                                                          │
-│  Reference impls in poc/src/host/:                       │
-│   • DiskFs   — local disk rooted at a workspace          │
-│   • MemoryFs — in-memory, preview/testing use            │
-└────────────┬─────────────────────────────────────────────┘
-             │  sync JS method calls
-             │  (bytes + typed errors across the bridge)
-┌────────────▼─────────────────────────────────────────────┐
-│  wasm-bindgen boundary (src/wasm.rs)                     │
-│                                                          │
-│  Exports:                                                │
-│   • check_with_fs(projectDir, fs)                        │
-│   • validate_slot_data_with_fs(projectDir, json, fs)     │
-│   • generate_with_fs(projectDir, outDir, json,           │
-│                      runHooks, fs)                       │
-│                                                          │
-│  JsFs adapter (src/wasm_fs.rs) implements                │
-│  FileSystem by calling back into the JS fs object.       │
-└────────────┬─────────────────────────────────────────────┘
-             │  FileSystem trait (core is backend-agnostic)
-┌────────────▼─────────────────────────────────────────────┐
-│  Rust core (spackle lib)                                 │
-│                                                          │
-│  Drives the whole generate flow:                         │
-│   • config::load_dir(fs, projectDir)                     │
-│   • copy::copy(fs, project, out, ignore, data)           │
-│   • template::fill(fs, project, out, data)               │
-│                                                          │
-│  Every fs op goes through the trait — fs.read_file,      │
-│  fs.write_file, fs.list_dir, etc. No std::fs in wasm.    │
-└──────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│  TS host  (wasm/src/)                                 │
+│                                                       │
+│  DiskFs   — readProject(dir) → Bundle                 │
+│           — writeOutput(dir, Bundle)                  │
+│  MemoryFs — toBundle() / fromBundle(bundle)           │
+│  (plain TS classes; not passed to wasm)               │
+└─────────────────────┬─────────────────────────────────┘
+                      │ bundle in, bundle out
+                      │ (Uint8Array across the boundary)
+┌─────────────────────▼─────────────────────────────────┐
+│  wasm-bindgen layer  (crates/spackle-wasm/src/lib.rs) │
+│                                                       │
+│  pub fn check(bundle, project_dir) -> String          │
+│  pub fn validate_slot_data(bundle, project_dir,       │
+│                             slot_data_json) -> String │
+│  pub fn generate(bundle, project_dir, out_dir,        │
+│                  slot_data_json, run_hooks)           │
+│                   -> JsValue {ok, files | error}      │
+└─────────────────────┬─────────────────────────────────┘
+                      │ MemoryFs impls FileSystem
+┌─────────────────────▼─────────────────────────────────┐
+│  spackle core  (src/)                                 │
+│                                                       │
+│  Project::{check, generate}                           │
+│  template::fill<F: FileSystem>                        │
+│  copy::copy<F: FileSystem>                            │
+│  config::load_dir<F: FileSystem>                      │
+│  slot::validate                                       │
+└───────────────────────────────────────────────────────┘
 ```
 
-**Native CLI** uses the same core with a different backend: `StdFs`
-wraps `std::fs` + `walkdir`. Selecting the backend is the only
-difference between the two deployments; generation logic is shared.
+Native CLI (`cli/`) threads `spackle::fs::StdFs` through the same core. The only difference between the CLI and wasm paths is which `FileSystem` impl is plumbed in.
 
 ---
 
-## The adapter contract (`SpackleFs`)
+## Repo layout
 
-TypeScript shape (from `poc/src/host/spackle-fs.ts`):
-
-```ts
-type SpackleFileType = "file" | "directory" | "symlink" | "other";
-
-type SpackleFsErrorKind =
-    | "not-found"
-    | "permission-denied"
-    | "already-exists"
-    | "not-a-directory"
-    | "is-a-directory"
-    | "invalid-path"
-    | "other";
-
-interface SpackleFs {
-    readFile(path: string): Uint8Array;
-    writeFile(path: string, content: Uint8Array): void;
-    createDirAll(path: string): void;
-    listDir(path: string): Array<{ name: string; type: SpackleFileType }>;
-    copyFile(src: string, dst: string): void;
-    exists(path: string): boolean;
-    stat(path: string): { type: SpackleFileType; size: number | bigint };
-}
 ```
-
-### Method semantics
-
-- **All methods are synchronous.** The bridge is built around direct
-  wasm-bindgen function calls — no `await`, no Promise. If an adapter
-  returns a Promise, `JsFs` sees the Promise object itself, not the
-  resolved value, and decoding will fail.
-- **`readFile` / `writeFile` / `copyFile`** round-trip whole files.
-  Streaming isn't supported; templates and config fit comfortably in
-  memory per-file.
-- **`createDirAll`** is recursive like `mkdir -p`. Existing target
-  is a no-op, not an error.
-- **`listDir`** returns immediate children only. Rust handles
-  recursion through `listDir` + `stat` combined.
-- **`exists`** is best-effort. Returns `false` on any error — matches
-  `Path::exists` semantics in std. Don't rely on it as a security
-  boundary; use `stat` and catch the `not-found` kind.
-- **`stat`** surfaces `file-type` and `size`. Size may be either
-  `number` or `bigint` — `JsFs` accepts both.
-
-### Error contract
-
-Adapters throw `{ kind: SpackleFsErrorKind, message: string }` on
-failure. Not a plain `Error` — the `kind` field is what Rust needs to
-map to `io::ErrorKind` via `src/wasm_fs_kind.rs`. Unknown kinds or
-untyped errors collapse to `io::ErrorKind::Other` with the stringified
-message, which works but loses the type info downstream code uses
-(`Project::generate`'s `AlreadyExists` branch, for example).
-
-Use the `fsError(kind, message)` helper exported from
-`poc/src/host/spackle-fs.ts` to construct errors with the right
-shape. Or for Node/Bun adapters, use `errorKindFromNodeCode(e.code)`
-to map `ENOENT`/`EACCES`/etc. automatically.
-
-### Path contract
-
-- **Paths are absolute strings.** Adapters reject relative paths with
-  `invalid-path`. `JsFs` never passes relative paths; the contract
-  still pins this because any host-side path sanitization needs to
-  enforce it.
-- **Containment is the adapter's responsibility.** `DiskFs` rejects
-  paths that canonicalize outside its `workspaceRoot`. Custom
-  adapters must implement their own containment semantics (or
-  decide they don't need any, like `MemoryFs`).
-- **Symlink handling.** `stat` surfaces symlinks without following
-  (`type: "symlink"`); `listDir` same. `readFile` / `writeFile`
-  follow symlinks transparently (via the underlying fs APIs). If
-  containment matters, canonicalize before the containment check.
-
-See `poc/src/host/disk-fs.ts` for a reference implementation that
-handles all of this, including the mkdir-p-aware canonicalize
-strategy flagged in SUMMARY.md as load-bearing.
+spackle/
+├── src/                     # spackle core (rlib only — no wasm deps)
+├── cli/                     # spackle-cli (uses StdFs)
+├── crates/
+│   └── spackle-wasm/        # cdylib, wasm-bindgen exports + MemoryFs
+│       ├── src/lib.rs       # three #[wasm_bindgen] exports + init
+│       └── src/memory_fs.rs # MemoryFs impls spackle::fs::FileSystem
+├── wasm/                    # @a2-ai/spackle-wasm npm package
+│   ├── src/                 # TS orchestration + host helpers
+│   ├── tests/               # bun test (end-to-end via pkg/nodejs)
+│   ├── scripts/             # build.ts, demo.ts
+│   └── pkg/                 # wasm-pack outputs (nodejs, web, bundler)
+├── docs/wasm/               # consumer-facing docs
+├── examples/                # one full bun-script + framework stubs
+└── tests/                   # Rust integration + fixtures/
+```
 
 ---
 
-## wasm exports
+## The bundle contract
 
-Three fs-backed functions plus `init`. All signatures in
-`src/wasm.rs`.
+A **bundle** is `Array<{path: string, bytes: Uint8Array}>`. Paths in an **input** bundle are absolute from the caller's virtual root (typical: `/project/spackle.toml`). Paths in the **output** bundle returned by `generate` are relative to `outDir`.
 
-### `check_with_fs(projectDir, fs)`
+Rust deserializes bundles via `serde-wasm-bindgen` into `Vec<BundleEntry>` where `BundleEntry { path: String, bytes: Vec<u8> }` is annotated with `#[serde(with = "serde_bytes")]` so the default `Serializer::new()` emits `Uint8Array` on the return trip (and accepts it on the way in).
 
-Validates a project: loads `spackle.toml`, checks slot structure,
-validates template references against slot keys.
-
-**Response:**
-
-```json
-// success
-{ "valid": true, "config": { "name": ..., "ignore": [...], "slots": [...], "hooks": [...] }, "errors": [] }
-
-// failure
-{ "valid": false, "errors": ["<error msg>", ...] }
-```
-
-The parsed config surfaces on success so UIs can render forms for
-slot data without re-parsing TOML host-side.
-
-### `validate_slot_data_with_fs(projectDir, slotDataJson, fs)`
-
-Validates submitted slot data against the project's config. Rust
-reads the config via `fs` — the host never handles TOML.
-
-**Response:**
-
-```json
-// success
-{ "valid": true }
-
-// failure
-{ "valid": false, "errors": [...] }
-```
-
-### `generate_with_fs(projectDir, outDir, slotDataJson, runHooks, fs)`
-
-Runs the full generation: loads config, walks templates, renders,
-writes rendered + copied files to `outDir`.
-
-**Response:**
-
-```json
-// success
-{ "ok": true, "rendered": [{ "original_path": "...", "rendered_path": "..." }, ...] }
-
-// failure
-{ "ok": false, "error": "<msg>" }
-```
-
-**`runHooks = true` is currently unsupported** — returns an explicit
-`{ "ok": false, "error": "hooks are unsupported in this milestone..." }`.
-See "Hooks" below for the plan.
-
-### `init()`
-
-Sets up the panic hook so wasm panics surface with useful messages in
-the host console. Called automatically on module load under
-`wasm-pack build --target nodejs`; keep calling explicitly if a
-future build uses `--target web`.
+The `MemoryFs` (in `crates/spackle-wasm/src/memory_fs.rs`) auto-creates ancestor dirs when hydrating from the bundle, so callers only need to send file entries — they don't have to enumerate directories explicitly.
 
 ---
 
-## Hooks (deferred)
+## Build + test locally
 
-Post-generation hooks (run `npm install`, `git init`, etc. after
-rendering) are not supported in the current milestone. The reason
-they're deferred, not dropped: hooks need to interact with the real
-server environment — spawn real subprocesses, touch real paths — and
-designing that interface properly requires the fs adapter model to
-settle first. Retrofitting hooks into a sandboxed Rust-side view
-(the WASI approach we set aside) creates more friction than it
-removes.
+```bash
+# Native tests (spackle + spackle-cli).
+cargo test --workspace
 
-The planned shape is a second JS-provided interface — call it
-`SpackleHooks` — that mirrors `SpackleFs` but exposes
-`runCommand(cmd, args, cwd, env) -> CommandResult`. The same
-wasm-bindgen pattern will pick it up. No ETA; the hooks milestone
-will be scoped separately when the adapter model has shaken out.
+# Build the wasm crate for inspection (outputs /tmp/smoke).
+wasm-pack build crates/spackle-wasm --target nodejs --out-dir /tmp/smoke
 
-For now: `generate_with_fs(..., runHooks = true, ...)` returns an
-explicit unsupported error. Downstream callers observe it, don't
-silently lose hooks.
+# Full wasm package build — all three targets into wasm/pkg/{nodejs,web,bundler}.
+cd wasm && bun run scripts/build.ts
+
+# Bun test suite against the nodejs-target output.
+cd wasm && bun test
+```
 
 ---
 
-## Known behavior + caveats
+## Adding a new wasm-pack target
 
-1. **`--target nodejs` has no `init()` call from the host.** wasm-pack's
-   nodejs output instantiates the wasm module eagerly at module load
-   time. The `loadSpackleWasm()` loader in `poc/src/wasm/index.ts` keeps
-   an async shape for symmetry with `--target web` output, but doesn't
-   await anything underneath.
-2. **`Path::canonicalize` is gone from the lib.** `Project::get_name`
-   and `get_output_name` use `file_stem` / `file_name` directly. If a
-   CLI caller passes a path like `.`, the output name will be `.` —
-   not the current working directory's name as it would have been
-   before. Document in the CLI if it's a problem; don't reintroduce
-   canonicalize in the lib.
-3. **`slugify` is an incidental export.** wasm-pack's bindings surface
-   `slugify` because tera pulls in the `slug` crate which has its own
-   wasm-bindgen exports. Harmless; not part of our contract.
-4. **Path encoding is UTF-8 only.** `JsFs` converts Rust `Path`s via
-   `to_string_lossy`. Non-UTF8 filenames will be mangled. Low
-   probability in template source trees; document as a known limit.
+`wasm/scripts/build.ts` iterates a hard-coded array of targets. Add the new target to that array; the generated `pkg/<target>/` dir is automatically gitignored. To expose it as a subpath export, add it to `wasm/package.json`'s `exports` map (`./pkg/<target>: "./pkg/<target>/spackle_wasm.js"`).
+
+Consumer-facing guidance on which target to pick lives in [`/docs/wasm/runtime-targets.md`](docs/wasm/runtime-targets.md).
 
 ---
 
-## Layout
+## Hooks — deferred
 
-| Path | Role |
-|---|---|
-| `src/fs.rs` | `FileSystem` trait + `StdFs` (native) + `MockFs` (tests) + `walk()` helper |
-| `src/wasm_fs.rs` | `JsFs` adapter — wasm32-only, implements `FileSystem` over a JS object |
-| `src/wasm_fs_kind.rs` | Pure error-kind mapping (native-testable) |
-| `src/wasm.rs` | wasm-bindgen exports — builds `JsFs` from the passed JS object, calls into the lib |
-| `src/{lib,config,copy,template}.rs` | Generation logic, all generic over `FileSystem` |
-| `poc/src/host/spackle-fs.ts` | Shared TS contract + error helpers |
-| `poc/src/host/disk-fs.ts` | Reference disk-backed adapter |
-| `poc/src/host/memory-fs.ts` | Reference in-memory adapter |
-| `poc/src/wasm/index.ts` | Typed wrapper around the wasm-bindgen exports |
-| `poc/src/spackle.ts` | Thin orchestrator — public entry points |
-| `archive/wasip2-detour/` | Snapshot of the abandoned wasip2/component-model approach (not built, not tested) |
+Hook *planning* (`spackle::hook::evaluate_hook_plan`) is pure and lives in the core crate. Hook *execution* requires spawning subprocesses, which needs a host-side bridge (the same shape as a future `JsHooks` callback adapter). Not wired in this milestone: `generate(..., runHooks=true)` returns `{ ok: false, error: "hooks are unsupported in this milestone" }`. The placeholder JS types live in [`wasm/src/host/hooks.ts`](wasm/src/host/hooks.ts).
+
+---
+
+## Non-obvious invariants
+
+- **No `std::fs` in the wasm binary.** `StdFs` is `#[cfg(not(target_arch = "wasm32"))]`. If something pulls `std::fs` into the wasm tree, the binary grows a WASI-fs import we'd rather avoid.
+- **`canonicalize` is gone from the lib.** `Project::get_name` and `get_output_name` use `.file_stem()` / `.file_name()` directly. `DiskFs` canonicalizes host-side for its containment check.
+- **`slugify` appears in `pkg/*/spackle_wasm.d.ts`.** Incidental export from tera's `slug` dep. Not part of our public contract; ignore.
+- **Tera builtins are fully on.** No `default-features = false` dance — the `slug` cfg collision that motivated it was resolved upstream.

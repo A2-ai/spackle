@@ -1,0 +1,93 @@
+// WASM-SIDE — thin typed wrapper over the wasm-bindgen exports.
+//
+// The wasm-pack output at `../../pkg/nodejs/spackle_wasm.js` exposes
+// three pure-function exports plus `init`. Each takes a project bundle
+// (`Array<{path, bytes: Uint8Array}>`) — no fs callbacks, no I/O; Rust
+// runs the whole generation against an in-memory fs.
+
+// wasm-pack's `--target nodejs` output instantiates the module eagerly
+// at import time (see the tail of `pkg/nodejs/spackle_wasm.js`). No init
+// step, no default export — just the named exports below.
+import {
+    check as wasm_check,
+    generate as wasm_generate,
+    validate_slot_data as wasm_validate_slot_data,
+} from "../../pkg/nodejs/spackle_wasm.js";
+import type {
+    Bundle,
+    CheckResponse,
+    GenerateResponse,
+    SlotData,
+    ValidationResponse,
+} from "./types.ts";
+
+/** Typed wrapper over the raw WASM exports. All methods are synchronous
+ * against the wasm instance; the only async step is `loadSpackleWasm()`. */
+export interface SpackleWasm {
+    check(projectBundle: Bundle, projectDir: string): CheckResponse;
+    validateSlotData(
+        projectBundle: Bundle,
+        projectDir: string,
+        slotData: SlotData,
+    ): ValidationResponse;
+    generate(
+        projectBundle: Bundle,
+        projectDir: string,
+        outDir: string,
+        slotData: SlotData,
+        runHooks: boolean,
+    ): GenerateResponse;
+}
+
+let cached: Promise<SpackleWasm> | null = null;
+
+/** Load the WASM module once per process. Subsequent calls return the
+ * same client. Safe to await concurrently. Kept async for symmetry with
+ * `--target web` output (which DOES need an explicit init), so callers
+ * can switch targets without changing the orchestration code. */
+export function loadSpackleWasm(): Promise<SpackleWasm> {
+    if (!cached) cached = initialize();
+    return cached;
+}
+
+async function initialize(): Promise<SpackleWasm> {
+    return {
+        check(projectBundle, projectDir) {
+            return JSON.parse(
+                wasm_check(projectBundle, projectDir),
+            ) as CheckResponse;
+        },
+        validateSlotData(projectBundle, projectDir, slotData) {
+            return JSON.parse(
+                wasm_validate_slot_data(
+                    projectBundle,
+                    projectDir,
+                    JSON.stringify(slotData),
+                ),
+            ) as ValidationResponse;
+        },
+        generate(projectBundle, projectDir, outDir, slotData, runHooks) {
+            // generate returns a JsValue (object), not a JSON string.
+            return wasm_generate(
+                projectBundle,
+                projectDir,
+                outDir,
+                JSON.stringify(slotData),
+                runHooks,
+            ) as GenerateResponse;
+        },
+    };
+}
+
+export type {
+    Bundle,
+    BundleEntry,
+    CheckResponse,
+    GenerateResponse,
+    Hook,
+    Slot,
+    SlotData,
+    SlotType,
+    SpackleConfig,
+    ValidationResponse,
+} from "./types.ts";

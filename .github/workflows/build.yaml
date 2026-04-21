@@ -114,22 +114,38 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
-      - name: Build WASM (nodejs target)
-        # wasm-pack emits a valid npm package.json in the output dir —
-        # we hand that dir to `bun pm pack` as-is.
-        run: wasm-pack build --target nodejs --out-dir dist-wasm/pkg --features wasm
+      # Build all three wasm-pack targets into wasm/pkg/ (matches the
+      # shape the published npm package uses at runtime).
+      - name: Build WASM (nodejs)
+        run: wasm-pack build crates/spackle-wasm --target nodejs --out-dir ../../wasm/pkg/nodejs
+      - name: Build WASM (web)
+        run: wasm-pack build crates/spackle-wasm --target web --out-dir ../../wasm/pkg/web
+      - name: Build WASM (bundler)
+        run: wasm-pack build crates/spackle-wasm --target bundler --out-dir ../../wasm/pkg/bundler
 
+      - name: Install wasm TS deps
+        working-directory: wasm
+        run: bun install --frozen-lockfile
+
+      - name: Emit TS dist
+        working-directory: wasm
+        run: bunx tsc -p tsconfig.build.json
+
+      # Pack the whole wasm package (src, dist, pkg, README) into an
+      # npm-style tarball. `.npmignore` excludes tests / scripts /
+      # tsconfig / lockfile.
       - name: Pack WASM tarball
         run: |
-          cd dist-wasm/pkg
-          bun pm pack --destination ..
-          ls -la ..
+          mkdir -p dist-wasm
+          cd wasm
+          bun pm pack --destination ../dist-wasm
+          ls -la ../dist-wasm
 
       - name: Upload WASM artifact
         uses: actions/upload-artifact@v7
         with:
           name: wasm
-          path: dist-wasm/spackle-*.tgz
+          path: dist-wasm/*.tgz
           retention-days: 1
 
   # Merge step - combine artifacts and create release

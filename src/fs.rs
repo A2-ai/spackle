@@ -8,14 +8,14 @@
 //!     Rust code running outside wasm.
 //!   - [`MockFs`] — in-memory, for unit tests that don't want a tmpdir.
 //!
-//! For wasm builds the adapter is [`crate::wasm_fs::JsFs`] (cfg-gated
-//! to wasm32), which calls back into a JS-provided `SpackleFs` object
-//! for every fs operation. See `WASM.md` for the host-side contract.
+//! Wasm builds live in the separate `spackle-wasm` crate, which ships
+//! its own `MemoryFs` impl of this trait and drives generation entirely
+//! in-memory. That keeps `std::fs` out of the wasm binary.
 //!
 //! Path semantics: the trait is path-shaped (not fd-shaped) — each call
 //! takes a `&Path`. Impls decide how paths are resolved. `StdFs` uses
-//! real disk paths; `JsFs` passes them through to the JS adapter, which
-//! is responsible for its own containment / workspace-rooting.
+//! real disk paths; `MemoryFs` (in `spackle-wasm`) uses arbitrary
+//! absolute paths inside an in-process map.
 
 use std::collections::HashMap;
 use std::io;
@@ -99,10 +99,9 @@ fn walk_inner<F: FileSystem + ?Sized>(
 
 // --- StdFs: std::fs backend ---
 //
-// Native-only. wasm32 builds never include StdFs — they use `JsFs`
-// (see `src/wasm_fs.rs`) which delegates fs operations to a host-
-// provided JS adapter. This keeps `std::fs` from leaking into the
-// wasm binary's imports at all.
+// Native-only. wasm32 builds never include StdFs — the `spackle-wasm`
+// crate provides its own `MemoryFs` impl and drives generation
+// entirely in memory, so `std::fs` never leaks into the wasm binary.
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use self::std_fs::StdFs;
@@ -113,10 +112,9 @@ mod std_fs {
     use std::fs;
 
     /// Native filesystem backend wrapping `std::fs`. Not compiled for
-    /// wasm targets — wasm builds use [`crate::wasm_fs::JsFs`] which
-    /// delegates fs operations to a JS adapter. That keeps `std::fs`
-    /// (and any transitive fs-ish imports) out of the wasm binary
-    /// entirely.
+    /// wasm targets — the `spackle-wasm` crate provides its own in-
+    /// memory backend. That keeps `std::fs` (and any transitive fs-ish
+    /// imports) out of the wasm binary entirely.
     pub struct StdFs;
 
     impl StdFs {

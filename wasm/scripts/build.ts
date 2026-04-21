@@ -1,0 +1,37 @@
+// Build wasm-pack output for all three target profiles.
+//
+// - nodejs   — CommonJS, eager init at import time. Consumed by the TS
+//              wrapper layer in `src/wasm/index.ts` for Bun / Node.
+// - web      — ESM, requires explicit async `init()` before exports work.
+//              For browsers that fetch the `.wasm` file directly.
+// - bundler  — ESM, delegates wasm loading to the bundler (webpack, vite).
+//
+// Output lands in `wasm/pkg/<target>/` (gitignored). Shipping all three
+// lets consumers import `@a2-ai/spackle-wasm/pkg/<t>` matching their runtime.
+//
+// Run: `cd wasm && bun run scripts/build.ts` (or `just build-wasm`).
+
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
+
+const WASM_DIR = join(import.meta.dir, "..");
+const CRATE = join(WASM_DIR, "..", "crates", "spackle-wasm");
+const PKG_ROOT = join(WASM_DIR, "pkg");
+
+const targets = ["nodejs", "web", "bundler"] as const;
+
+for (const target of targets) {
+    const outDir = join(PKG_ROOT, target);
+    console.log(`\n=== wasm-pack build --target ${target} → ${outDir} ===`);
+    const result = spawnSync(
+        "wasm-pack",
+        ["build", CRATE, "--target", target, "--out-dir", outDir],
+        { stdio: "inherit" },
+    );
+    if (result.status !== 0) {
+        console.error(`wasm-pack failed for target=${target}`);
+        process.exit(result.status ?? 1);
+    }
+}
+
+console.log("\nAll three wasm-pack targets built.");
