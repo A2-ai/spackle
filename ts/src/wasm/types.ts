@@ -6,31 +6,31 @@
 export type SlotType = "String" | "Number" | "Boolean";
 
 export interface Slot {
-    key: string;
-    type?: SlotType;
-    name?: string;
-    description?: string;
-    default?: string;
-    needs?: string[];
+  key: string;
+  type?: SlotType;
+  name?: string;
+  description?: string;
+  default?: string;
+  needs?: string[];
 }
 
 export interface Hook {
-    key: string;
-    command: string[];
-    /** Optional conditional (tera template string, evaluated as bool). */
-    if?: string | null;
-    needs?: string[];
-    name?: string | null;
-    description?: string | null;
-    /** Whether the hook runs by default when no per-hook override is set. */
-    default?: boolean | null;
+  key: string;
+  command: string[];
+  /** Optional conditional (tera template string, evaluated as bool). */
+  if?: string | null;
+  needs?: string[];
+  name?: string | null;
+  description?: string | null;
+  /** Whether the hook runs by default when no per-hook override is set. */
+  default?: boolean | null;
 }
 
 export interface SpackleConfig {
-    name: string | null;
-    ignore: string[];
-    slots: Slot[];
-    hooks: Hook[];
+  name: string | null;
+  ignore: string[];
+  slots: Slot[];
+  hooks: Hook[];
 }
 
 /** Slot values the caller supplies. Always string-valued — Rust parses
@@ -42,8 +42,8 @@ export type SlotData = Record<string, string>;
  * `/project/spackle.toml`) and relative from `outDir` for outputs
  * (e.g. `src/main.rs`). */
 export interface BundleEntry {
-    path: string;
-    bytes: Uint8Array;
+  path: string;
+  bytes: Uint8Array;
 }
 
 /** The shape spackle-wasm takes as input (check / validate / generate)
@@ -53,13 +53,11 @@ export type Bundle = BundleEntry[];
 /** Response from `check()`. On success, includes the parsed config so
  * callers can render forms without re-parsing TOML. */
 export type CheckResponse =
-    | { valid: true; config: SpackleConfig; errors: [] }
-    | { valid: false; errors: string[] };
+  | { valid: true; config: SpackleConfig; errors: [] }
+  | { valid: false; errors: string[] };
 
 /** Response from `validateSlotData()`. */
-export type ValidationResponse =
-    | { valid: true }
-    | { valid: false; errors: string[] };
+export type ValidationResponse = { valid: true } | { valid: false; errors: string[] };
 
 /** Response from `generate()`.
  *
@@ -73,5 +71,5 @@ export type ValidationResponse =
  * Hooks are unsupported in this milestone — calling `generate()` with
  * `runHooks = true` always returns `{ ok: false, error: "..." }`. */
 export type GenerateResponse =
-    | { ok: true; files: Bundle; dirs: string[] }
-    | { ok: false; error: string };
+  | { ok: true; files: Bundle; dirs: string[] }
+  | { ok: false; error: string };

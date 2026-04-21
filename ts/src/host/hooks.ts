@@ -18,20 +18,20 @@ import type { Hook } from "../wasm/types.ts";
  * deliberately thin — Rust does planning, host does execution.
  */
 export interface SpackleHooks {
-    run(hook: Hook, env: Record<string, string>): Promise<HookResult>;
+  run(hook: Hook, env: Record<string, string>): Promise<HookResult>;
 }
 
 export interface HookResult {
-    exitCode: number;
-    stdout: string;
-    stderr: string;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
 }
 
 /** Helper for APIs that accept a `SpackleHooks` but aren't yet wired.
  * Throws with an explicit unsupported-operation error; keep the message
  * stable — tests match on it. */
 export function throwUnsupportedHooks(): never {
-    throw new Error("hooks are unsupported in this milestone");
+  throw new Error("hooks are unsupported in this milestone");
 }
 
 export type { Hook } from "../wasm/types.ts";

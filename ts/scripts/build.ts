@@ -21,17 +21,15 @@ const PKG_ROOT = join(TS_DIR, "pkg");
 const targets = ["nodejs", "web", "bundler"] as const;
 
 for (const target of targets) {
-    const outDir = join(PKG_ROOT, target);
-    console.log(`\n=== wasm-pack build --target ${target} → ${outDir} ===`);
-    const result = spawnSync(
-        "wasm-pack",
-        ["build", CRATE, "--target", target, "--out-dir", outDir],
-        { stdio: "inherit" },
-    );
-    if (result.status !== 0) {
-        console.error(`wasm-pack failed for target=${target}`);
-        process.exit(result.status ?? 1);
-    }
+  const outDir = join(PKG_ROOT, target);
+  console.log(`\n=== wasm-pack build --target ${target} → ${outDir} ===`);
+  const result = spawnSync("wasm-pack", ["build", CRATE, "--target", target, "--out-dir", outDir], {
+    stdio: "inherit",
+  });
+  if (result.status !== 0) {
+    console.error(`wasm-pack failed for target=${target}`);
+    process.exit(result.status ?? 1);
+  }
 }
 
 console.log("\nAll three wasm-pack targets built.");

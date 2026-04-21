@@ -9,34 +9,34 @@
 // at import time (see the tail of `pkg/nodejs/spackle_wasm.js`). No init
 // step, no default export — just the named exports below.
 import {
-    check as wasm_check,
-    generate as wasm_generate,
-    validate_slot_data as wasm_validate_slot_data,
+  check as wasm_check,
+  generate as wasm_generate,
+  validate_slot_data as wasm_validate_slot_data,
 } from "../../pkg/nodejs/spackle_wasm.js";
 import type {
-    Bundle,
-    CheckResponse,
-    GenerateResponse,
-    SlotData,
-    ValidationResponse,
+  Bundle,
+  CheckResponse,
+  GenerateResponse,
+  SlotData,
+  ValidationResponse,
 } from "./types.ts";
 
 /** Typed wrapper over the raw WASM exports. All methods are synchronous
  * against the wasm instance; the only async step is `loadSpackleWasm()`. */
 export interface SpackleWasm {
-    check(projectBundle: Bundle, projectDir: string): CheckResponse;
-    validateSlotData(
-        projectBundle: Bundle,
-        projectDir: string,
-        slotData: SlotData,
-    ): ValidationResponse;
-    generate(
-        projectBundle: Bundle,
-        projectDir: string,
-        outDir: string,
-        slotData: SlotData,
-        runHooks: boolean,
-    ): GenerateResponse;
+  check(projectBundle: Bundle, projectDir: string): CheckResponse;
+  validateSlotData(
+    projectBundle: Bundle,
+    projectDir: string,
+    slotData: SlotData,
+  ): ValidationResponse;
+  generate(
+    projectBundle: Bundle,
+    projectDir: string,
+    outDir: string,
+    slotData: SlotData,
+    runHooks: boolean,
+  ): GenerateResponse;
 }
 
 let cached: Promise<SpackleWasm> | null = null;
@@ -46,48 +46,51 @@ let cached: Promise<SpackleWasm> | null = null;
  * `--target web` output (which DOES need an explicit init), so callers
  * can switch targets without changing the orchestration code. */
 export function loadSpackleWasm(): Promise<SpackleWasm> {
-    if (!cached) cached = initialize();
-    return cached;
+  if (!cached) cached = initialize();
+  return cached;
 }
 
 async function initialize(): Promise<SpackleWasm> {
-    return {
-        check(projectBundle, projectDir) {
-            return JSON.parse(
-                wasm_check(projectBundle, projectDir),
-            ) as CheckResponse;
-        },
-        validateSlotData(projectBundle, projectDir, slotData) {
-            return JSON.parse(
-                wasm_validate_slot_data(
-                    projectBundle,
-                    projectDir,
-                    JSON.stringify(slotData),
-                ),
-            ) as ValidationResponse;
-        },
-        generate(projectBundle, projectDir, outDir, slotData, runHooks) {
-            // generate returns a JsValue (object), not a JSON string.
-            return wasm_generate(
-                projectBundle,
-                projectDir,
-                outDir,
-                JSON.stringify(slotData),
-                runHooks,
-            ) as GenerateResponse;
-        },
-    };
+  // wasm-bindgen's generated .d.ts types the JSON / JsValue exports as
+  // `string` / `any`. Asserting to our response unions is the only way
+  // to type this boundary — the shapes are guaranteed by the Rust
+  // side (`crates/spackle-wasm/src/lib.rs`), which is the actual
+  // source of truth. Runtime validation (zod etc.) would be strictly
+  // defensive overhead.
+  return {
+    check(projectBundle, projectDir) {
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
+      return JSON.parse(wasm_check(projectBundle, projectDir)) as CheckResponse;
+    },
+    validateSlotData(projectBundle, projectDir, slotData) {
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
+      return JSON.parse(
+        wasm_validate_slot_data(projectBundle, projectDir, JSON.stringify(slotData)),
+      ) as ValidationResponse;
+    },
+    generate(projectBundle, projectDir, outDir, slotData, runHooks) {
+      // generate returns a JsValue (object), not a JSON string.
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
+      return wasm_generate(
+        projectBundle,
+        projectDir,
+        outDir,
+        JSON.stringify(slotData),
+        runHooks,
+      ) as GenerateResponse;
+    },
+  };
 }
 
 export type {
-    Bundle,
-    BundleEntry,
-    CheckResponse,
-    GenerateResponse,
-    Hook,
-    Slot,
-    SlotData,
-    SlotType,
-    SpackleConfig,
-    ValidationResponse,
+  Bundle,
+  BundleEntry,
+  CheckResponse,
+  GenerateResponse,
+  Hook,
+  Slot,
+  SlotData,
+  SlotType,
+  SpackleConfig,
+  ValidationResponse,
 } from "./types.ts";
