@@ -19,7 +19,6 @@ import {
     basename as pathBasename,
     dirname as pathDirname,
     isAbsolute,
-    relative as pathRelative,
     resolve as pathResolve,
     sep as pathSep,
 } from "node:path";
