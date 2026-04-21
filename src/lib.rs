@@ -14,30 +14,23 @@ use tokio_stream::Stream;
 use users::User;
 
 pub mod config;
-#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
 pub mod copy;
+pub mod fs;
 pub mod hook;
 pub mod needs;
 pub mod slot;
 pub mod template;
 
-#[cfg(any(feature = "wasm", feature = "wasip2"))]
-pub mod api;
-
-#[cfg(all(target_arch = "wasm32", target_os = "wasi"))]
-pub mod hook_wasip2;
-
-// cargo-component auto-generates `src/bindings.rs` from `wit/spackle.wit`.
-// Only the wasip2 build uses it; on other targets the file is present
-// but not referenced.
-#[cfg(feature = "wasip2")]
-#[allow(warnings)]
-mod bindings;
-
-#[cfg(all(target_arch = "wasm32", target_os = "wasi", feature = "wasip2"))]
-mod component;
-
+/// Pure error-kind mapping helpers for the `SpackleFs` contract.
+/// Native-testable (no js-sys); `wasm_fs.rs` uses it via the `wasm32`
+/// cfg-gated module.
 #[cfg(feature = "wasm")]
+pub mod wasm_fs_kind;
+
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+pub mod wasm_fs;
+
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub mod wasm;
 
 #[derive(Error, Debug)]
@@ -46,7 +39,6 @@ pub enum LoadError {
     ConfigError { path: PathBuf, error: config::Error },
 }
 
-#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
 #[derive(Error, Debug)]
 pub enum CheckError {
     #[error("Error validating template files: {0}")]
@@ -55,7 +47,6 @@ pub enum CheckError {
     SlotError(slot::Error),
 }
 
-#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
 #[derive(Error, Debug)]
 pub enum GenerateError {
     #[error("The output directory already exists: {0}")]
@@ -70,15 +61,16 @@ pub enum GenerateError {
     FileError(#[from] template::FileError),
 }
 
-// Gets the output name as the canonicalized path's file stem
+/// Derive a human-readable output name from `out_dir`.
+///
+/// Returns the final path component, falling back to `"project"` for
+/// paths that have none (e.g. `/`). Does NOT canonicalize — under
+/// wasm32 (`JsFs` path) canonicalize would require host-side fs access
+/// that we explicitly avoid in the fs-bridge architecture. Callers
+/// that want canonical paths should resolve them before passing in.
 pub fn get_output_name(out_dir: &Path) -> String {
-    let path = match out_dir.canonicalize() {
-        Ok(path) => path,
-        // If the path cannot be canonicalized (e.g. not created yet), we can ignore
-        Err(_) => out_dir.to_path_buf(),
-    };
-
-    path.file_name()
+    out_dir
+        .file_name()
         .unwrap_or("project".as_ref())
         .to_string_lossy()
         .to_string()
@@ -101,9 +93,11 @@ impl Display for RunHooksError {
     }
 }
 
-#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
-pub fn load_project(path: &PathBuf) -> Result<Project, LoadError> {
-    let config = config::load(path).map_err(|e| LoadError::ConfigError {
+pub fn load_project<F: fs::FileSystem>(
+    fs: &F,
+    path: &PathBuf,
+) -> Result<Project, LoadError> {
+    let config = config::load(fs, path).map_err(|e| LoadError::ConfigError {
         path: path.to_owned(),
         error: e,
     })?;
@@ -125,27 +119,23 @@ pub struct Project {
 }
 
 impl Project {
-    /// Gets the name of the project or if one isn't specified, from the directory name
+    /// Project name — `config.name` if set, otherwise the directory's
+    /// file stem. Does NOT canonicalize; see `get_output_name` for the
+    /// same rationale (no host fs access from wasm32).
     pub fn get_name(&self) -> String {
         if let Some(name) = &self.config.name {
             return name.clone();
         }
 
-        let path = match self.path.canonicalize() {
-            Ok(path) => path,
-            Err(_) => return "".to_string(),
-        };
-
-        return path
+        self.path
             .file_stem()
             .unwrap_or_default()
             .to_string_lossy()
-            .into_owned();
+            .into_owned()
     }
 
-    #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
-    pub fn check(&self) -> Result<(), CheckError> {
-        if let Err(e) = template::validate(&self.path, &self.config.slots) {
+    pub fn check<F: fs::FileSystem>(&self, fs: &F) -> Result<(), CheckError> {
+        if let Err(e) = template::validate(fs, &self.path, &self.config.slots) {
             return Err(CheckError::TemplateError(e));
         }
 
@@ -159,29 +149,29 @@ impl Project {
     /// Generates a filled directory from the specified spackle project.
     ///
     /// out_dir is the path to what will become the filled directory
-    #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
-    pub fn generate(
+    pub fn generate<F: fs::FileSystem>(
         &self,
+        fs: &F,
         project_dir: &PathBuf,
         out_dir: &PathBuf,
         slot_data: &HashMap<String, String>,
     ) -> Result<Vec<RenderedFile>, GenerateError> {
-        if out_dir.exists() {
+        if fs.exists(out_dir) {
             return Err(GenerateError::AlreadyExists(out_dir.clone()));
         }
 
-        let config = config::load_dir(project_dir).map_err(GenerateError::BadConfig)?;
+        let config = config::load_dir(fs, project_dir).map_err(GenerateError::BadConfig)?;
 
         let mut slot_data = slot_data.clone();
         slot_data.insert("_project_name".to_string(), self.get_name());
         slot_data.insert("_output_name".to_string(), get_output_name(out_dir));
 
         // Copy all non-template files to the output directory
-        copy::copy(project_dir, &out_dir, &config.ignore, &slot_data)
+        copy::copy(fs, project_dir, &out_dir, &config.ignore, &slot_data)
             .map_err(GenerateError::CopyError)?;
 
         // Render template files to the output directory
-        let results = template::fill(project_dir, out_dir, &slot_data)
+        let results = template::fill(fs, project_dir, out_dir, &slot_data)
             .map_err(GenerateError::TemplateError)?;
 
         // Split vector into vector of rendered files and vector of errors
@@ -197,9 +187,9 @@ impl Project {
         Ok(okay_results)
     }
 
-    #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
-    pub fn copy_files(
+    pub fn copy_files<F: fs::FileSystem>(
         &self,
+        fs: &F,
         out_dir: &Path,
         data: &HashMap<String, String>,
     ) -> Result<copy::CopyResult, copy::Error> {
@@ -207,12 +197,12 @@ impl Project {
         data.insert("_project_name".to_string(), self.get_name());
         data.insert("_output_name".to_string(), get_output_name(out_dir));
 
-        copy::copy(&self.path, out_dir, &self.config.ignore, &data)
+        copy::copy(fs, &self.path, out_dir, &self.config.ignore, &data)
     }
 
-    #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
-    pub fn render_templates(
+    pub fn render_templates<F: fs::FileSystem>(
         &self,
+        fs: &F,
         out_dir: &Path,
         data: &HashMap<String, String>,
     ) -> Result<Vec<Result<template::RenderedFile, template::FileError>>, tera::Error> {
@@ -220,7 +210,7 @@ impl Project {
         data.insert("_project_name".to_string(), self.get_name());
         data.insert("_output_name".to_string(), get_output_name(out_dir));
 
-        template::fill(&self.path, out_dir, &data)
+        template::fill(fs, &self.path, out_dir, &data)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -279,17 +269,21 @@ mod tests {
         assert_eq!(get_output_name(path), "output.name");
     }
 
+    use crate::fs::StdFs;
+
     #[test]
     fn test_check_pass() {
-        let project = load_project(&PathBuf::from("tests/data/proj2")).unwrap();
-        let result = project.check();
+        let fs = StdFs::new();
+        let project = load_project(&fs, &PathBuf::from("tests/data/proj2")).unwrap();
+        let result = project.check(&fs);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_check_load_config_error() {
+        let fs = StdFs::new();
         let path = PathBuf::from("tests/data/bad_config");
-        let result = load_project(&path);
+        let result = load_project(&fs, &path);
         assert!(
             result.is_err_and(|e| matches!(e, LoadError::ConfigError { path: p, .. } if p == path))
         );
@@ -297,15 +291,17 @@ mod tests {
 
     #[test]
     fn test_check_slot_error() {
-        let project = load_project(&PathBuf::from("tests/data/bad_default_slot_val")).unwrap();
-        let result = project.check();
+        let fs = StdFs::new();
+        let project = load_project(&fs, &PathBuf::from("tests/data/bad_default_slot_val")).unwrap();
+        let result = project.check(&fs);
         assert!(result.is_err_and(|e| matches!(e, CheckError::SlotError(_))));
     }
 
     #[test]
     fn test_check_template_error() {
-        let project = load_project(&PathBuf::from("tests/data/bad_template")).unwrap();
-        let result = project.check();
+        let fs = StdFs::new();
+        let project = load_project(&fs, &PathBuf::from("tests/data/bad_template")).unwrap();
+        let result = project.check(&fs);
         assert!(result.is_err_and(|e| matches!(e, CheckError::TemplateError(_))));
     }
 }

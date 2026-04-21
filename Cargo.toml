@@ -13,18 +13,13 @@ members = ["cli"]
 
 [features]
 default = []
+# wasm-bindgen integration: enables `src/wasm.rs` + `src/wasm_fs.rs` and
+# pulls in the JS-interop deps. Primary (and only) wasm path.
 wasm = [
     "dep:wasm-bindgen",
-    "dep:serde_json",
+    "dep:js-sys",
     "dep:serde-wasm-bindgen",
     "dep:console_error_panic_hook",
-]
-# WASI Preview 2 component-model build (cargo-component + wit-bindgen + jco).
-# Shares `src/api.rs` with the `wasm` feature. Mutually exclusive in practice
-# (different targets), but orthogonal as Cargo features.
-wasip2 = [
-    "dep:wit-bindgen-rt",
-    "dep:serde_json",
 ]
 
 [dependencies]
@@ -32,23 +27,21 @@ colored = "3.1.1"
 fronma = { version = "0.2.0", features = ["toml"] }
 serde = { version = "1.0.228", features = ["derive"] }
 strum_macros = "0.28.0"
-# tera is declared per-target below so we can use default (builtins on)
-# for native and wasm-pack paths, but disable builtins for wasip2 to
-# avoid a transitive `slug → wasm-bindgen` dependency that breaks the
-# component build.
 thiserror = "2.0.18"
 toml = "1.1.2"
 tracing = "0.1.44"
-# WASM-only (optional, enabled by `wasm` feature)
+# Used by `src/api.rs` (JSON-in/JSON-out helpers consumed by wasm.rs).
+# Always compiled; tiny dep, not worth feature-gating.
+serde_json = "1.0"
+# wasm-bindgen integration (enabled by `wasm` feature). `js-sys` is the
+# runtime dep used by `src/wasm_fs.rs` for the `JsFs` adapter bridge.
 wasm-bindgen = { version = "0.2", optional = true }
-serde_json = { version = "1.0", optional = true }
+js-sys = { version = "0.3", optional = true }
 serde-wasm-bindgen = { version = "0.6", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
-# wasip2 component-model runtime (enabled by `wasip2` feature)
-wit-bindgen-rt = { version = "0.44.0", features = ["bitflags"], optional = true }
 
-# Not compiled when targeting wasm32 — these require OS APIs that don't
-# exist on either wasm32-unknown-unknown OR wasm32-wasip2.
+# Native-only — these require OS APIs that wasm32 doesn't have.
+# `StdFs` (in src/fs.rs) and the CLI both depend on them.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 async-process = "2.5.0"
 async-stream = "0.3.6"
@@ -60,39 +53,15 @@ tokio = { version = "1.52.0", features = ["macros", "rt", "rt-multi-thread"] }
 tokio-stream = "0.1.18"
 tracing-subscriber = "0.3.23"
 users = "0.11.0"
-
-# walkdir works under WASI (wasm32-wasip2 has a sandboxed std::fs). Needed
-# by `copy::copy` and `template::fill` when compiled for the component.
-[target.'cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))'.dependencies]
 walkdir = "2.5.0"
 
-# wasm32-unknown-unknown (browser / wasm-pack path).
-# - Full-featured tera (builtins on — matches native behavior).
+# wasm32-unknown-unknown (wasm-bindgen primary path).
+# - Full tera (builtins on — matches native behavior).
 # - getrandom 0.2 with `js` feature: tera → rand transitively needs a
 #   random source, and on the unknown target only the JS shim works.
-[target.'cfg(all(target_arch = "wasm32", not(target_os = "wasi")))'.dependencies]
+[target.'cfg(target_arch = "wasm32")'.dependencies]
 tera = "1.20.1"
 getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
-
-# wasm32-wasip2 component path.
-# - Tera with default-features disabled: the `builtins` feature pulls
-#   in `slug`, which unconditionally depends on wasm-bindgen on wasm32.
-#   wit-bindgen/cargo-component can't link wasm-bindgen imports, so the
-#   component build fails. Disabling builtins drops `slugify`, `date`,
-#   `filesizeformat`, `urlencode`, and rand-based filters — none of the
-#   existing fixtures rely on them.
-# - getrandom_02 stays OFF (no `js` feature): on WASI, getrandom 0.2
-#   has a native backend and pulling in `js` would re-introduce the
-#   wasm-bindgen import.
-[target.'cfg(all(target_arch = "wasm32", target_os = "wasi"))'.dependencies]
-tera = { version = "1.20.1", default-features = false }
-
-[package.metadata.component]
-package = "a2ai:spackle"
-
-[package.metadata.component.target]
-path = "wit"
-world = "spackle"
 
 [profile.release]
 opt-level = "s"

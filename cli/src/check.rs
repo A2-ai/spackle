@@ -2,6 +2,7 @@ use std::{error::Error, process::exit, time::Instant};
 
 use colored::Colorize;
 use spackle::{
+    fs::StdFs,
     slot,
     template::{self, ValidateError},
     Project,
@@ -12,7 +13,8 @@ pub fn run(project: &Project) {
 
     let start_time = Instant::now();
 
-    match template::validate(&project.path, &project.config.slots) {
+    let fs = StdFs::new();
+    match template::validate(&fs, &project.path, &project.config.slots) {
         Ok(()) => {
             println!("  {}", "👌 Template files are valid".dimmed());
         }

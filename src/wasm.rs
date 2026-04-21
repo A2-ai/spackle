@@ -1,261 +1,189 @@
-//! wasm-bindgen wrappers for spackle's external binding surface.
+//! wasm-bindgen exports driving spackle via a host-provided `SpackleFs`.
 //!
-//! All logic lives in `crate::api` (target-agnostic). This module
-//! adds the `#[wasm_bindgen]` attributes and panic-hook setup so the
-//! same functions are callable from a JavaScript/TypeScript host.
+//! Three exports plus `init`. Each takes a JS `SpackleFs` object and
+//! routes all filesystem access through it. Rust owns generation — it
+//! reads config, walks templates, renders, and writes via the adapter.
+//! The host never pre-reads or post-writes; it only provides the fs
+//! backend.
+//!
+//! Response shapes (JSON strings):
+//!
+//!   check_with_fs:
+//!     success: `{ "valid": true, "config": { name, ignore, slots, hooks }, "errors": [] }`
+//!     failure: `{ "valid": false, "errors": ["..."] }`
+//!
+//!   validate_slot_data_with_fs:
+//!     success: `{ "valid": true }`
+//!     failure: `{ "valid": false, "errors": ["..."] }`
+//!
+//!   generate_with_fs:
+//!     success: `{ "ok": true, "rendered": [{ original_path, rendered_path }, ...] }`
+//!     failure: `{ "ok": false, "error": "..." }`
+//!     run_hooks=true: always failure with "hooks are unsupported in this milestone".
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use js_sys::Object;
+use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
-use crate::api;
+use crate::wasm_fs::{js_fs_from_object, JsFs};
 
-
-/// Initialize the WASM module. Sets up the panic hook so panics surface
-/// in the host console with useful messages.
 #[wasm_bindgen(start)]
 pub fn init() {
     console_error_panic_hook::set_once();
 }
 
-#[wasm_bindgen]
-pub fn parse_config(toml_content: &str) -> String {
-    api::parse_config(toml_content)
+// --- response shapes ---
+
+#[derive(Serialize)]
+struct CheckOk<'a> {
+    valid: bool,
+    config: &'a crate::config::Config,
+    errors: Vec<String>,
 }
 
-#[wasm_bindgen]
-pub fn validate_config(toml_content: &str) -> String {
-    api::validate_config(toml_content)
+#[derive(Serialize)]
+struct ValidationErr {
+    valid: bool,
+    errors: Vec<String>,
 }
 
-#[wasm_bindgen]
-pub fn check_project(toml_content: &str, templates_json: &str) -> String {
-    api::check_project(toml_content, templates_json)
+#[derive(Serialize)]
+struct GenerateOk {
+    ok: bool,
+    rendered: Vec<RenderedSummary>,
 }
 
-#[wasm_bindgen]
-pub fn validate_slot_data(config_json: &str, slot_data_json: &str) -> String {
-    api::validate_slot_data(config_json, slot_data_json)
+#[derive(Serialize)]
+struct RenderedSummary {
+    original_path: String,
+    rendered_path: String,
 }
 
-#[wasm_bindgen]
-pub fn render_templates(templates_json: &str, slot_data_json: &str, config_json: &str) -> String {
-    api::render_templates(templates_json, slot_data_json, config_json)
+#[derive(Serialize)]
+struct GenerateErr {
+    ok: bool,
+    error: String,
 }
 
-#[wasm_bindgen]
-pub fn evaluate_hooks(config_json: &str, slot_data_json: &str) -> String {
-    api::evaluate_hooks(config_json, slot_data_json)
+fn json_or_panic<T: Serialize>(value: &T) -> String {
+    serde_json::to_string(value).unwrap_or_else(|e| format!(r#"{{"error":"{}"}}"#, e))
 }
 
-#[wasm_bindgen]
-pub fn get_output_name(out_dir: &str) -> String {
-    api::get_output_name(out_dir)
+fn invalid(errors: Vec<String>) -> String {
+    json_or_panic(&ValidationErr {
+        valid: false,
+        errors,
+    })
 }
 
-#[wasm_bindgen]
-pub fn get_project_name(config_json: &str, project_dir: &str) -> String {
-    api::get_project_name(config_json, project_dir)
+fn generate_err(error: String) -> String {
+    json_or_panic(&GenerateErr { ok: false, error })
 }
 
+// --- exports ---
+
+/// Validate a project directory: loads spackle.toml, checks slot config,
+/// validates template references against slot keys.
 #[wasm_bindgen]
-pub fn render_string(template: &str, data_json: &str) -> String {
-    api::render_string(template, data_json)
+pub fn check_with_fs(project_dir: &str, fs_obj: Object) -> String {
+    let fs = js_fs_from_object(fs_obj);
+    check_impl(&fs, project_dir)
 }
 
-// Tests exercise the same JSON contracts as before, but call into
-// `bindings` directly (no wasm_bindgen round-trip in native tests).
-#[cfg(test)]
-mod tests {
-    use crate::api::{
-        check_project, evaluate_hooks, get_output_name, get_project_name, render_string,
+fn check_impl(fs: &JsFs, project_dir: &str) -> String {
+    let path = PathBuf::from(project_dir);
+    let project = match crate::load_project(fs, &path) {
+        Ok(p) => p,
+        Err(e) => return invalid(vec![e.to_string()]),
     };
-
-    /// check_project must ALWAYS return { valid, errors } — never
-    /// { error } — regardless of which input is malformed.
-    #[test]
-    fn check_project_response_shape_table() {
-        struct Case {
-            name: &'static str,
-            toml: &'static str,
-            templates_json: &'static str,
-            expect_valid: bool,
-            errors_contain: Option<&'static str>,
-        }
-
-        let cases = vec![
-            Case {
-                name: "valid config + templates",
-                toml: "[[slots]]\nkey = \"x\"\n",
-                templates_json: r#"[{"path":"t.j2","content":"{{ x }}"}]"#,
-                expect_valid: true,
-                errors_contain: None,
-            },
-            Case {
-                name: "template references undefined slot",
-                toml: "[[slots]]\nkey = \"x\"\n",
-                templates_json: r#"[{"path":"t.j2","content":"{{ missing }}"}]"#,
-                expect_valid: false,
-                errors_contain: Some("rendering"),
-            },
-            Case {
-                name: "invalid toml",
-                toml: "[[[ broken",
-                templates_json: "[]",
-                expect_valid: false,
-                errors_contain: Some("parsing"),
-            },
-            Case {
-                name: "invalid templates_json (bad JSON)",
-                toml: "",
-                templates_json: "NOT JSON",
-                expect_valid: false,
-                errors_contain: Some("invalid templates_json"),
-            },
-            Case {
-                name: "duplicate keys in config",
-                toml: "[[slots]]\nkey = \"x\"\n[[hooks]]\nkey = \"x\"\ncommand = [\"echo\"]\n",
-                templates_json: "[]",
-                expect_valid: false,
-                errors_contain: Some("Duplicate"),
-            },
-        ];
-
-        for c in cases {
-            let result = check_project(c.toml, c.templates_json);
-            let parsed: serde_json::Value = serde_json::from_str(&result).unwrap_or_else(|e| {
-                panic!("case {}: result is not valid JSON: {} — raw: {}", c.name, e, result)
-            });
-
-            assert!(
-                parsed.get("valid").is_some(),
-                "case {}: response must have 'valid' key, got: {}",
-                c.name,
-                result,
-            );
-            assert!(
-                parsed.get("error").is_none(),
-                "case {}: response must NOT have 'error' key (use 'valid'+errors), got: {}",
-                c.name,
-                result,
-            );
-
-            let valid = parsed["valid"].as_bool().unwrap();
-            assert_eq!(valid, c.expect_valid, "case {}", c.name);
-
-            if let Some(needle) = c.errors_contain {
-                let errors = parsed["errors"]
-                    .as_array()
-                    .expect(&format!("case {}: errors should be an array", c.name));
-                let joined = errors
-                    .iter()
-                    .map(|e| e.as_str().unwrap_or(""))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                assert!(
-                    joined.to_lowercase().contains(&needle.to_lowercase()),
-                    "case {}: errors should contain {:?}, got: {}",
-                    c.name,
-                    needle,
-                    joined,
-                );
-            }
-        }
+    match project.check(fs) {
+        Ok(()) => json_or_panic(&CheckOk {
+            valid: true,
+            config: &project.config,
+            errors: vec![],
+        }),
+        Err(e) => invalid(vec![e.to_string()]),
     }
+}
 
-    #[test]
-    fn get_output_name_contract() {
-        struct Case {
-            input: &'static str,
-            expected: &'static str,
-        }
-        let cases = vec![
-            Case { input: "/tmp/my-output", expected: "my-output" },
-            Case { input: "my-output", expected: "my-output" },
-            Case { input: "a/b/c.name", expected: "c.name" },
-            Case { input: "/", expected: "project" },
-        ];
-        for c in cases {
-            let result = get_output_name(c.input);
-            let parsed: String = serde_json::from_str(&result)
-                .unwrap_or_else(|e| panic!("input {:?}: not a JSON string: {} raw={}", c.input, e, result));
-            assert_eq!(parsed, c.expected, "input {:?}", c.input);
-        }
+/// Validate slot data against the config loaded from `project_dir`.
+#[wasm_bindgen]
+pub fn validate_slot_data_with_fs(
+    project_dir: &str,
+    slot_data_json: &str,
+    fs_obj: Object,
+) -> String {
+    let fs = js_fs_from_object(fs_obj);
+    let path = PathBuf::from(project_dir);
+    let project = match crate::load_project(&fs, &path) {
+        Ok(p) => p,
+        Err(e) => return invalid(vec![e.to_string()]),
+    };
+    let data: HashMap<String, String> = match serde_json::from_str(slot_data_json) {
+        Ok(d) => d,
+        Err(e) => return invalid(vec![format!("invalid slot_data_json: {}", e)]),
+    };
+    match crate::slot::validate_data(&data, &project.config.slots) {
+        Ok(()) => r#"{"valid":true}"#.to_string(),
+        Err(e) => invalid(vec![e.to_string()]),
     }
+}
 
-    #[test]
-    fn get_project_name_contract() {
-        let cfg_named = r#"{"name":"from-config","ignore":[],"slots":[],"hooks":[]}"#;
-        let result = get_project_name(cfg_named, "/ignored/project-dir");
-        let parsed: String = serde_json::from_str(&result).unwrap();
-        assert_eq!(parsed, "from-config");
-
-        let cfg_nameless = r#"{"name":null,"ignore":[],"slots":[],"hooks":[]}"#;
-        let result = get_project_name(cfg_nameless, "/tmp/my-project");
-        let parsed: String = serde_json::from_str(&result).unwrap();
-        assert_eq!(parsed, "my-project");
-
-        let result = get_project_name(cfg_nameless, "/tmp/my.project.git");
-        let parsed: String = serde_json::from_str(&result).unwrap();
-        assert_eq!(parsed, "my.project");
-
-        let result = get_project_name("NOT JSON", "/tmp/x");
-        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert!(parsed.get("error").is_some(), "bad config should return {{error}}: {}", result);
-    }
-
-    #[test]
-    fn render_string_contract() {
-        let result = render_string("hello {{ name }}", r#"{"name":"world"}"#);
-        let parsed: String = serde_json::from_str(&result).unwrap();
-        assert_eq!(parsed, "hello world");
-
-        let result = render_string("{{ _project_name }}/file", r#"{"_project_name":"proj"}"#);
-        let parsed: String = serde_json::from_str(&result).unwrap();
-        assert_eq!(parsed, "proj/file");
-
-        let result = render_string("plain", "{}");
-        let parsed: String = serde_json::from_str(&result).unwrap();
-        assert_eq!(parsed, "plain");
-
-        let result = render_string("{{ missing }}", "{}");
-        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert!(parsed.get("error").is_some(), "missing var should return error: {}", result);
-
-        let result = render_string("x", "NOT JSON");
-        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert!(parsed.get("error").is_some(), "bad data_json should error: {}", result);
-    }
-
-    #[test]
-    fn evaluate_hooks_template_errors_contract() {
-        let config_json = r#"{
-            "slots": [],
-            "hooks": [
-                { "key": "broken", "command": ["echo", "{{ undefined }}"], "default": true, "needs": [] },
-                { "key": "after", "command": ["echo", "ok"], "if": "{{ hook_ran_broken }}", "default": true, "needs": [] }
-            ],
-            "ignore": []
-        }"#;
-        let slot_data = "{}";
-
-        let result = evaluate_hooks(config_json, slot_data);
-        let parsed: Vec<serde_json::Value> = serde_json::from_str(&result)
-            .expect("evaluate_hooks should return valid JSON array");
-
-        assert_eq!(parsed.len(), 2);
-
-        assert_eq!(parsed[0]["key"], "broken");
-        assert_eq!(parsed[0]["should_run"], false);
-        assert_eq!(parsed[0]["skip_reason"], "template_error");
-        let errors = parsed[0]["template_errors"].as_array().unwrap();
-        assert!(!errors.is_empty(), "broken hook should have template_errors");
-
-        assert_eq!(parsed[1]["key"], "after");
-        assert_eq!(parsed[1]["should_run"], false);
-        let reason = parsed[1]["skip_reason"].as_str().unwrap();
-        assert!(
-            reason.contains("false_conditional"),
-            "after hook should be false_conditional, got: {}",
-            reason
+/// Generate a filled project into `out_dir`.
+///
+/// `run_hooks = true` is not supported in this milestone — hook
+/// execution is deferred until the JsHooks bridge lands. The caller
+/// gets an explicit error so the "unsupported" behavior is observable.
+#[wasm_bindgen]
+pub fn generate_with_fs(
+    project_dir: &str,
+    out_dir: &str,
+    slot_data_json: &str,
+    run_hooks: bool,
+    fs_obj: Object,
+) -> String {
+    if run_hooks {
+        return generate_err(
+            "hooks are unsupported in this milestone; call with run_hooks=false".to_string(),
         );
     }
+
+    let fs = js_fs_from_object(fs_obj);
+    let project_path = PathBuf::from(project_dir);
+    let out_path = PathBuf::from(out_dir);
+
+    let project = match crate::load_project(&fs, &project_path) {
+        Ok(p) => p,
+        Err(e) => return generate_err(e.to_string()),
+    };
+
+    let slot_data: HashMap<String, String> = match serde_json::from_str(slot_data_json) {
+        Ok(d) => d,
+        Err(e) => return generate_err(format!("invalid slot_data_json: {}", e)),
+    };
+
+    if let Err(e) = crate::slot::validate_data(&slot_data, &project.config.slots) {
+        return generate_err(format!("slot data invalid: {}", e));
+    }
+
+    let rendered = match project.generate(&fs, &project_path, &out_path, &slot_data) {
+        Ok(files) => files,
+        Err(e) => return generate_err(e.to_string()),
+    };
+
+    let summary: Vec<RenderedSummary> = rendered
+        .iter()
+        .map(|f| RenderedSummary {
+            original_path: f.original_path.to_string_lossy().to_string(),
+            rendered_path: f.path.to_string_lossy().to_string(),
+        })
+        .collect();
+
+    json_or_panic(&GenerateOk {
+        ok: true,
+        rendered: summary,
+    })
 }

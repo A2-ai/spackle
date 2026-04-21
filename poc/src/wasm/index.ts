@@ -1,129 +1,89 @@
-// WASM-SIDE — pure computation. No I/O.
+// WASM-SIDE — thin typed wrapper over the wasm-bindgen exports.
 //
-// Singleton loader for the compiled spackle WASM module. `loadSpackleWasm()`
-// returns the *typed* client; callers should never import from
-// `../../pkg/spackle.js` directly.
+// The wasm-pack output at `../../pkg/spackle.js` exposes three
+// fs-backed functions plus `init`. Each takes a `SpackleFs` object
+// (see `../host/spackle-fs.ts`) that the component calls back into
+// for filesystem operations. No direct disk access on the Rust side.
+//
+// `loadSpackleWasm()` memoizes the initialization Promise so concurrent
+// callers share it.
 
-import initWasm, {
-  check_project,
-  evaluate_hooks,
-  get_output_name,
-  get_project_name,
-  parse_config,
-  render_string,
-  render_templates,
-  validate_config,
-  validate_slot_data,
+// wasm-pack's `--target nodejs` output instantiates the module eagerly
+// at import time (see the tail of `pkg/spackle.js`). No init step, no
+// default export — just the named exports below.
+import {
+    check_with_fs,
+    generate_with_fs,
+    validate_slot_data_with_fs,
 } from "../../pkg/spackle.js";
+import type { SpackleFs } from "../host/spackle-fs";
 import type {
-  HookPlanEntry,
-  RenderedTemplate,
-  SlotData,
-  SpackleConfig,
-  TemplateInput,
-  ValidationResult,
+    CheckResponse,
+    GenerateResponse,
+    ValidationResponse,
 } from "./types.ts";
 
 /** Typed wrapper over the raw WASM exports. All methods are synchronous
- * (the only async step is `loadSpackleWasm()` itself). */
+ * against the wasm instance; the only async step is `loadSpackleWasm()`. */
 export interface SpackleWasm {
-  parseConfig(toml: string): SpackleConfig;
-  validateConfig(toml: string): ValidationResult;
-  checkProject(toml: string, templates: TemplateInput[]): ValidationResult;
-  validateSlotData(configJson: string, data: SlotData): ValidationResult;
-  renderTemplates(
-    templates: TemplateInput[],
-    data: SlotData,
-    configJson: string,
-  ): RenderedTemplate[];
-  evaluateHooks(configJson: string, data: SlotData): HookPlanEntry[];
-  renderString(template: string, data: SlotData): string;
-  getOutputName(outDir: string): string;
-  getProjectName(configJson: string, projectDir: string): string;
+    check(projectDir: string, fs: SpackleFs): CheckResponse;
+    validateSlotData(
+        projectDir: string,
+        slotData: Record<string, string>,
+        fs: SpackleFs,
+    ): ValidationResponse;
+    generate(
+        projectDir: string,
+        outDir: string,
+        slotData: Record<string, string>,
+        runHooks: boolean,
+        fs: SpackleFs,
+    ): GenerateResponse;
 }
 
 let cached: Promise<SpackleWasm> | null = null;
 
-/** Load the WASM module once per process. Subsequent calls return the same
- * client. Safe to await concurrently — the first caller initializes, the
- * rest share the promise. */
+/** Load the WASM module once per process. Subsequent calls return the
+ * same client. Safe to await concurrently. Kept async for symmetry with
+ * `--target web` output (which DOES need an explicit init), so callers
+ * can switch targets without changing the orchestration code. */
 export function loadSpackleWasm(): Promise<SpackleWasm> {
-  if (!cached) cached = initialize();
-  return cached;
+    if (!cached) cached = initialize();
+    return cached;
 }
 
 async function initialize(): Promise<SpackleWasm> {
-  await initWasm();
-  return {
-    parseConfig(toml) {
-      return parseOrThrow<SpackleConfig>(parse_config(toml), "parseConfig");
-    },
-    validateConfig(toml) {
-      return JSON.parse(validate_config(toml)) as ValidationResult;
-    },
-    checkProject(toml, templates) {
-      return JSON.parse(
-        check_project(toml, JSON.stringify(templates)),
-      ) as ValidationResult;
-    },
-    validateSlotData(configJson, data) {
-      return JSON.parse(
-        validate_slot_data(configJson, JSON.stringify(data)),
-      ) as ValidationResult;
-    },
-    renderTemplates(templates, data, configJson) {
-      return parseOrThrow<RenderedTemplate[]>(
-        render_templates(
-          JSON.stringify(templates),
-          JSON.stringify(data),
-          configJson,
-        ),
-        "renderTemplates",
-      );
-    },
-    evaluateHooks(configJson, data) {
-      return parseOrThrow<HookPlanEntry[]>(
-        evaluate_hooks(configJson, JSON.stringify(data)),
-        "evaluateHooks",
-      );
-    },
-    renderString(template, data) {
-      return parseOrThrow<string>(
-        render_string(template, JSON.stringify(data)),
-        "renderString",
-      );
-    },
-    getOutputName(outDir) {
-      return parseOrThrow<string>(get_output_name(outDir), "getOutputName");
-    },
-    getProjectName(configJson, projectDir) {
-      return parseOrThrow<string>(
-        get_project_name(configJson, projectDir),
-        "getProjectName",
-      );
-    },
-  };
-}
-
-/** The WASM layer returns either a valid JSON value or `{"error": "..."}`.
- * `parseOrThrow` funnels the error envelope through a thrown Error so the
- * orchestration layer doesn't have to branch on response shape. */
-function parseOrThrow<T>(raw: string, label: string): T {
-  const parsed = JSON.parse(raw);
-  if (parsed && typeof parsed === "object" && "error" in parsed) {
-    throw new Error(`${label}: ${parsed.error}`);
-  }
-  return parsed as T;
+    return {
+        check(projectDir, fs) {
+            return JSON.parse(check_with_fs(projectDir, fs)) as CheckResponse;
+        },
+        validateSlotData(projectDir, slotData, fs) {
+            return JSON.parse(
+                validate_slot_data_with_fs(projectDir, JSON.stringify(slotData), fs),
+            ) as ValidationResponse;
+        },
+        generate(projectDir, outDir, slotData, runHooks, fs) {
+            return JSON.parse(
+                generate_with_fs(
+                    projectDir,
+                    outDir,
+                    JSON.stringify(slotData),
+                    runHooks,
+                    fs,
+                ),
+            ) as GenerateResponse;
+        },
+    };
 }
 
 export type {
-  Hook,
-  HookPlanEntry,
-  RenderedTemplate,
-  Slot,
-  SlotData,
-  SlotType,
-  SpackleConfig,
-  TemplateInput,
-  ValidationResult,
+    CheckResponse,
+    GenerateResponse,
+    Hook,
+    RenderedSummary,
+    Slot,
+    SlotData,
+    SlotType,
+    SpackleConfig,
+    ValidationResponse,
 } from "./types.ts";

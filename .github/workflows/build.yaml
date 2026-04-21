@@ -132,57 +132,6 @@ jobs:
           path: dist-wasm/spackle-*.tgz
           retention-days: 1
 
-  # WASI Preview 2 component — smoke test only for now. The artifact isn't
-  # attached to releases yet (shape still settling; see WASM.md). This job
-  # proves the cargo-component build + jco transpile still produce a
-  # working wasip2 artifact on every PR.
-  wasip2:
-    name: WASIP2
-    runs-on: ubuntu-latest
-    env:
-      CARGO_NET_GIT_FETCH_WITH_CLI: true
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Grant access to private repository
-        uses: webfactory/ssh-agent@v0.10.0
-        with:
-          ssh-private-key: ${{ secrets.POLYJUICE_DEPLOY_KEY }}
-
-      - name: Cache rust
-        uses: Swatinem/rust-cache@v2
-
-      - name: Add wasm32-wasip2 target
-        run: rustup target add wasm32-wasip2
-
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
-
-      - name: Install cargo-component
-        run: cargo binstall -y cargo-component
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Install just
-        uses: extractions/setup-just@v3
-
-      - name: Run wasip2 smoke tests (Node reference)
-        run: just test-wasip2
-
-      # Bun path uses --no-wasi-shim jco output + custom WASI shim.
-      # Runs 6 component smoke tests + shim containment unit tests +
-      # `bun build --compile` smoke (the compile check catches asset-
-      # embedding drift that `bun run` alone would miss).
-      - name: Run wasip2 smoke tests (Bun reference + compile-mode)
-        run: just test-wasip2-bun
-
   # Merge step - combine artifacts and create release
   release:
     name: Release

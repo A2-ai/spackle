@@ -2070,6 +2070,7 @@ dependencies = [
  "fronma",
  "getrandom 0.2.17",
  "getrandom 0.4.2",
+ "js-sys",
  "polyjuice",
  "serde",
  "serde-wasm-bindgen",
@@ -2086,7 +2087,6 @@ dependencies = [
  "users",
  "walkdir",
  "wasm-bindgen",
- "wit-bindgen-rt",
 ]
 
 [[package]]
@@ -2954,15 +2954,6 @@ dependencies = [
  "anyhow",
  "heck",
  "wit-parser",
-]
-
-[[package]]
-name = "wit-bindgen-rt"
-version = "0.44.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "653c85dd7aee6fe6f4bded0d242406deadae9819029ce6f7d258c920c384358a"
-dependencies = [
- "bitflags",
 ]
 
 [[package]]

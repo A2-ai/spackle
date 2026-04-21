@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     error::Error,
     fmt::{Debug, Display},
-    fs, io,
+    io,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -10,6 +10,7 @@ use tera::{Context, Tera};
 use thiserror::Error;
 
 use super::slot::Slot;
+use crate::fs::{self as fsmod, FileSystem, FileType};
 
 pub const TEMPLATE_EXT: &str = ".j2";
 
@@ -156,82 +157,77 @@ pub struct RenderedFile {
     pub elapsed: Duration,
 }
 
-pub fn fill(
+/// Collect all `.j2` templates under `project_dir` into a map of
+/// `relative_path → content` using the `fs` backend. Used by `fill` and
+/// `validate` to replace Tera's built-in glob loader (which bypasses
+/// the abstraction and calls `std::fs` directly).
+fn collect_templates<F: FileSystem>(
+    fs: &F,
+    project_dir: &Path,
+) -> io::Result<HashMap<String, String>> {
+    let entries = fsmod::walk(fs, project_dir)?;
+    let mut templates = HashMap::new();
+    for (rel, stat) in entries {
+        if stat.file_type != FileType::File {
+            continue;
+        }
+        let name = rel.to_string_lossy().into_owned();
+        if !name.ends_with(TEMPLATE_EXT) {
+            continue;
+        }
+        let bytes = fs.read_file(&project_dir.join(&rel))?;
+        let content = String::from_utf8(bytes).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, e.to_string())
+        })?;
+        templates.insert(name, content);
+    }
+    Ok(templates)
+}
+
+pub fn fill<F: FileSystem>(
+    fs: &F,
     project_dir: &Path,
     out_dir: &Path,
     data: &HashMap<String, String>,
 ) -> Result<Vec<Result<RenderedFile, FileError>>, tera::Error> {
-    let glob = project_dir.join("**").join("*".to_owned() + TEMPLATE_EXT);
+    // Collect templates via the fs trait, render in memory (per-file —
+    // no accumulating the whole project's output bytes), then write each
+    // result via the fs trait. No direct std::fs, no Tera::new(glob).
+    let templates = collect_templates(fs, project_dir).map_err(|e| {
+        tera::Error::msg(format!("failed to walk project dir: {}", e))
+    })?;
 
-    let tera = Tera::new(&glob.to_string_lossy())?;
-    let context = Context::from_serialize(data)?;
+    let rendered = render_in_memory(&templates, data)?;
 
-    let template_names = tera.get_template_names().collect::<Vec<_>>();
-    let rendered_templates = template_names.iter().map(|template_name| {
-        let original_name = template_name.to_string();
-        let start_time = std::time::Instant::now();
-
-        // Render the file contents
-        let output = match tera.render(template_name, &context) {
-            Ok(o) => o,
-            Err(e) => {
-                return Err(FileError {
-                    kind: FileErrorKind::ErrorRenderingContents(e),
-                    file: template_name.to_string(),
-                });
+    let mut out = Vec::with_capacity(rendered.len());
+    for result in rendered {
+        match result {
+            Ok(rf) => {
+                let dest_path = out_dir.join(&rf.path);
+                if let Some(parent) = dest_path.parent() {
+                    if let Err(e) = fs.create_dir_all(parent) {
+                        if e.kind() != io::ErrorKind::AlreadyExists {
+                            out.push(Err(FileError {
+                                kind: FileErrorKind::ErrorCreatingDest(e.kind()),
+                                file: rf.path.to_string_lossy().into_owned(),
+                            }));
+                            continue;
+                        }
+                    }
+                }
+                if let Err(e) = fs.write_file(&dest_path, rf.contents.as_bytes()) {
+                    out.push(Err(FileError {
+                        kind: FileErrorKind::ErrorWritingToDest(e),
+                        file: rf.path.to_string_lossy().into_owned(),
+                    }));
+                    continue;
+                }
+                out.push(Ok(rf));
             }
-        };
-
-        // Render the file name
-        let mut rendered_name = template_name.to_string();
-        if rendered_name.ends_with(TEMPLATE_EXT) {
-            let mut tera = tera.clone();
-            rendered_name = match tera.render_str(&rendered_name, &context) {
-                Ok(s) => s,
-                Err(e) => {
-                    return Err(FileError {
-                        kind: FileErrorKind::ErrorRenderingName(e),
-                        file: template_name.to_string(),
-                    });
-                }
-            };
+            Err(e) => out.push(Err(e)),
         }
-
-        let rendered_name = match rendered_name.strip_suffix(TEMPLATE_EXT) {
-            Some(name) => name,
-            None => rendered_name.as_str(),
-        };
-
-        // Write the output
-        let output_dir = out_dir.join(rendered_name);
-
-        match fs::create_dir_all(output_dir.parent().unwrap()) {
-            Ok(_) => (),
-            Err(e) => match e.kind() {
-                std::io::ErrorKind::AlreadyExists => (),
-                e => {
-                    return Err(FileError {
-                        kind: FileErrorKind::ErrorCreatingDest(e),
-                        file: rendered_name.to_string(),
-                    })
-                }
-            },
-        }
-
-        fs::write(&output_dir, output.clone()).map_err(|e| FileError {
-            kind: FileErrorKind::ErrorWritingToDest(e),
-            file: rendered_name.to_string(),
-        })?;
-
-        Ok(RenderedFile {
-            original_path: original_name.into(),
-            path: rendered_name.into(),
-            contents: output,
-            elapsed: start_time.elapsed(),
-        })
-    });
-
-    Ok(rendered_templates.collect::<Vec<_>>())
+    }
+    Ok(out)
 }
 
 #[derive(Debug)]
@@ -263,33 +259,18 @@ impl Display for ValidateError {
 
 // Validates the templates in the directory against the slots
 // Returns an error if any of the templates reference a slot that doesn't exist
-pub fn validate(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), ValidateError> {
-    let glob = dir.join("**").join("*".to_owned() + TEMPLATE_EXT);
-
-    let tera = Tera::new(&glob.to_string_lossy()).map_err(ValidateError::TeraError)?;
-    let mut context = Context::from_serialize(
-        slots
-            .iter()
-            .map(|s| (s.key.clone(), ""))
-            .collect::<HashMap<_, _>>(),
-    )
-    .map_err(ValidateError::TeraError)?;
-    context.insert("_project_name".to_string(), "");
-    context.insert("_output_name".to_string(), "");
-
-    let errors = tera
-        .get_template_names()
-        .filter_map(|template_name| match tera.render(template_name, &context) {
-            Ok(_) => None,
-            Err(e) => Some((template_name.to_string(), e)),
-        })
-        .collect::<Vec<_>>();
-
-    if !errors.is_empty() {
-        return Err(ValidateError::RenderError(errors));
-    }
-
-    Ok(())
+pub fn validate<F: FileSystem>(
+    fs: &F,
+    dir: &Path,
+    slots: &Vec<Slot>,
+) -> Result<(), ValidateError> {
+    let templates = collect_templates(fs, dir).map_err(|e| {
+        ValidateError::TeraError(tera::Error::msg(format!(
+            "failed to walk project dir: {}",
+            e
+        )))
+    })?;
+    validate_in_memory(&templates, slots)
 }
 
 #[cfg(test)]
@@ -305,6 +286,7 @@ mod tests {
         let dir = TempDir::new("spackle").unwrap().into_path();
 
         let result = fill(
+            &crate::fs::StdFs::new(),
             &PathBuf::from("tests/data/proj1"),
             &dir.join("proj1_filled"),
             &HashMap::from([
@@ -323,6 +305,7 @@ mod tests {
     #[test]
     fn validate_dir_proj1() {
         let result = validate(
+            &crate::fs::StdFs::new(),
             &PathBuf::from("tests/data/proj1"),
             &vec![Slot {
                 key: "defined_field".to_string(),
@@ -337,6 +320,7 @@ mod tests {
     #[test]
     fn validate_dir_proj2() {
         let result = validate(
+            &crate::fs::StdFs::new(),
             &PathBuf::from("tests/data/proj2"),
             &vec![Slot {
                 key: "defined_field".to_string(),
