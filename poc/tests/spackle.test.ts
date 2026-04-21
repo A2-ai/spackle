@@ -1,6 +1,5 @@
 // End-to-end tests — exercise check/validateSlotData/generate through
 // both DiskFs (real disk + workspace root) and MemoryFs (in-memory).
-// Same fixtures as the prior suite.
 
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { cp, mkdtemp, realpath, rm, readFile } from "node:fs/promises";
@@ -15,7 +14,7 @@ import {
     validateSlotData,
 } from "../src/spackle.ts";
 
-const FIXTURES = resolve(import.meta.dir, "..", "..", "tests", "data");
+const FIXTURES = resolve(import.meta.dir, "..", "..", "tests", "fixtures");
 
 async function workspace(fixture: string) {
     const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-")));
@@ -46,14 +45,17 @@ describe("spackle (DiskFs)", () => {
     });
 
     test("check: happy path returns parsed config", async () => {
-        const ws = await workspace("proj2");
+        const ws = await workspace("basic_project");
         cleanup.push(ws.root);
         const fs = new DiskFs({ workspaceRoot: ws.root });
         const res = await check(ws.projectDir, fs);
 
         expect(res.valid).toBe(true);
         if (res.valid) {
-            expect(res.config.slots.map((s) => s.key)).toContain("defined_field");
+            const keys = res.config.slots.map((s) => s.key);
+            expect(keys).toContain("greeting");
+            expect(keys).toContain("target");
+            expect(keys).toContain("filename");
         }
     });
 
@@ -70,53 +72,62 @@ describe("spackle (DiskFs)", () => {
     });
 
     test("validateSlotData: accepts good data, rejects wrong type", async () => {
-        const ws = await workspace("proj1");
+        const ws = await workspace("typed_slots");
         cleanup.push(ws.root);
         const fs = new DiskFs({ workspaceRoot: ws.root });
 
         const ok = await validateSlotData(
             ws.projectDir,
-            { slot_1: "hello", slot_2: "42", slot_3: "true" },
+            { name: "hello", count: "42", enabled: "true" },
             fs,
         );
         expect(ok.valid).toBe(true);
 
         const bad = await validateSlotData(
             ws.projectDir,
-            { slot_1: "hello", slot_2: "not-a-number", slot_3: "true" },
+            { name: "hello", count: "not-a-number", enabled: "true" },
             fs,
         );
         expect(bad.valid).toBe(false);
     });
 
     test("generate: writes rendered + copied files to outDir", async () => {
-        const ws = await workspace("proj2");
-        cleanup.push(ws.root);
-        const fs = new DiskFs({ workspaceRoot: ws.root });
-
-        const res = await generate(ws.projectDir, ws.outDir, { defined_field: "hi" }, fs);
-        expect(res.ok).toBe(true);
-        if (res.ok) {
-            const originals = res.rendered.map((r) => r.original_path);
-            expect(originals).toContain("good.j2");
-
-            const rendered = await readFile(join(ws.outDir, "good"), "utf8");
-            expect(rendered).toBe("hi");
-
-            const copied = await readFile(join(ws.outDir, "subdir", "file.txt"), "utf8");
-            expect(copied).toContain("{{ undefined_field }}");
-        }
-    });
-
-    test("generate: runHooks=true is explicitly unsupported", async () => {
-        const ws = await workspace("proj2");
+        const ws = await workspace("basic_project");
         cleanup.push(ws.root);
         const fs = new DiskFs({ workspaceRoot: ws.root });
 
         const res = await generate(
             ws.projectDir,
             ws.outDir,
-            { defined_field: "hi" },
+            { greeting: "hi", target: "world", filename: "notes" },
+            fs,
+        );
+        expect(res.ok).toBe(true);
+        if (res.ok) {
+            const originals = res.rendered.map((r) => r.original_path);
+            expect(originals).toContain("README.md.j2");
+
+            const readme = await readFile(join(ws.outDir, "README.md"), "utf8");
+            expect(readme).toContain("HI, world!");
+
+            // Static file copied verbatim (tokens not interpolated).
+            const copied = await readFile(join(ws.outDir, "docs", "static.md"), "utf8");
+            expect(copied).toContain("{{ greeting }}");
+
+            // `drafts/` is in the ignore list and must not be copied.
+            await expect(readFile(join(ws.outDir, "drafts", "ignored.md"))).rejects.toThrow();
+        }
+    });
+
+    test("generate: runHooks=true is explicitly unsupported", async () => {
+        const ws = await workspace("basic_project");
+        cleanup.push(ws.root);
+        const fs = new DiskFs({ workspaceRoot: ws.root });
+
+        const res = await generate(
+            ws.projectDir,
+            ws.outDir,
+            { greeting: "hi", target: "world", filename: "notes" },
             fs,
             { runHooks: true },
         );
@@ -130,8 +141,13 @@ describe("spackle (DiskFs)", () => {
 describe("spackle (MemoryFs)", () => {
     test("check + generate end-to-end without touching disk", async () => {
         const mem = await memoryProject(
-            ["spackle.toml", "good.j2", "subdir/file.txt"],
-            join(FIXTURES, "proj2"),
+            [
+                "spackle.toml",
+                "README.md.j2",
+                "docs/static.md",
+                "src/{{ filename }}.txt.j2",
+            ],
+            join(FIXTURES, "basic_project"),
             "/project",
         );
 
@@ -141,19 +157,19 @@ describe("spackle (MemoryFs)", () => {
         const genRes = await generate(
             "/project",
             "/output",
-            { defined_field: "mem" },
+            { greeting: "hey", target: "mem", filename: "notes" },
             mem,
         );
         expect(genRes.ok).toBe(true);
         if (genRes.ok) {
             const snap = mem.snapshot();
-            const rendered = snap.files["/output/good"];
-            expect(rendered).toBeDefined();
-            expect(new TextDecoder().decode(rendered)).toBe("mem");
+            const readme = snap.files["/output/README.md"];
+            expect(readme).toBeDefined();
+            expect(new TextDecoder().decode(readme)).toContain("HEY, mem!");
 
-            const copied = snap.files["/output/subdir/file.txt"];
+            const copied = snap.files["/output/docs/static.md"];
             expect(copied).toBeDefined();
-            expect(new TextDecoder().decode(copied)).toContain("{{ undefined_field }}");
+            expect(new TextDecoder().decode(copied)).toContain("{{ greeting }}");
         }
     });
 });
