@@ -1,0 +1,9 @@
+---
+source: tests/templating.rs
+expression: tree
+---
+[
+    "README.md",
+    "docs/static.md",
+    "src/dynamic.txt",
+]

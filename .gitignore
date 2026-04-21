@@ -5,3 +5,4 @@ render
 poc/node_modules
 poc/output
 poc/pkg
+.DS_Store

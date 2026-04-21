@@ -152,12 +152,14 @@ mod tests {
     use super::*;
 
     use std::{collections::HashMap, fs};
-    use tempdir::TempDir;
+    use tempfile::TempDir;
 
     #[test]
     fn ignore_one() {
-        let src_dir = TempDir::new("spackle").unwrap().into_path();
-        let dst_dir = TempDir::new("spackle").unwrap().into_path();
+        let src = TempDir::new().unwrap();
+        let dst = TempDir::new().unwrap();
+        let src_dir = src.path();
+        let dst_dir = dst.path();
 
         for i in 0..3 {
             fs::write(
@@ -187,8 +189,10 @@ mod tests {
 
     #[test]
     fn ignore_subdir() {
-        let src_dir = TempDir::new("spackle").unwrap().into_path();
-        let dst_dir = TempDir::new("spackle").unwrap().into_path();
+        let src = TempDir::new().unwrap();
+        let dst = TempDir::new().unwrap();
+        let src_dir = src.path();
+        let dst_dir = dst.path();
 
         for i in 0..3 {
             fs::write(
@@ -225,16 +229,16 @@ mod tests {
 
     #[test]
     fn replace_file_name() {
-        let src_dir = TempDir::new("spackle").unwrap().into_path();
-        let dst_dir = TempDir::new("spackle").unwrap().into_path();
+        let src = TempDir::new().unwrap();
+        let dst = TempDir::new().unwrap();
+        let src_dir = src.path();
+        let dst_dir = dst.path();
 
-        // a file that has template structure in its name but does not end with .j2
-        // should still be replaced, while leavings its contents untouched.
-        // .j2 extensions should representing which files have _contents_ that need
-        // replacing.
+        // A file whose name contains template syntax but does not end with .j2
+        // should have its name replaced while contents remain untouched.
+        // The .j2 extension marks files whose *contents* get rendered.
         fs::write(
             src_dir.join(format!("{}.tmpl", "{{template_name}}")),
-            // copy will not do any replacement so contents should remain as is
             "{{_output_name}}",
         )
         .unwrap();
@@ -255,6 +259,11 @@ mod tests {
         assert!(
             dst_dir.join("template.tmpl").exists(),
             "template.tmpl does not exist"
+        );
+        assert_eq!(
+            fs::read_to_string(dst_dir.join("template.tmpl")).unwrap(),
+            "{{_output_name}}",
+            "contents should be copied verbatim (not templated)"
         );
     }
 }

@@ -133,7 +133,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn load_empty() {
-        let dir = TempDir::new("spackle").unwrap().into_path();
+        let dir = TempDir::new().unwrap();
 
         std::fs::write(dir.join("spackle.toml"), "").unwrap();
 
