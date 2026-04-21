@@ -105,9 +105,9 @@ impl MemoryFs {
         let mut dir_entries: Vec<String> = dirs
             .into_iter()
             .filter_map(|path| {
-                path.strip_prefix(prefix).ok().map(|rel| {
-                    rel.to_string_lossy().into_owned()
-                })
+                path.strip_prefix(prefix)
+                    .ok()
+                    .map(|rel| rel.to_string_lossy().into_owned())
             })
             .filter(|rel| !rel.is_empty())
             .collect();
@@ -334,7 +334,8 @@ mod tests {
     fn drain_subtree_emits_dirs_for_empty_dir_preservation() {
         let fs = MemoryFs::new();
         fs.create_dir_all(Path::new("/output/empty-dir")).unwrap();
-        fs.create_dir_all(Path::new("/output/sub/also-empty")).unwrap();
+        fs.create_dir_all(Path::new("/output/sub/also-empty"))
+            .unwrap();
         // And a file under /output so files path also exercises.
         fs.write_file(Path::new("/output/a.txt"), b"a").unwrap();
 
@@ -373,7 +374,8 @@ mod tests {
         fs.create_dir_all(Path::new("/b")).unwrap();
         fs.write_file(Path::new("/a/src"), b"hello").unwrap();
 
-        fs.copy_file(Path::new("/a/src"), Path::new("/b/dst")).unwrap();
+        fs.copy_file(Path::new("/a/src"), Path::new("/b/dst"))
+            .unwrap();
         assert_eq!(fs.read_file(Path::new("/b/dst")).unwrap(), b"hello");
         // Source survives — this is a copy, not a move.
         assert_eq!(fs.read_file(Path::new("/a/src")).unwrap(), b"hello");

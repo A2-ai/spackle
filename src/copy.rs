@@ -69,10 +69,7 @@ pub fn copy<F: FileSystem>(
 
     for (rel_path, stat) in entries {
         // If any ancestor was skipped, skip everything under it.
-        if skipped_ancestors
-            .iter()
-            .any(|a| rel_path.starts_with(a))
-        {
+        if skipped_ancestors.iter().any(|a| rel_path.starts_with(a)) {
             continue;
         }
 

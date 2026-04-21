@@ -28,10 +28,7 @@ fn data(pairs: &[(&str, &str)]) -> HashMap<String, String> {
 
 /// Run `template::fill` over a scaffolded project and return the rendered
 /// files collected into a sorted `Vec<(relative_path, contents)>`.
-fn fill_all(
-    project: &common::Scaffold,
-    data: &HashMap<String, String>,
-) -> Vec<(String, String)> {
+fn fill_all(project: &common::Scaffold, data: &HashMap<String, String>) -> Vec<(String, String)> {
     let out = out_dir();
     let fs = StdFs::new();
     let results = template::fill(&fs, &project.path(), out.path(), data)
@@ -115,7 +112,9 @@ fn renders_special_output_name() {
     let out = out_dir();
     let dst = out.path().join("chosen-output");
 
-    let files = proj.generate(&StdFs::new(), &project.path(), &dst, &HashMap::new()).unwrap();
+    let files = proj
+        .generate(&StdFs::new(), &project.path(), &dst, &HashMap::new())
+        .unwrap();
     let where_file = files.iter().find(|f| f.path.ends_with("where")).unwrap();
     insta::assert_snapshot!(where_file.contents, @"output: chosen-output");
 }
@@ -151,10 +150,7 @@ fn tera_for_loop() {
 
 #[test]
 fn tera_filter_upper_lower() {
-    let project = scaffold(&[(
-        "case.j2",
-        "up={{ word | upper }} down={{ word | lower }}",
-    )]);
+    let project = scaffold(&[("case.j2", "up={{ word | upper }} down={{ word | lower }}")]);
     let out = fill_all(&project, &data(&[("word", "Spackle")]));
 
     insta::assert_snapshot!(out[0].1, @"up=SPACKLE down=spackle");
@@ -237,7 +233,8 @@ fn copy_templates_directory_name() {
     let out = out_dir();
     let dst = out.path().join("out");
 
-    proj.generate(&StdFs::new(), &project.path(), &dst, &data(&[("var", "x")])).unwrap();
+    proj.generate(&StdFs::new(), &project.path(), &dst, &data(&[("var", "x")]))
+        .unwrap();
 
     let files = list_files(&dst);
     assert_eq!(files, vec!["pinned-proj/readme.txt".to_string()]);
@@ -258,7 +255,8 @@ fn copy_skips_j2_files_from_copy_pass() {
     let out = out_dir();
     let dst = out.path().join("out");
 
-    proj.generate(&StdFs::new(), &project.path(), &dst, &HashMap::new()).unwrap();
+    proj.generate(&StdFs::new(), &project.path(), &dst, &HashMap::new())
+        .unwrap();
 
     let files = list_files(&dst);
     assert_eq!(files, vec!["only".to_string()]);
@@ -279,7 +277,8 @@ fn copy_respects_ignore_patterns() {
     let out = out_dir();
     let dst = out.path().join("out");
 
-    proj.generate(&StdFs::new(), &project.path(), &dst, &HashMap::new()).unwrap();
+    proj.generate(&StdFs::new(), &project.path(), &dst, &HashMap::new())
+        .unwrap();
 
     let files = list_files(&dst);
     assert_eq!(files, vec!["keep.txt".to_string()]);
@@ -293,8 +292,8 @@ fn copy_respects_ignore_patterns() {
 fn error_undefined_variable_in_content() {
     let project = scaffold(&[("bad.j2", "{{ missing_slot }}")]);
     let out = out_dir();
-    let results =
-        template::fill(&StdFs::new(), &project.path(), out.path(), &HashMap::new()).expect("load should succeed");
+    let results = template::fill(&StdFs::new(), &project.path(), out.path(), &HashMap::new())
+        .expect("load should succeed");
 
     assert_eq!(results.len(), 1);
     let err = results.into_iter().next().unwrap().unwrap_err();
@@ -311,8 +310,8 @@ fn error_undefined_variable_in_filename() {
     // so rendering the name should fail.
     let project = scaffold(&[("{{ missing_name }}.j2", "body")]);
     let out = out_dir();
-    let results =
-        template::fill(&StdFs::new(), &project.path(), out.path(), &HashMap::new()).expect("load should succeed");
+    let results = template::fill(&StdFs::new(), &project.path(), out.path(), &HashMap::new())
+        .expect("load should succeed");
 
     let err = results.into_iter().next().unwrap().unwrap_err();
     assert!(
@@ -326,7 +325,13 @@ fn error_undefined_variable_in_filename() {
 fn error_unclosed_tag() {
     // Malformed syntax should surface as a Tera load error from `fill`.
     let project = scaffold(&[("busted.j2", "{% if foo %}oops")]);
-    let err = template::fill(&StdFs::new(), &project.path(), out_dir().path(), &HashMap::new()).unwrap_err();
+    let err = template::fill(
+        &StdFs::new(),
+        &project.path(),
+        out_dir().path(),
+        &HashMap::new(),
+    )
+    .unwrap_err();
     // We don't inspect the inner message — any tera::Error is correct here.
     assert!(!format!("{err}").is_empty());
 }
@@ -442,6 +447,8 @@ fn generate_fails_when_out_dir_exists() {
     let dst = out.path().join("pre-existing");
     std::fs::create_dir_all(&dst).unwrap();
 
-    let err = proj.generate(&StdFs::new(), &project.path(), &dst, &HashMap::new()).unwrap_err();
+    let err = proj
+        .generate(&StdFs::new(), &project.path(), &dst, &HashMap::new())
+        .unwrap_err();
     assert!(matches!(err, GenerateError::AlreadyExists(_)));
 }

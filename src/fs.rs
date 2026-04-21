@@ -70,10 +70,7 @@ pub trait FileSystem {
 ///
 /// Symlinks are yielded as-is (type = `Symlink`); this walker does not
 /// follow them — the caller decides (typical spackle behavior: skip).
-pub fn walk<F: FileSystem + ?Sized>(
-    fs: &F,
-    root: &Path,
-) -> io::Result<Vec<(PathBuf, FileStat)>> {
+pub fn walk<F: FileSystem + ?Sized>(fs: &F, root: &Path) -> io::Result<Vec<(PathBuf, FileStat)>> {
     let mut out = Vec::new();
     walk_inner(fs, root, Path::new(""), &mut out)?;
     Ok(out)
@@ -247,11 +244,12 @@ impl Default for MockFs {
 
 impl FileSystem for MockFs {
     fn read_file(&self, path: &Path) -> io::Result<Vec<u8>> {
-        self.files
-            .borrow()
-            .get(path)
-            .cloned()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no such file: {}", path.display())))
+        self.files.borrow().get(path).cloned().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no such file: {}", path.display()),
+            )
+        })
     }
 
     fn write_file(&self, path: &Path, content: &[u8]) -> io::Result<()> {
@@ -263,7 +261,9 @@ impl FileSystem for MockFs {
                 ));
             }
         }
-        self.files.borrow_mut().insert(path.to_path_buf(), content.to_vec());
+        self.files
+            .borrow_mut()
+            .insert(path.to_path_buf(), content.to_vec());
         Ok(())
     }
 
@@ -343,8 +343,12 @@ mod tests {
     fn mock_fs_read_write_roundtrip() {
         let fs = MockFs::new();
         fs.insert_dir("/workspace");
-        fs.write_file(Path::new("/workspace/a.txt"), b"hello").unwrap();
-        assert_eq!(fs.read_file(Path::new("/workspace/a.txt")).unwrap(), b"hello");
+        fs.write_file(Path::new("/workspace/a.txt"), b"hello")
+            .unwrap();
+        assert_eq!(
+            fs.read_file(Path::new("/workspace/a.txt")).unwrap(),
+            b"hello"
+        );
     }
 
     #[test]
@@ -377,7 +381,10 @@ mod tests {
         let mut results = walk(&fs, Path::new("/p")).unwrap();
         results.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let paths: Vec<_> = results.iter().map(|(p, _)| p.to_string_lossy().into_owned()).collect();
+        let paths: Vec<_> = results
+            .iter()
+            .map(|(p, _)| p.to_string_lossy().into_owned())
+            .collect();
         assert!(paths.contains(&"a".to_string()));
         assert!(paths.contains(&"sub".to_string()));
         assert!(paths.contains(&"sub/b".to_string()));

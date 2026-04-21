@@ -1217,10 +1217,7 @@ mod tests {
                 ],
                 slots: vec![],
                 data: vec![],
-                expected: vec![
-                    ("first", true, None),
-                    ("second", true, None),
-                ],
+                expected: vec![("first", true, None), ("second", true, None)],
             },
             Case {
                 name: "hook_ran injection: disabled first → second conditional false",
@@ -1250,10 +1247,7 @@ mod tests {
                 name: "command templating with slot data",
                 hooks: vec![Hook {
                     key: "h1".to_string(),
-                    command: vec![
-                        "echo".to_string(),
-                        "Hello {{ name }}".to_string(),
-                    ],
+                    command: vec!["echo".to_string(), "Hello {{ name }}".to_string()],
                     default: Some(true),
                     ..Default::default()
                 }],
@@ -1308,12 +1302,7 @@ mod tests {
 
             let plan = evaluate_hook_plan(&c.hooks, &c.slots, &data);
 
-            assert_eq!(
-                plan.len(),
-                c.expected.len(),
-                "case {}: plan length",
-                c.name
-            );
+            assert_eq!(plan.len(), c.expected.len(), "case {}: plan length", c.name);
 
             for (entry, (exp_key, exp_run, exp_skip)) in plan.iter().zip(c.expected.iter()) {
                 assert_eq!(entry.key, *exp_key, "case {}: key", c.name);

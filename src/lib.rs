@@ -1,10 +1,10 @@
+#[cfg(not(target_arch = "wasm32"))]
+use std::fmt::Display;
 use std::{
     collections::HashMap,
     io,
     path::{Path, PathBuf},
 };
-#[cfg(not(target_arch = "wasm32"))]
-use std::fmt::Display;
 
 use fronma::{engines::Toml, parser::parse_with_engine};
 use template::RenderedFile;
@@ -97,10 +97,7 @@ impl Display for RunHooksError {
     }
 }
 
-pub fn load_project<F: fs::FileSystem>(
-    fs: &F,
-    path: &PathBuf,
-) -> Result<Project, LoadError> {
+pub fn load_project<F: fs::FileSystem>(fs: &F, path: &PathBuf) -> Result<Project, LoadError> {
     let config = config::load(fs, path).map_err(|e| LoadError::ConfigError {
         path: path.to_owned(),
         error: e,

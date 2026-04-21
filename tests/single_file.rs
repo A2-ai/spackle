@@ -82,7 +82,8 @@ key = "y"
 "#,
     )]);
 
-    let cfg = config::load(&StdFs::new(), project.path()).expect("load should dispatch to load_dir");
+    let cfg =
+        config::load(&StdFs::new(), project.path()).expect("load should dispatch to load_dir");
     assert_eq!(cfg.slots.len(), 1);
     assert_eq!(cfg.slots[0].key, "y");
 }

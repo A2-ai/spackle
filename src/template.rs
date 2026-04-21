@@ -176,9 +176,8 @@ fn collect_templates<F: FileSystem>(
             continue;
         }
         let bytes = fs.read_file(&project_dir.join(&rel))?;
-        let content = String::from_utf8(bytes).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let content = String::from_utf8(bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         templates.insert(name, content);
     }
     Ok(templates)
@@ -193,9 +192,8 @@ pub fn fill<F: FileSystem>(
     // Collect templates via the fs trait, render in memory (per-file —
     // no accumulating the whole project's output bytes), then write each
     // result via the fs trait. No direct std::fs, no Tera::new(glob).
-    let templates = collect_templates(fs, project_dir).map_err(|e| {
-        tera::Error::msg(format!("failed to walk project dir: {}", e))
-    })?;
+    let templates = collect_templates(fs, project_dir)
+        .map_err(|e| tera::Error::msg(format!("failed to walk project dir: {}", e)))?;
 
     let rendered = render_in_memory(&templates, data)?;
 
@@ -259,11 +257,7 @@ impl Display for ValidateError {
 
 // Validates the templates in the directory against the slots
 // Returns an error if any of the templates reference a slot that doesn't exist
-pub fn validate<F: FileSystem>(
-    fs: &F,
-    dir: &Path,
-    slots: &Vec<Slot>,
-) -> Result<(), ValidateError> {
+pub fn validate<F: FileSystem>(fs: &F, dir: &Path, slots: &Vec<Slot>) -> Result<(), ValidateError> {
     let templates = collect_templates(fs, dir).map_err(|e| {
         ValidateError::TeraError(tera::Error::msg(format!(
             "failed to walk project dir: {}",
@@ -315,10 +309,7 @@ mod tests {
             },
             Case {
                 name: "undefined variable causes per-file error",
-                templates: vec![
-                    ("good.j2", "{{ x }}"),
-                    ("bad.j2", "{{ undefined_var }}"),
-                ],
+                templates: vec![("good.j2", "{{ x }}"), ("bad.j2", "{{ undefined_var }}")],
                 data: vec![("x", "ok")],
                 expect_ok_count: 1,
                 expect_err_count: 1,
@@ -425,10 +416,7 @@ mod tests {
             },
             Case {
                 name: "mix of valid and invalid",
-                templates: vec![
-                    ("good.j2", "{{ x }}"),
-                    ("bad.j2", "{{ nope }}"),
-                ],
+                templates: vec![("good.j2", "{{ x }}"), ("bad.j2", "{{ nope }}")],
                 slots: vec!["x"],
                 expect_valid: false,
             },

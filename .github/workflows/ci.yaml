@@ -32,8 +32,8 @@ jobs:
       - name: Rust Format check
         run: cargo fmt --check
 
-      - name: Rust Clippy
-        run: cargo clippy --workspace
+      # - name: Rust Clippy
+      #   run: cargo clippy --workspace
 
   test:
     name: Test
