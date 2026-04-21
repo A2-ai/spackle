@@ -1,4 +1,4 @@
-# @a2-ai/spackle-wasm
+# @a2-ai/spackle
 
 spackle project templating, compiled to WebAssembly. Drop it into Node, Bun, or a browser and generate filled project trees from TOML-configured templates.
 
@@ -6,7 +6,7 @@ spackle project templating, compiled to WebAssembly. Drop it into Node, Bun, or 
 
 ## Install
 
-`@a2-ai/spackle-wasm` is **not published to npm**. It ships as a tarball attached to each [GitHub release](https://github.com/a2-ai/spackle/releases) of the `spackle` repo, produced by the release pipeline (`wasm-pack` × 3 targets + TS dist, packed via `bun pm pack`).
+`@a2-ai/spackle` is **not published to npm**. It ships as a tarball attached to each [GitHub release](https://github.com/a2-ai/spackle/releases) of the `spackle` repo, produced by the release pipeline (`wasm-pack` × 3 targets + TS dist, packed via `bun pm pack`).
 
 Install from a release asset URL:
 
@@ -29,7 +29,7 @@ Pin by tag / commit SHA for reproducibility.
 ## Quickstart
 
 ```ts
-import { DiskFs, generate } from "@a2-ai/spackle-wasm";
+import { DiskFs, generate } from "@a2-ai/spackle";
 
 const fs = new DiskFs({ workspaceRoot: "/var/workspace" });
 
@@ -50,7 +50,7 @@ if (result.ok) {
 In-memory preview (no disk I/O):
 
 ```ts
-import { MemoryFs, generateBundle } from "@a2-ai/spackle-wasm";
+import { MemoryFs, generateBundle } from "@a2-ai/spackle";
 
 const bundle = new MemoryFs({
     files: {
@@ -84,9 +84,9 @@ Three wasm-pack outputs ship in `pkg/`:
 
 | Target | Import path | When to use |
 |---|---|---|
-| nodejs | `@a2-ai/spackle-wasm` (default) | Node, Bun, Deno-compat |
-| web | `@a2-ai/spackle-wasm/pkg/web` | Browsers fetching the `.wasm` directly |
-| bundler | `@a2-ai/spackle-wasm/pkg/bundler` | webpack / vite pipelines |
+| nodejs | `@a2-ai/spackle` (default) | Node, Bun, Deno-compat |
+| web | `@a2-ai/spackle/pkg/web` | Browsers fetching the `.wasm` directly |
+| bundler | `@a2-ai/spackle/pkg/bundler` | webpack / vite pipelines |
 
 Default import path (no suffix) hits the nodejs target.
 

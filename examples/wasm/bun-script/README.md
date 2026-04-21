@@ -1,6 +1,6 @@
 # Example: bun-script
 
-Minimal runnable example of `@a2-ai/spackle-wasm` under Bun.
+Minimal runnable example of `@a2-ai/spackle` under Bun.
 
 Reads the fixture at `fixtures/my-template/`, fills it with slot values, writes the output to a temp dir, and prints what was written.
 
@@ -9,7 +9,7 @@ Reads the fixture at `fixtures/my-template/`, fills it with slot values, writes 
 ```bash
 # From the repo root. `build-wasm-ts` transitively runs `build-wasm`
 # (wasm-pack for all three targets) AND emits the TypeScript dist/
-# that `@a2-ai/spackle-wasm`'s default entry resolves to. A clean clone
+# that `@a2-ai/spackle`'s default entry resolves to. A clean clone
 # needs both — `build-wasm` alone leaves `dist/` empty and the
 # `file:../../../wasm` dependency link fails to resolve.
 just build-wasm-ts

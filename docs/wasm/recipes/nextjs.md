@@ -2,7 +2,7 @@
 
 **Status: planned.**
 
-Use `@a2-ai/spackle-wasm` inside a Next.js API route (app router or pages router) for server-side project generation.
+Use `@a2-ai/spackle` inside a Next.js API route (app router or pages router) for server-side project generation.
 
 Example target: [`examples/wasm/nextjs-route`](../../../examples/wasm/nextjs-route/) — skeleton; not yet implemented.
 
@@ -11,7 +11,7 @@ Example target: [`examples/wasm/nextjs-route`](../../../examples/wasm/nextjs-rou
 ```ts
 // app/api/generate/route.ts
 import { NextResponse } from "next/server";
-import { DiskFs, generate } from "@a2-ai/spackle-wasm";
+import { DiskFs, generate } from "@a2-ai/spackle";
 
 export async function POST(req: Request) {
     const { templatePath, slotData } = await req.json();

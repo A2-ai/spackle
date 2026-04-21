@@ -7,7 +7,7 @@
 // - bundler  — ESM, delegates wasm loading to the bundler (webpack, vite).
 //
 // Output lands in `wasm/pkg/<target>/` (gitignored). Shipping all three
-// lets consumers import `@a2-ai/spackle-wasm/pkg/<t>` matching their runtime.
+// lets consumers import `@a2-ai/spackle/pkg/<t>` matching their runtime.
 //
 // Run: `cd wasm && bun run scripts/build.ts` (or `just build-wasm`).
 

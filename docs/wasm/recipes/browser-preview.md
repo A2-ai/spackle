@@ -11,7 +11,7 @@ Example target: [`examples/wasm/browser-preview`](../../../examples/wasm/browser
 Use the `web` target and `generateBundle` (no disk, no `DiskFs`):
 
 ```ts
-import init, { generate } from "@a2-ai/spackle-wasm/pkg/web";
+import init, { generate } from "@a2-ai/spackle/pkg/web";
 
 await init();  // load the .wasm
 

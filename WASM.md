@@ -57,7 +57,7 @@ spackle/
 │   └── spackle-wasm/        # cdylib, wasm-bindgen exports + MemoryFs
 │       ├── src/lib.rs       # three #[wasm_bindgen] exports + init
 │       └── src/memory_fs.rs # MemoryFs impls spackle::fs::FileSystem
-├── wasm/                    # @a2-ai/spackle-wasm npm package
+├── wasm/                    # @a2-ai/spackle npm package
 │   ├── src/                 # TS orchestration + host helpers
 │   ├── tests/               # bun test (end-to-end via pkg/nodejs)
 │   ├── scripts/             # build.ts, demo.ts

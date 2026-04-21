@@ -2,7 +2,7 @@
 
 **Status: planned.**
 
-Use `@a2-ai/spackle-wasm` inside a TanStack Start server route to generate project trees on demand (e.g., scaffold-as-a-service, template preview, per-request fixture generation).
+Use `@a2-ai/spackle` inside a TanStack Start server route to generate project trees on demand (e.g., scaffold-as-a-service, template preview, per-request fixture generation).
 
 Example target: [`examples/wasm/tanstack-start-server`](../../../examples/wasm/tanstack-start-server/) — skeleton; not yet implemented.
 
@@ -10,7 +10,7 @@ Example target: [`examples/wasm/tanstack-start-server`](../../../examples/wasm/t
 
 ```ts
 // app/routes/api/generate.ts
-import { DiskFs, generate } from "@a2-ai/spackle-wasm";
+import { DiskFs, generate } from "@a2-ai/spackle";
 import { createServerFn } from "@tanstack/start";
 
 export const generateProject = createServerFn("POST", async (input: {

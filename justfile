@@ -15,7 +15,7 @@ check-wasm-target:
 install:
     cargo install --path=cli
 
-# --- WASM (@a2-ai/spackle-wasm) ---
+# --- WASM (@a2-ai/spackle) ---
 #
 # `crates/spackle-wasm` is the cdylib that exposes the three bundle-in /
 # bundle-out exports. `wasm/` is the published TypeScript package that

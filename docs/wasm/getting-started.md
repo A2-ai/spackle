@@ -1,10 +1,10 @@
 # Getting started
 
-`@a2-ai/spackle-wasm` is the spackle templating engine compiled to WebAssembly, with a TypeScript orchestration layer for Node, Bun, and browsers. Install, point it at a project directory, hand it slot values, and it writes a filled project tree.
+`@a2-ai/spackle` is the spackle templating engine compiled to WebAssembly, with a TypeScript orchestration layer for Node, Bun, and browsers. Install, point it at a project directory, hand it slot values, and it writes a filled project tree.
 
 ## Install
 
-`@a2-ai/spackle-wasm` is **not published to the npm registry**. It's distributed as a tarball asset on each [GitHub release](https://github.com/a2-ai/spackle/releases).
+`@a2-ai/spackle` is **not published to the npm registry**. It's distributed as a tarball asset on each [GitHub release](https://github.com/a2-ai/spackle/releases).
 
 ```bash
 # From a pinned release asset:
@@ -20,7 +20,7 @@ bun add git+ssh://git@github.com/a2-ai/spackle.git#<ref>
 ## Minimal Bun example
 
 ```ts
-import { DiskFs, generate } from "@a2-ai/spackle-wasm";
+import { DiskFs, generate } from "@a2-ai/spackle";
 
 const fs = new DiskFs({ workspaceRoot: "/var/workspace" });
 

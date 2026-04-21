@@ -6,7 +6,7 @@ Runnable integration examples for spackle.
 
 - [`cli/`](cli/) — placeholder; planned runnable invocation examples.
 
-## WASM (`@a2-ai/spackle-wasm`)
+## WASM (`@a2-ai/spackle`)
 
 - [`wasm/bun-script/`](wasm/bun-script/) — **runnable**. Minimal Bun script that reads a template, fills it, writes output.
 - [`wasm/node-script/`](wasm/node-script/) — planned. Plain Node.js variant of bun-script.

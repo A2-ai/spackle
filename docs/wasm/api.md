@@ -1,6 +1,6 @@
 # API reference
 
-`@a2-ai/spackle-wasm` exposes three primary operations — `check`, `validateSlotData`, `generate` — plus two `…Bundle` variants that skip disk I/O. Two host helpers (`DiskFs`, `MemoryFs`) handle moving data in and out.
+`@a2-ai/spackle` exposes three primary operations — `check`, `validateSlotData`, `generate` — plus two `…Bundle` variants that skip disk I/O. Two host helpers (`DiskFs`, `MemoryFs`) handle moving data in and out.
 
 ## Core types
 

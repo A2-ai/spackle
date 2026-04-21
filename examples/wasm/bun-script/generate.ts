@@ -5,7 +5,7 @@
 import { readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
-import { DiskFs, generate } from "@a2-ai/spackle-wasm";
+import { DiskFs, generate } from "@a2-ai/spackle";
 
 const FIXTURE = join(import.meta.dir, "fixtures", "my-template");
 

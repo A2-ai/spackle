@@ -14,7 +14,7 @@ This is an explicit refusal — not a silent no-op — so callers can observe th
 
 Hooks in spackle are arbitrary shell commands declared in `spackle.toml` and run after generation. The native CLI executes them via `std::process` (`async-process`). Under wasm, there's no process to spawn — subprocess creation has to cross the wasm boundary to a host-side executor.
 
-That executor needs its own bridge (a future `JsHooks` analogue of the `SpackleFs` callback pattern from earlier design rounds). Designing and landing it is substantial work — threading plan evaluation, environment construction, exit-code routing, timeouts — and not critical for the initial `@a2-ai/spackle-wasm` release.
+That executor needs its own bridge (a future `JsHooks` analogue of the `SpackleFs` callback pattern from earlier design rounds). Designing and landing it is substantial work — threading plan evaluation, environment construction, exit-code routing, timeouts — and not critical for the initial `@a2-ai/spackle` release.
 
 ## What's in the repo today
 

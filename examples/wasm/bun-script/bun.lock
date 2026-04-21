@@ -4,7 +4,7 @@
     "": {
       "name": "spackle-example-bun-script",
       "dependencies": {
-        "@a2-ai/spackle-wasm": "file:../../../wasm",
+        "@a2-ai/spackle": "file:../../../wasm",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -12,7 +12,7 @@
     },
   },
   "packages": {
-    "@a2-ai/spackle-wasm": ["@a2-ai/spackle-wasm@file:../../../wasm", { "devDependencies": { "@types/bun": "latest", "@types/node": "^22.0.0", "typescript": "^5.6.0" } }],
+    "@a2-ai/spackle": ["@a2-ai/spackle@file:../../../wasm", { "devDependencies": { "@types/bun": "latest", "@types/node": "^22.0.0", "typescript": "^5.6.0" } }],
 
     "@types/bun": ["@types/bun@1.3.12", "", { "dependencies": { "bun-types": "1.3.12" } }, "sha512-DBv81elK+/VSwXHDlnH3Qduw+KxkTIWi7TXkAeh24zpi5l0B2kUg9Ga3tb4nJaPcOFswflgi/yAvMVBPrxMB+A=="],
 

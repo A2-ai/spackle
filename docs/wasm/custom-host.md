@@ -17,7 +17,7 @@ Also match native's **"outDir must not pre-exist"** contract: refuse the write (
 ## Example: S3
 
 ```ts
-import type { Bundle } from "@a2-ai/spackle-wasm";
+import type { Bundle } from "@a2-ai/spackle";
 import { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 
 const s3 = new S3Client({ region: "us-east-1" });
@@ -65,7 +65,7 @@ async function writeOutputToS3(
 }
 
 // Use with generateBundle (bypass DiskFs entirely):
-import { generateBundle } from "@a2-ai/spackle-wasm";
+import { generateBundle } from "@a2-ai/spackle";
 
 const bundle = await readProjectFromS3("my-bucket", "templates/my-template");
 const result = await generateBundle(bundle, { name: "hello" });
@@ -81,7 +81,7 @@ if (result.ok) {
 
 ```ts
 import { execSync } from "node:child_process";
-import type { Bundle } from "@a2-ai/spackle-wasm";
+import type { Bundle } from "@a2-ai/spackle";
 
 function readProjectFromGit(repo: string, ref: string, subtree: string): Bundle {
     const tree = execSync(`git -C ${repo} ls-tree -r ${ref} ${subtree}`).toString();
