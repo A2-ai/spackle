@@ -225,6 +225,8 @@ export {
   NodeHooks,
   defaultHooks,
   detectHooksEnv,
+  formatArgv,
+  parseShellLine,
   runHookPlan,
   type HookExecuteResult,
   type HookRunResult,

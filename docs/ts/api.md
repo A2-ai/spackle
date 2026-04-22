@@ -166,7 +166,7 @@ interface HookExecuteResult {
 }
 
 interface SpackleHooks {
-    execute(command: string[], cwd: string, env?: Record<string, string>):
+    execute(command: string[] | string, cwd: string, env?: Record<string, string>):
         Promise<HookExecuteResult>;
 }
 
@@ -179,9 +179,13 @@ interface HooksEnv {
 }
 function detectHooksEnv(): HooksEnv;
 function defaultHooks(env?: HooksEnv): SpackleHooks;
+function parseShellLine(text: string): string[];
+function formatArgv(argv: readonly string[]): string;
 ```
 
 `defaultHooks()` picks `BunHooks` or `NodeHooks` based on `detectHooksEnv()`. In environments without either (browsers), it throws with a clear "no subprocess available" message — supply a custom `SpackleHooks` (e.g. one that POSTs to a backend) if you need browser-side hook behavior. Pass an explicit `env` to force a particular impl (useful in tests).
+
+`parseShellLine` and `formatArgv` are exported from the same module as the hook runner and use the same argv semantics. Use them when converting user-entered command text (e.g. `echo "hello world"`) to argv and back.
 
 ## Bundle variants
 

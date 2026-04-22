@@ -28,7 +28,11 @@ export interface HookExecuteResult {
 }
 
 export interface SpackleHooks {
-  execute(command: string[], cwd: string, env?: Record<string, string>): Promise<HookExecuteResult>;
+  execute(
+    command: string[] | string,
+    cwd: string,
+    env?: Record<string, string>,
+  ): Promise<HookExecuteResult>;
 }
 
 /** Per-hook outcome in the returned results array. */
@@ -79,6 +83,118 @@ export interface RunHookPlanOptions {
   env?: Record<string, string>;
 }
 
+const SAFE_ARG_PATTERN = /^[\w@%+=:,./-]+$/;
+
+/** Parse a shell-like command line into argv.
+ *
+ * Supports:
+ * - whitespace splitting
+ * - single and double quotes
+ * - backslash escapes (outside and inside double quotes)
+ * - adjacent quoted/unquoted segments in one arg (`a"b"c` -> `abc`)
+ *
+ * Throws when quotes are unmatched or a trailing backslash is left dangling.
+ */
+export function parseShellLine(text: string): string[] {
+  const argv: string[] = [];
+  let current = "";
+  let hasCurrent = false;
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === undefined) break;
+
+    if (escaped) {
+      current += ch;
+      hasCurrent = true;
+      escaped = false;
+      continue;
+    }
+
+    if (quote === "'") {
+      if (ch === "'") {
+        quote = null;
+      } else {
+        current += ch;
+        hasCurrent = true;
+      }
+      continue;
+    }
+
+    if (quote === '"') {
+      if (ch === '"') {
+        quote = null;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else {
+        current += ch;
+        hasCurrent = true;
+      }
+      continue;
+    }
+
+    if (/\s/.test(ch)) {
+      if (hasCurrent) {
+        argv.push(current);
+        current = "";
+        hasCurrent = false;
+      }
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      hasCurrent = true;
+      continue;
+    }
+
+    if (ch === "\\") {
+      escaped = true;
+      hasCurrent = true;
+      continue;
+    }
+
+    current += ch;
+    hasCurrent = true;
+  }
+
+  if (escaped) {
+    throw new Error("parseShellLine: unterminated escape sequence");
+  }
+  if (quote !== null) {
+    throw new Error("parseShellLine: unterminated quoted string");
+  }
+  if (hasCurrent) {
+    argv.push(current);
+  }
+  return argv;
+}
+
+/** Render argv as a shell-safe command line.
+ *
+ * Uses single-quote wrapping for values that need quoting, with
+ * POSIX-compatible escaping for embedded single quotes.
+ */
+export function formatArgv(argv: readonly string[]): string {
+  return argv
+    .map((arg) => {
+      if (arg.length === 0) return "''";
+      if (SAFE_ARG_PATTERN.test(arg)) return arg;
+      return `'${arg.replaceAll("'", `'"'"'`)}'`;
+    })
+    .join(" ");
+}
+
+function normalizeCommandArgv(command: string[] | string): string[] {
+  const argv = typeof command === "string" ? parseShellLine(command) : command;
+  if (argv.length === 0) {
+    throw new Error("empty command");
+  }
+  return argv;
+}
+
 // --- shipped runner impls ---
 
 type NodeSpawn = (
@@ -111,11 +227,11 @@ async function collectStream(s: NodeJS.ReadableStream | null): Promise<Uint8Arra
 
 export class NodeHooks implements SpackleHooks {
   async execute(
-    command: string[],
+    command: string[] | string,
     cwd: string,
     env?: Record<string, string>,
   ): Promise<HookExecuteResult> {
-    const [cmd, ...args] = command;
+    const [cmd, ...args] = normalizeCommandArgv(command);
     if (cmd === undefined) throw new Error("NodeHooks.execute: empty command");
     // Lazy-load child_process so this module still imports cleanly in
     // environments that lack it (browsers) — `defaultHooks()` catches
@@ -195,13 +311,11 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> 
 
 export class BunHooks implements SpackleHooks {
   async execute(
-    command: string[],
+    command: string[] | string,
     cwd: string,
     env?: Record<string, string>,
   ): Promise<HookExecuteResult> {
-    if (command.length === 0) {
-      throw new Error("BunHooks.execute: empty command");
-    }
+    const argv = normalizeCommandArgv(command);
     // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
     const bun = (globalThis as unknown as { Bun: BunLike }).Bun;
     // `process.env` types are `ProcessEnv` (keys may be undefined). We
@@ -209,7 +323,7 @@ export class BunHooks implements SpackleHooks {
     // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
     const baseEnv = process.env as Record<string, string>;
     const proc = bun.spawn({
-      cmd: command,
+      cmd: argv,
       cwd,
       env: env ? { ...baseEnv, ...env } : undefined,
       stdout: "pipe",

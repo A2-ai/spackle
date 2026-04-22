@@ -48,11 +48,21 @@ type HookRunResult =
 ```ts
 interface SpackleHooks {
   execute(
-    command: string[],
+    command: string[] | string,
     cwd: string,
     env?: Record<string, string>,
   ): Promise<HookExecuteResult>;
 }
+```
+
+If you accept text commands from users, use the exported helpers to stay
+consistent with the runner's argv contract:
+
+```ts
+import { formatArgv, parseShellLine } from "@a2-ai/spackle";
+
+const argv = parseShellLine(`echo "hello world"`); // ["echo", "hello world"]
+const shellText = formatArgv(argv); // `echo 'hello world'`
 ```
 
 Shipped impls:

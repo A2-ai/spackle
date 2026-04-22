@@ -14,6 +14,8 @@ import {
   DiskFs,
   NodeHooks,
   defaultHooks,
+  formatArgv,
+  parseShellLine,
   planHooks,
   runHookPlan,
   runHooks,
@@ -42,9 +44,10 @@ class MockHooks implements SpackleHooks {
   constructor(
     private readonly script: (cmd: string[]) => Partial<HookExecuteResult> = () => ({}),
   ) {}
-  async execute(command: string[], cwd: string): Promise<HookExecuteResult> {
-    this.calls.push({ command, cwd });
-    const override = this.script(command);
+  async execute(command: string[] | string, cwd: string): Promise<HookExecuteResult> {
+    const argv = typeof command === "string" ? parseShellLine(command) : command;
+    this.calls.push({ command: argv, cwd });
+    const override = this.script(argv);
     return {
       ok: override.ok ?? (override.exitCode ?? 0) === 0,
       exitCode: override.exitCode ?? 0,
@@ -184,6 +187,28 @@ describe("defaultHooks()", () => {
     // Smoke: we can construct it even under Bun. Used by non-Bun
     // runtimes and the explicit-runner code path.
     expect(new NodeHooks()).toBeInstanceOf(NodeHooks);
+  });
+});
+
+describe("argv helpers", () => {
+  test("parseShellLine handles quoted arguments", () => {
+    expect(parseShellLine(`echo "hello world"`)).toEqual(["echo", "hello world"]);
+  });
+
+  test("formatArgv round-trips through parseShellLine", () => {
+    const argv = ["echo", "it's", "hello world", ""];
+    expect(parseShellLine(formatArgv(argv))).toEqual(argv);
+  });
+
+  test("parseShellLine errors on unterminated quote", () => {
+    expect(() => parseShellLine(`echo "hello`)).toThrow(/unterminated quoted string/);
+  });
+
+  test("BunHooks accepts string commands", async () => {
+    const hooks = new BunHooks();
+    const res = await hooks.execute(`printf "hello world"`, "/tmp");
+    expect(res.ok).toBe(true);
+    expect(new TextDecoder().decode(res.stdout)).toBe("hello world");
   });
 });
 
