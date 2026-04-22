@@ -72,7 +72,11 @@ CI: `.github/workflows/ci.yaml` runs cargo tests + bun tests. `.github/workflows
 
 ## Hooks
 
-Unsupported in the wasm path this milestone. `generate(..., { runHooks: true })` returns an explicit `{ ok: false, error: "hooks are unsupported..." }`. Native CLI still runs hooks via `hook::run_hooks_stream`. Pure planning (`hook::evaluate_hook_plan`) lives in core. Placeholder types at `ts/src/host/hooks.ts`.
+**Planned in wasm, executed host-side.** `plan_hooks` in `crates/spackle-wasm/src/lib.rs` delegates to a local `plan_hooks_native_parity` function — a reimplementation of `hook::evaluate_hook_plan`'s inner loop that reorders the checks to match `run_hooks_stream` semantics exactly: is_enabled → is_satisfied → **template before conditional** (so broken templates in hooks with false `if`s still hard-abort, matching native `Error::ErrorRenderingTemplate`), and returns `Failed` for conditional-eval errors instead of `Skipped`. It also injects `_project_name` + `_output_name` and honors caller-supplied `hook_ran` overrides (executed hooks skipped from iteration but kept in the `items` set for needs resolution). The TS package ships `NodeHooks` (child_process) and `BunHooks` (Bun.spawn); `defaultHooks()` auto-selects per runtime. Top-level `runHooks(projectDir, outDir, data, fs)` iterates the plan, re-plans after any non-zero exit so chained conditionals see actual state, and mirrors native `run_hooks_stream` failure semantics (continue on non-zero exit; template errors are a hard abort before any execution). See `ts/src/host/hooks.ts` and `docs/ts/hooks.md`.
+
+**Session API deferred.** Each `runHooks()` call re-parses the bundle — sub-millisecond, dwarfed by subprocess time. A stateful `open_session(bundle, project_dir)` + `plan_hooks_session(...)` API would amortize parse across the plan-execute loop; not warranted until profiles show per-call parse dominating.
+
+**Not exposed in the wasm path:** `run_as_user` / polyjuice (hosts can wrap in their `SpackleHooks.execute` if needed); hooks in `generateBundle` (bundle-only mode has no real cwd).
 
 ## Development practices
 

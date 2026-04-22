@@ -1,0 +1,26 @@
+name = "hooks-demo"
+
+[[slots]]
+key = "project"
+type = "String"
+
+# Writes a marker file; used to verify the default runner actually spawns.
+[[hooks]]
+key = "hook_a"
+command = ["sh", "-c", "printf hook_a > hook_a.out"]
+default = true
+
+# Chained on hook_a — only runs when hook_a succeeded. Under the re-plan
+# model, if hook_a fails this hook demotes to skipped/false_conditional.
+[[hooks]]
+key = "hook_b"
+command = ["sh", "-c", "printf hook_b > hook_b.out"]
+"if" = "{{ hook_ran_hook_a }}"
+default = true
+
+# Exercises the _project_name / _output_name injection. Writes the pair
+# to a file so tests can assert the resolved values match native.
+[[hooks]]
+key = "hook_names"
+command = ["sh", "-c", "printf '%s/%s' '{{ _project_name }}' '{{ _output_name }}' > names.out"]
+default = true

@@ -2104,6 +2104,7 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "spackle",
+ "tera",
  "thiserror",
  "wasm-bindgen",
 ]

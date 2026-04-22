@@ -146,24 +146,6 @@ describe("spackle (DiskFs)", () => {
     expect(err).not.toBeNull();
     expect(String(err)).toMatch(/already exists/);
   });
-
-  test("generate: runHooks=true is explicitly unsupported", async () => {
-    const ws = await workspace("basic_project");
-    cleanup.push(ws.root);
-    const fs = new DiskFs({ workspaceRoot: ws.root });
-
-    const res = await generate(
-      ws.projectDir,
-      ws.outDir,
-      { greeting: "hi", target: "world", filename: "notes" },
-      fs,
-      { runHooks: true },
-    );
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expect(res.error).toContain("hooks are unsupported");
-    }
-  });
 });
 
 describe("spackle (bundle-only / MemoryFs)", () => {

@@ -11,12 +11,14 @@
 import {
   check as wasm_check,
   generate as wasm_generate,
+  plan_hooks as wasm_plan_hooks,
   validate_slot_data as wasm_validate_slot_data,
 } from "../../pkg/nodejs/spackle_wasm.js";
 import type {
   Bundle,
   CheckResponse,
   GenerateResponse,
+  PlanHooksResponse,
   SlotData,
   ValidationResponse,
 } from "./types.ts";
@@ -35,8 +37,14 @@ export interface SpackleWasm {
     projectDir: string,
     outDir: string,
     slotData: SlotData,
-    runHooks: boolean,
   ): GenerateResponse;
+  planHooks(
+    projectBundle: Bundle,
+    projectDir: string,
+    outDir: string,
+    data: Record<string, string>,
+    hookRan?: Record<string, boolean>,
+  ): PlanHooksResponse;
 }
 
 let cached: Promise<SpackleWasm> | null = null;
@@ -68,7 +76,7 @@ async function initialize(): Promise<SpackleWasm> {
         wasm_validate_slot_data(projectBundle, projectDir, JSON.stringify(slotData)),
       ) as ValidationResponse;
     },
-    generate(projectBundle, projectDir, outDir, slotData, runHooks) {
+    generate(projectBundle, projectDir, outDir, slotData) {
       // generate returns a JsValue (object), not a JSON string.
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
       return wasm_generate(
@@ -76,8 +84,19 @@ async function initialize(): Promise<SpackleWasm> {
         projectDir,
         outDir,
         JSON.stringify(slotData),
-        runHooks,
       ) as GenerateResponse;
+    },
+    planHooks(projectBundle, projectDir, outDir, data, hookRan) {
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
+      return JSON.parse(
+        wasm_plan_hooks(
+          projectBundle,
+          projectDir,
+          outDir,
+          JSON.stringify(data),
+          hookRan === undefined ? undefined : JSON.stringify(hookRan),
+        ),
+      ) as PlanHooksResponse;
     },
   };
 }
@@ -88,6 +107,8 @@ export type {
   CheckResponse,
   GenerateResponse,
   Hook,
+  HookPlanEntry,
+  PlanHooksResponse,
   Slot,
   SlotData,
   SlotType,

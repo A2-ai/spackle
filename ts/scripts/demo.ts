@@ -13,6 +13,8 @@ import {
   check,
   generate,
   generateBundle,
+  planHooks,
+  runHooks,
   validateSlotData,
 } from "../src/spackle.ts";
 
@@ -146,21 +148,36 @@ for (const fixture of ["basic_project", "bad_template"]) {
   console.log();
 }
 
-// --- generate with runHooks=true → unsupported error ---
+// --- planHooks + runHooks: two-call flow against hooks_fixture ---
+//
+// planHooks returns the resolved plan (templated commands, should-run,
+// skip reasons) without executing. runHooks then actually spawns the
+// commands via defaultHooks() (BunHooks under Bun, NodeHooks on Node).
 
 {
-  const ws = await workspace("basic_project");
+  const ws = await workspace("hooks_fixture");
   try {
     const fs = new DiskFs({ workspaceRoot: ws.root });
-    console.log("=== generate(basic_project, runHooks=true) — expect unsupported ===");
-    const result = await generate(
-      ws.projectDir,
-      ws.outDir,
-      { greeting: "hi", target: "world", filename: "notes" },
-      fs,
-      { runHooks: true },
-    );
-    console.log(`  ok=${result.ok}`, !result.ok ? `error=${result.error}` : "");
+
+    console.log("=== planHooks(hooks_fixture) ===");
+    const plan = await planHooks(ws.projectDir, ws.outDir, {}, fs);
+    if (plan.ok) {
+      for (const e of plan.plan) {
+        console.log(`  ${e.key}  should_run=${e.should_run}`, e.skip_reason ?? "");
+      }
+    } else {
+      console.log(`  FAILED: ${plan.error}`);
+    }
+
+    console.log(`\n=== runHooks(hooks_fixture) → ${relative(process.cwd(), ws.outDir)} ===`);
+    // runHooks needs outDir to exist (cwd for spawned processes).
+    await (await import("node:fs/promises")).mkdir(ws.outDir, { recursive: true });
+    const run = await runHooks(ws.projectDir, ws.outDir, {}, fs);
+    if (run.ok) {
+      for (const r of run.results) console.log(`  ${r.key}  ${r.kind}`);
+    } else {
+      console.log(`  FAILED: ${run.error}`);
+    }
   } finally {
     await rm(ws.root, { recursive: true, force: true });
   }

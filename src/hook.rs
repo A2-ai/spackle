@@ -90,7 +90,10 @@ impl Needy for Hook {
 }
 
 impl Hook {
-    pub(crate) fn evaluate_conditional(
+    /// Evaluate the `if = "..."` expression against `context`. Returns
+    /// `Ok(true)` when the hook has no `if` field. `pub` so alternative
+    /// planners (e.g. `spackle-wasm`'s native-parity planner) can use it.
+    pub fn evaluate_conditional(
         &self,
         context: &HashMap<String, String>,
     ) -> Result<bool, ConditionalError> {

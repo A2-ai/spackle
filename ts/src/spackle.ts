@@ -15,11 +15,13 @@
 //     — pure bundle-to-bundle; for memory-fs / preview flows.
 
 import { DiskFs } from "./host/disk-fs.ts";
+import { runHookPlan, type RunHooksResponse, type SpackleHooks } from "./host/hooks.ts";
 import { loadSpackleWasm } from "./wasm/index.ts";
 import type {
   Bundle,
   CheckResponse,
   GenerateResponse,
+  PlanHooksResponse,
   SlotData,
   ValidationResponse,
 } from "./wasm/types.ts";
@@ -37,9 +39,15 @@ export interface GenerateOptions extends CheckOptions {
   /** Virtual path used for the generate output root. Defaults to
    * `/output`. */
   virtualOutDir?: string;
-  /** Refused with an explicit unsupported error. Reserved for when
-   * the hooks bridge lands. */
-  runHooks?: boolean;
+}
+
+export interface RunHooksOptions extends CheckOptions {
+  /** Injected executor. Defaults to `defaultHooks()` (auto-selects
+   * `BunHooks` / `NodeHooks`; throws in browser-like hosts). */
+  hooks?: SpackleHooks;
+  /** Working dir for spawned processes. Defaults to `outDir`. */
+  cwd?: string;
+  env?: Record<string, string>;
 }
 
 /**
@@ -95,8 +103,9 @@ export async function validateSlotDataBundle(
  * DiskFs handles both the read (projectDir → bundle) and write (output
  * bundle → outDir) legs.
  *
- * `runHooks = true` is unsupported in this milestone; the wasm side
- * returns `{ ok: false, error: "hooks are unsupported in this milestone" }`.
+ * Hooks are a separate step — call `runHooks()` after `generate()` if
+ * the project defines any. Mirrors the native CLI's two-call shape
+ * (`project.generate(...)` then `project.run_hooks_stream(...)`).
  */
 export async function generate(
   projectDir: string,
@@ -111,7 +120,6 @@ export async function generate(
   const result = await generateBundle(bundle, slotData, {
     virtualProjectDir: virtualProject,
     virtualOutDir: virtualOut,
-    runHooks: opts.runHooks,
   });
   if (result.ok) {
     fs.writeOutput(outDir, { files: result.files, dirs: result.dirs });
@@ -129,7 +137,78 @@ export async function generateBundle(
   const virtualProject = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
   const virtualOut = opts.virtualOutDir ?? DEFAULT_VIRTUAL_OUTPUT;
   const wasm = await loadSpackleWasm();
-  return wasm.generate(projectBundle, virtualProject, virtualOut, slotData, opts.runHooks ?? false);
+  return wasm.generate(projectBundle, virtualProject, virtualOut, slotData);
+}
+
+/**
+ * Inspect the hook plan without executing. Reads the project into a
+ * bundle, calls the wasm planner, and returns the resolved plan
+ * (templated commands, should-run flags, skip reasons, template
+ * errors). Useful for UIs that want to preview what would run.
+ *
+ * `data` is the full data map matching native `Project::run_hooks_stream`:
+ * slot values plus hook toggles keyed by the hook's own `key`
+ * (e.g. `{ "format_code": "false" }` to disable that hook).
+ * `_project_name` and `_output_name` are injected wasm-side — don't
+ * pre-inject.
+ */
+export async function planHooks(
+  projectDir: string,
+  outDir: string,
+  data: Record<string, string>,
+  fs: DiskFs,
+  opts: CheckOptions & { hookRan?: Record<string, boolean> } = {},
+): Promise<PlanHooksResponse> {
+  const virtualDir = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
+  const bundle = fs.readProject(projectDir, { virtualRoot: virtualDir });
+  return planHooksBundle(bundle, virtualDir, outDir, data, opts.hookRan);
+}
+
+/** Bundle variant of `planHooks`. */
+export async function planHooksBundle(
+  projectBundle: Bundle,
+  virtualProjectDir: string,
+  outDir: string,
+  data: Record<string, string>,
+  hookRan?: Record<string, boolean>,
+): Promise<PlanHooksResponse> {
+  const wasm = await loadSpackleWasm();
+  return wasm.planHooks(projectBundle, virtualProjectDir, outDir, data, hookRan);
+}
+
+/**
+ * Run the project's hooks. Reads the project into a bundle, plans via
+ * wasm, and executes host-side via `opts.hooks ?? defaultHooks()`.
+ *
+ * Mirrors native `Project::run_hooks_stream` at `src/lib.rs:246`:
+ * `data` is the full data map (slots + hook toggles). `_project_name` /
+ * `_output_name` are injected wasm-side.
+ *
+ * Failure semantics match native: non-zero exit yields a `failed`
+ * result but the run continues; chained `hook_ran_<key>` conditionals
+ * re-evaluate against actual outcomes via an in-loop re-plan. Template
+ * rendering failures are a hard abort before any execution (returns
+ * `{ ok: false, error, templateErrors }`).
+ */
+export async function runHooks(
+  projectDir: string,
+  outDir: string,
+  data: Record<string, string>,
+  fs: DiskFs,
+  opts: RunHooksOptions = {},
+): Promise<RunHooksResponse> {
+  const virtualDir = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
+  const bundle = fs.readProject(projectDir, { virtualRoot: virtualDir });
+  const wasm = await loadSpackleWasm();
+  return runHookPlan((b, pdir, odir, d, hookRan) => wasm.planHooks(b, pdir, odir, d, hookRan), {
+    bundle,
+    projectDir: virtualDir,
+    outDir,
+    data,
+    hooks: opts.hooks,
+    cwd: opts.cwd ?? outDir,
+    env: opts.env,
+  });
 }
 
 export type { SpackleWasm } from "./wasm/index.ts";
@@ -141,13 +220,28 @@ export {
   type WriteOutputInput,
 } from "./host/disk-fs.ts";
 export { MemoryFs, type MemoryFsSeed } from "./host/memory-fs.ts";
-export { throwUnsupportedHooks, type SpackleHooks, type HookResult } from "./host/hooks.ts";
+export {
+  BunHooks,
+  NodeHooks,
+  defaultHooks,
+  detectHooksEnv,
+  runHookPlan,
+  type HookExecuteResult,
+  type HookRunResult,
+  type HooksEnv,
+  type RunHookPlanOptions,
+  type RunHooksResponse,
+  type SpackleHooks,
+  type TemplateErrorDetail,
+} from "./host/hooks.ts";
 export type {
   Bundle,
   BundleEntry,
   CheckResponse,
   GenerateResponse,
   Hook,
+  HookPlanEntry,
+  PlanHooksResponse,
   Slot,
   SlotData,
   SlotType,

@@ -1,6 +1,6 @@
 # API reference
 
-`@a2-ai/spackle` exposes three primary operations — `check`, `validateSlotData`, `generate` — plus two `…Bundle` variants that skip disk I/O. Two host helpers (`DiskFs`, `MemoryFs`) handle moving data in and out.
+`@a2-ai/spackle` exposes five primary operations — `check`, `validateSlotData`, `generate`, `planHooks`, `runHooks` — plus `…Bundle` variants that skip disk I/O for the first three. Two host helpers (`DiskFs`, `MemoryFs`) handle moving data in and out; a `SpackleHooks` interface (with shipped `NodeHooks` / `BunHooks` impls + `defaultHooks()` auto-selector) handles subprocess execution for hooks.
 
 ## Core types
 
@@ -63,7 +63,7 @@ Rules enforced: every declared slot is present, types coerce (`"42"` → `Number
 
 ## `generate(projectDir, outDir, slotData, fs, opts?)`
 
-Run the full pipeline: copy non-template files, render `.j2` files, render path placeholders, write everything under `outDir`.
+Run the full pipeline: copy non-template files, render `.j2` files, render path placeholders, write everything under `outDir`. Hooks are a separate call — see `runHooks()` below.
 
 ```ts
 function generate(
@@ -74,7 +74,6 @@ function generate(
     opts?: {
         virtualProjectDir?: string;
         virtualOutDir?: string;
-        runHooks?: boolean;
     },
 ): Promise<GenerateResponse>;
 
@@ -87,7 +86,102 @@ type GenerateResponse =
 
 `DiskFs.writeOutput` (built-in) handles both `files` and `dirs` for you. Output-dir contract: `writeOutput` throws if `outDir` already exists, matching native's `GenerateError::AlreadyExists`.
 
-`runHooks: true` currently returns `{ ok: false, error: "hooks are unsupported in this milestone" }`. See [hooks.md](./hooks.md).
+## `planHooks(projectDir, outDir, data, fs, opts?)`
+
+Inspect the hook plan without executing — resolves `needs`, templates command args, evaluates conditionals. Useful for UIs that want to preview what would run.
+
+```ts
+function planHooks(
+    projectDir: string,
+    outDir: string,
+    data: Record<string, string>,
+    fs: DiskFs,
+    opts?: {
+        virtualProjectDir?: string;
+        hookRan?: Record<string, boolean>;
+    },
+): Promise<PlanHooksResponse>;
+
+type PlanHooksResponse =
+    | { ok: true; plan: HookPlanEntry[] }
+    | { ok: false; error: string };
+
+interface HookPlanEntry {
+    key: string;
+    command: string[];            // templated args
+    should_run: boolean;
+    skip_reason?: string;         // "user_disabled" | "unsatisfied_needs"
+                                  // | "false_conditional" | "template_error"
+                                  // | "conditional_error: ..."
+    template_errors?: string[];   // non-empty = hard error (native parity)
+}
+```
+
+`data` matches native's `Project::run_hooks_stream` input: slot values PLUS hook toggles keyed by the hook's own `key` (so `data["format_code"] = "false"` disables that hook). `_project_name` / `_output_name` are injected wasm-side — don't pre-inject.
+
+`hookRan` (optional): map of `{ hookKey: actualRanOutcome }`. Hooks present in this map are filtered from the returned plan (host already has their results) while `hook_ran_<key>` is pre-seeded so chained conditionals in downstream hooks evaluate against the real state.
+
+## `runHooks(projectDir, outDir, data, fs, opts?)`
+
+Run the project's hooks. Mirrors the native CLI's two-call shape: call after `generate()`. Reads the bundle, plans via wasm, executes each hook host-side via the injected or auto-selected `SpackleHooks`, and re-plans internally after any non-zero exit so chained conditionals re-evaluate against actual outcomes.
+
+```ts
+function runHooks(
+    projectDir: string,
+    outDir: string,
+    data: Record<string, string>,
+    fs: DiskFs,
+    opts?: {
+        virtualProjectDir?: string;
+        hooks?: SpackleHooks;     // defaults to defaultHooks()
+        cwd?: string;              // defaults to outDir
+        env?: Record<string, string>;
+    },
+): Promise<RunHooksResponse>;
+
+type RunHooksResponse =
+    | { ok: true; results: HookRunResult[] }
+    | { ok: false; error: string; templateErrors?: { key: string; errors: string[] }[] };
+
+type HookRunResult =
+    | { key; kind: "completed"; exitCode: 0; stdout; stderr }
+    | { key; kind: "failed";    exitCode;     stdout; stderr; error? }
+    | { key; kind: "skipped";   skipReason };
+```
+
+Failure semantics match native `run_hooks_stream`:
+
+- **Non-zero exit continues the run** — yields a `failed` result but subsequent hooks still execute. `hook_ran_<key>` stays `false`; chained `if = "{{ hook_ran_X }}"` conditionals naturally demote dependents.
+- **Template errors hard-abort** — an unresolved `{{ ... }}` in any hook's command produces `ok: false` before any execution (parity with `Error::ErrorRenderingTemplate` native). Checked on the initial plan AND after every re-plan.
+- **Re-plan failures surface via the response, not throws** — if the planner errors mid-run (shouldn't happen in practice), returns `ok: false, error: "re-plan failed after hook X: ..."`. `runHooks` never throws for expected outcomes.
+
+## `SpackleHooks` / `defaultHooks` / `detectHooksEnv`
+
+```ts
+interface HookExecuteResult {
+    ok: boolean;       // exitCode === 0
+    exitCode: number;
+    stdout: Uint8Array;
+    stderr: Uint8Array;
+}
+
+interface SpackleHooks {
+    execute(command: string[], cwd: string, env?: Record<string, string>):
+        Promise<HookExecuteResult>;
+}
+
+class NodeHooks implements SpackleHooks { /* child_process.spawn */ }
+class BunHooks implements SpackleHooks { /* Bun.spawn */ }
+
+interface HooksEnv {
+    hasBun: boolean;
+    hasNode: boolean;
+}
+function detectHooksEnv(): HooksEnv;
+function defaultHooks(env?: HooksEnv): SpackleHooks;
+```
+
+`defaultHooks()` picks `BunHooks` or `NodeHooks` based on `detectHooksEnv()`. In environments without either (browsers), it throws with a clear "no subprocess available" message — supply a custom `SpackleHooks` (e.g. one that POSTs to a backend) if you need browser-side hook behavior. Pass an explicit `env` to force a particular impl (useful in tests).
 
 ## Bundle variants
 
@@ -99,9 +193,18 @@ function validateSlotDataBundle(bundle: Bundle, slotData: SlotData, virtualProje
 function generateBundle(
     bundle: Bundle,
     slotData: SlotData,
-    opts?: { virtualProjectDir?: string; virtualOutDir?: string; runHooks?: boolean },
+    opts?: { virtualProjectDir?: string; virtualOutDir?: string },
 ): Promise<GenerateResponse>;
+function planHooksBundle(
+    projectBundle: Bundle,
+    virtualProjectDir: string,
+    outDir: string,
+    data: Record<string, string>,
+    hookRan?: Record<string, boolean>,
+): Promise<PlanHooksResponse>;
 ```
+
+`generateBundle` has no `runHooks` — bundle-only mode doesn't have a real `cwd` for subprocess execution. Use the disk-backed `runHooks()` above when you need hooks.
 
 Pair with `MemoryFs.toBundle()` / `MemoryFs.fromBundle()` to inspect results in-memory.
 
@@ -146,4 +249,5 @@ Pure TS. No filesystem interaction. Useful for tests and preview flows.
 
 - **UTF-8 paths only.** The bundle boundary doesn't round-trip non-UTF-8 filenames.
 - **Whole-project marshalling.** Input and output bundles materialize in memory. Fine for typical templates (KB–MB); very large fixtures should wait on a streaming path.
-- **No hooks.** See [hooks.md](./hooks.md) for status.
+- **Browser-side hooks require a custom `SpackleHooks`.** `defaultHooks()` throws in environments without Bun or Node. See [hooks.md](./hooks.md).
+- **`run_as_user` / polyjuice not exposed.** Native CLI can spawn hooks as another user; wasm path can't. Wrap it in a custom `SpackleHooks.execute` if needed.

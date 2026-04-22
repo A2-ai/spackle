@@ -68,8 +68,30 @@ export type ValidationResponse = { valid: true } | { valid: false; errors: strin
  * behavior host-side by mkdir'ing each dir even if no files live under
  * it.
  *
- * Hooks are unsupported in this milestone — calling `generate()` with
- * `runHooks = true` always returns `{ ok: false, error: "..." }`. */
+ * Hooks are a separate step — call `planHooks` / `runHooks` after
+ * `generate` (mirrors the native CLI's two-call shape). */
 export type GenerateResponse =
   | { ok: true; files: Bundle; dirs: string[] }
   | { ok: false; error: string };
+
+/** One entry in a hook plan. Snake_case fields mirror Rust's
+ * `HookPlanEntry` (`#[derive(Serialize)]` default casing). */
+export interface HookPlanEntry {
+  key: string;
+  /** Templated command args — `{{ _project_name }}` etc. already resolved. */
+  command: string[];
+  /** `true` = runner should execute; `false` = skip (see `skip_reason`)
+   * or abort (if `template_errors` is non-empty — treat as hard failure). */
+  should_run: boolean;
+  /** Present when `should_run = false` and `template_errors` is empty.
+   * Values: `"user_disabled"`, `"false_conditional"`, `"unsatisfied_needs"`,
+   * or `"conditional_error: ..."`. */
+  skip_reason?: string;
+  /** Non-empty = template rendering failed — hard error per native
+   * `Error::ErrorRenderingTemplate`. Absent / empty = clean. */
+  template_errors?: string[];
+}
+
+/** Response from `planHooks()`. Either the resolved plan or an error
+ * (invalid bundle, TOML parse failure, bad JSON inputs, etc.). */
+export type PlanHooksResponse = { ok: true; plan: HookPlanEntry[] } | { ok: false; error: string };

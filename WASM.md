@@ -8,7 +8,7 @@ For the running implementation log, see [`SUMMARY.md`](SUMMARY.md).
 
 ## One-paragraph architecture
 
-`crates/spackle-wasm/` is a `cdylib` crate that depends on `spackle` via path. It exposes three `#[wasm_bindgen]` functions — `check`, `validate_slot_data`, `generate` — that take a **project bundle** (`Array<{path, bytes: Uint8Array}>`), hydrate an in-process `MemoryFs` from it, run the requested operation against that fs through the generic `spackle::fs::FileSystem` trait, and return a serialized result. `generate` additionally returns an output bundle. Rust never touches the host filesystem; the TS host (`ts/`) reads projects into bundles and writes output bundles back to disk on its side. Fundamentally: Rust is a pure compute step.
+`crates/spackle-wasm/` is a `cdylib` crate that depends on `spackle` via path. It exposes four `#[wasm_bindgen]` functions — `check`, `validate_slot_data`, `generate`, `plan_hooks` — that take a **project bundle** (`Array<{path, bytes: Uint8Array}>`), hydrate an in-process `MemoryFs` from it, run the requested operation against that fs through the generic `spackle::fs::FileSystem` trait, and return a serialized result. `generate` additionally returns an output bundle; `plan_hooks` returns a resolved hook plan (templated commands + should-run + skip reasons) that the host executes. Rust never touches the host filesystem; the TS host (`ts/`) reads projects into bundles, writes output bundles back to disk, and spawns hook subprocesses on its side. Fundamentally: Rust is a pure compute step.
 
 ```
 ┌───────────────────────────────────────────────────────┐
@@ -28,8 +28,11 @@ For the running implementation log, see [`SUMMARY.md`](SUMMARY.md).
 │  pub fn validate_slot_data(bundle, project_dir,       │
 │                             slot_data_json) -> String │
 │  pub fn generate(bundle, project_dir, out_dir,        │
-│                  slot_data_json, run_hooks)           │
-│                   -> JsValue {ok, files | error}      │
+│                  slot_data_json)                      │
+│                   -> JsValue {ok, files, dirs|error}  │
+│  pub fn plan_hooks(bundle, project_dir, out_dir,      │
+│                    data_json, hook_ran_json?)         │
+│                   -> String {ok, plan | error}        │
 └─────────────────────┬─────────────────────────────────┘
                       │ MemoryFs impls FileSystem
 ┌─────────────────────▼─────────────────────────────────┐
@@ -105,9 +108,28 @@ Consumer-facing guidance on which target to pick lives in [`/docs/ts/runtime-tar
 
 ---
 
-## Hooks — deferred
+## Hooks — plan in wasm, execute in host
 
-Hook *planning* (`spackle::hook::evaluate_hook_plan`) is pure and lives in the core crate. Hook *execution* requires spawning subprocesses, which needs a host-side bridge (the same shape as a future `JsHooks` callback adapter). Not wired in this milestone: `generate(..., runHooks=true)` returns `{ ok: false, error: "hooks are unsupported in this milestone" }`. The placeholder JS types live in [`ts/src/host/hooks.ts`](ts/src/host/hooks.ts).
+Hook *planning* is pure and lives in wasm. The `plan_hooks` export in `crates/spackle-wasm/src/lib.rs` delegates to a **local `plan_hooks_native_parity` function** — a reimplementation of `spackle::hook::evaluate_hook_plan`'s inner loop with `run_hooks_stream` ordering. Why reimplement instead of just calling core's function:
+
+- **Template before conditional.** Native `run_hooks_stream` templates all `queued_hooks` at `src/hook.rs:412-425` BEFORE evaluating `if` expressions; `evaluate_hook_plan` in core templates AFTER the conditional, so a broken template in a hook with `if = "false"` silently skips. Our planner reorders to match native — broken templates are a hard error regardless of conditional outcome.
+- **Conditional errors are `Failed`, not skipped.** The planner surfaces conditional-eval errors with `skip_reason="conditional_error: ..."`; the TS runner re-categorizes these to `{ kind: "failed" }` to match native `HookResultKind::Failed(HookError::ConditionalFailed)` at `src/hook.rs:485`.
+- **Executed-hook handling.** When caller passes `hook_ran_json`, those hooks are skipped from iteration (so we don't re-plan them and don't overwrite the caller-supplied hook_ran state) but kept in the `items` set so dependent hooks' `needs` resolution still finds them.
+
+The wrapper also injects `_project_name` + `_output_name` to match `Project::run_hooks_stream` at `src/lib.rs:253-254`.
+
+Hook *execution* is host-side. The TS package ships `NodeHooks` (child_process.spawn) and `BunHooks` (Bun.spawn) in `ts/src/host/hooks.ts`; `defaultHooks()` auto-selects per runtime and throws in browser-like hosts. Top-level `runHooks(projectDir, outDir, data, fs)` reads the bundle, calls `plan_hooks`, iterates the plan, and maintains a `hookRan` map fed back into `plan_hooks` after any non-zero exit so chained conditionals re-evaluate (matches native's inline conditional re-eval at `src/hook.rs:474-491`).
+
+**Parity invariants:**
+- **Continue on failure.** Native `run_hooks_stream` at `src/hook.rs:527` uses `continue` on non-zero exit, not abort. The TS runner matches.
+- **Template errors = hard abort.** The planner surfaces these as `should_run=false` + `template_errors[]`; the TS runner treats any non-empty `template_errors` as `{ ok: false, error, templateErrors }` before any execution, matching `Error::ErrorRenderingTemplate` at `src/hook.rs:415-425`. Checked on the initial plan AND every re-plan.
+- **Conditional-eval errors = failed.** Surfaced from the planner as `skip_reason="conditional_error: ..."` and re-categorized to `{ kind: "failed" }` by the runner.
+- **Hook toggles keyed by raw hook `key`.** Not `hook_<key>`. `Hook::is_enabled` at `src/hook.rs:79-85` checks `data.contains_key(&self.key)`.
+- **Tera features match core.** `spackle-wasm`'s tera dep uses full defaults (same as spackle core) so builtins like `| slugify` render identically in wasm and native contexts.
+
+**Deferred:** a stateful session API (`open_session(bundle, project_dir) → SessionId` + `plan_hooks_session(session_id, ...)`) would amortize the per-call bundle parse across the plan-execute loop. Not worth the lifecycle complexity at current scale — parse is sub-millisecond, dwarfed by subprocess spawn time. Revisit when profiles show per-call parse dominating.
+
+Consumer-facing walkthrough: [`docs/ts/hooks.md`](docs/ts/hooks.md).
 
 ---
 
