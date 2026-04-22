@@ -53,3 +53,7 @@ just test
 # Install locally
 just install
 ```
+
+## Typescript Module
+
+Spackle has been rewritten to be able to be translated to a Typescript module. Please find the README for that module here: [`ts/README.md`](ts/README.md)
