@@ -6,6 +6,7 @@ use std::{
 
 use tera::{Context, Tera};
 
+use crate::fs::{self as fsmod, FileSystem, FileType};
 use crate::{config::CONFIG_FILE, template::has_template_ext};
 
 #[derive(Debug)]
@@ -41,28 +42,36 @@ pub fn copy<F: FileSystem>(
     let mut copied_count = 0;
     let mut skipped_count = 0;
 
-    let entries = WalkDir::new(src)
-        .into_iter()
-        .filter_entry(|entry| {
-            // Skip those that match "skip"
-            if skip
-                .iter()
-                .any(|s| entry.file_name().to_string_lossy() == *s)
-            {
-                skipped_count += 1;
-                return false;
-            }
+    // Ensure the destination root exists. The old walkdir-based flow
+    // yielded the source root as its first entry, which resulted in a
+    // `create_dir_all(dest)` call before any children were processed.
+    // Our `fsmod::walk` only yields descendants — so do this eagerly to
+    // preserve behavior downstream (notably: hooks that cwd into
+    // `dest` need it to exist even when the source tree was empty).
+    fs.create_dir_all(dest).map_err(|e| Error {
+        source: Box::new(e),
+        path: dest.to_path_buf(),
+    })?;
 
-            // TODO pull these out and pass as args if possible
-            // Skip config file
-            if entry.file_name() == CONFIG_FILE {
-                return false;
-            }
+    // Recursive walk via the fs trait. Yields each descendant as
+    // (path_relative_to_src, stat). We filter + re-root + template the
+    // destination path, then either mkdir or copy.
+    let entries = fsmod::walk(fs, src).map_err(|e| Error {
+        source: Box::new(e),
+        path: src.to_path_buf(),
+    })?;
 
-            // Skip template files (handled by template::fill)
-            if has_template_ext(&entry.file_name().to_string_lossy()) {
-                return false;
-            }
+    // First pass: apply the skip/config-file/template-ext filter on a
+    // per-entry basis. Unlike walkdir::filter_entry we can't prune whole
+    // subtrees in a single pass — so we explicitly compute an "ancestor
+    // skipped" set while iterating (entries are in DFS order).
+    let mut skipped_ancestors: Vec<PathBuf> = Vec::new();
+
+    for (rel_path, stat) in entries {
+        // If any ancestor was skipped, skip everything under it.
+        if skipped_ancestors.iter().any(|a| rel_path.starts_with(a)) {
+            continue;
+        }
 
         let name = rel_path
             .file_name()
@@ -78,8 +87,9 @@ pub fn copy<F: FileSystem>(
             skipped_ancestors.push(rel_path.clone());
             continue;
         }
-        if name.ends_with(TEMPLATE_EXT) {
-            // .j2 files are skipped here; template::fill handles them.
+        if has_template_ext(&name) {
+            // Template files (.j2 / .tera) are skipped here;
+            // template::fill handles them.
             continue;
         }
 
