@@ -1,6 +1,6 @@
 [package]
 name = "spackle-cli"
-version = "0.4.3"
+version = "0.5.0-rc1"
 edition = "2021"
 repository = "https://github.com/a2-ai/spackle"
 
