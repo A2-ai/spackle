@@ -1,24 +1,65 @@
 # @a2-ai/spackle
 
-spackle project templating as a WebAssembly module. Runs in Node, Bun, and browsers.
+spackle project templating as an ESM WebAssembly module. Runs in modern browsers and Bun.
 
 ---
 
 ## Install
 
-Not published to npm. Distributed as a GitHub release asset:
+Not published to npm. Pick the route that matches how you're iterating, from fastest loop to most published-like:
+
+### 1. Local dev-loop — `bun link`
+
+In this repo, after a build:
+
+```bash
+cd ts && bun link
+```
+
+Then in the consuming project:
+
+```bash
+bun link @a2-ai/spackle
+```
+
+Rebuilds reflect immediately (the consumer points at the symlink). Best when both repos are on the same machine.
+
+### 2. Local tarball QA — `bun pm pack`
+
+Simulates exactly what an installed user would see. From this repo:
+
+```bash
+cd ts && bun pm pack --destination /tmp
+```
+
+Then in the consumer:
+
+```bash
+bun add /tmp/a2-ai-spackle-<version>.tgz
+```
+
+### 3. Pre-release for teammates — GitHub release asset
+
+Tag a pre-release (e.g. `vX.Y.Z-dev.N`). The `build.yaml` workflow produces the `.tgz` and attaches it to the release. Consumers:
 
 ```bash
 bun add https://github.com/a2-ai/spackle/releases/download/<tag>/a2-ai-spackle-<version>.tgz
 ```
 
-Or install from git directly (builds from source — requires `wasm-pack` + `bun` on the host):
+### 4. S3 artifacts bucket
+
+If a CI step pushes the tarball to the team's S3 artifacts bucket, consumers with `aws` creds that have read access:
 
 ```bash
-bun add git+ssh://git@github.com/a2-ai/spackle.git#<ref>
+aws s3 cp s3://<bucket>/<path>/a2-ai-spackle-<version>.tgz /tmp/
+bun add /tmp/a2-ai-spackle-<version>.tgz
 ```
 
-Pin by tag or commit SHA. See [`docs/ts/getting-started.md`](../docs/ts/getting-started.md) for a walkthrough.
+### Not supported: `bun add git+ssh://...`
+
+`package.json` lives at `ts/`, not the repo root, and neither bun nor npm supports subpath specifiers on git URLs — so `bun add git+ssh://git@github.com/a2-ai/spackle.git#<ref>` does **not** work today. Use one of the routes above.
+
+See [`docs/ts/getting-started.md`](../docs/ts/getting-started.md) for a usage walkthrough.
 
 ---
 
@@ -61,10 +102,9 @@ You can mix: read a project from disk with `DiskFs.readProject`, inspect or muta
 
 - [Getting started](../docs/ts/getting-started.md) — install + minimal example
 - [API reference](../docs/ts/api.md) — shapes, options, response types
-- [Runtime targets](../docs/ts/runtime-targets.md) — nodejs vs web vs bundler
 - [Custom host](../docs/ts/custom-host.md) — bundle readers for S3 / git / anything else
 - [Hooks](../docs/ts/hooks.md) — `runHooksStream` / `planHooks`, `SpackleHooks` executor contract, SSE bridging
-- Runnable example: [`examples/wasm/bun-script/`](../examples/wasm/bun-script/)
+- Runnable example: [`examples/ts/bun-script/`](../examples/ts/bun-script/)
 
 ---
 

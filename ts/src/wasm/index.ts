@@ -1,19 +1,22 @@
 // WASM-SIDE — thin typed wrapper over the wasm-bindgen exports.
 //
-// The wasm-pack output at `../../pkg/nodejs/spackle_wasm.js` exposes
-// three pure-function exports plus `init`. Each takes a project bundle
-// (`Array<{path, bytes: Uint8Array}>`) — no fs callbacks, no I/O; Rust
-// runs the whole generation against an in-memory fs.
+// The wasm-bindgen `--target web` output at `../../pkg/spackle_wasm.js`
+// exposes four pure-function exports plus a default `init`. Each takes
+// a project bundle (`Array<{path, bytes: Uint8Array}>`) — no fs
+// callbacks, no I/O; Rust runs the whole generation against an
+// in-memory fs.
 
-// wasm-pack's `--target nodejs` output instantiates the module eagerly
-// at import time (see the tail of `pkg/nodejs/spackle_wasm.js`). No init
-// step, no default export — just the named exports below.
-import {
+// The web target requires an explicit `await initWasm(...)` before the
+// other exports work. `loadSpackleWasm()` below caches that promise so
+// subsequent callers skip the fetch. Aliased off the default export to
+// dodge a name collision with the named `init` export that the crate
+// also ships (used internally by `#[wasm_bindgen(start)]`).
+import initWasm, {
   check as wasm_check,
   generate as wasm_generate,
   plan_hooks as wasm_plan_hooks,
   validate_slot_data as wasm_validate_slot_data,
-} from "../../pkg/nodejs/spackle_wasm.js";
+} from "../../pkg/spackle_wasm.js";
 import type {
   Bundle,
   CheckResponse,
@@ -50,15 +53,16 @@ export interface SpackleWasm {
 let cached: Promise<SpackleWasm> | null = null;
 
 /** Load the WASM module once per process. Subsequent calls return the
- * same client. Safe to await concurrently. Kept async for symmetry with
- * `--target web` output (which DOES need an explicit init), so callers
- * can switch targets without changing the orchestration code. */
+ * same client. Safe to await concurrently. */
 export function loadSpackleWasm(): Promise<SpackleWasm> {
   if (!cached) cached = initialize();
   return cached;
 }
 
 async function initialize(): Promise<SpackleWasm> {
+  await initWasm({
+    module_or_path: new URL("../../pkg/spackle_wasm_bg.wasm", import.meta.url),
+  });
   // wasm-bindgen's generated .d.ts types the JSON / JsValue exports as
   // `string` / `any`. Asserting to our response unions is the only way
   // to type this boundary — the shapes are guaranteed by the Rust

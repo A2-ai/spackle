@@ -1,7 +1,8 @@
 target
 render
 
-# WASM package outputs (wasm-pack, tsc, bun).
+# Build outputs for the wasm artifact (ts/pkg/) and the TS package
+# (ts/dist/), plus local node_modules / scratch output.
 ts/node_modules
 ts/output
 ts/pkg

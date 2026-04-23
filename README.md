@@ -43,21 +43,21 @@ brew install a2-ai/tap/spackle
 ### Prerequisites
 
 - [Rust](https://rustup.rs/)
-- [Bun](https://bun.sh/) — required to build and test the TypeScript module
-- [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) — required to build the WebAssembly targets for the TypeScript module:
-  ```shell
-  cargo install wasm-pack
-  ```
+- [Bun](https://bun.sh/) — required to build and test the TS package
+- [just](https://github.com/casey/just) — task runner; drives `setup` / `build-wasm` / etc.
+- [jq](https://jqlang.org/) — used by `scripts/build-wasm.sh` to pin the wasm-bindgen CLI version from `Cargo.lock`
 
-> **Note on wasm-pack:** The rustwasm working group [sunset wasm-pack in July 2025](https://blog.rust-lang.org/inside-rust/2025/07/21/sunsetting-the-rustwasm-github-org/). We continue to use it today because it handles target installation, `wasm-bindgen-cli` version pinning, and `wasm-opt` optimization in a single step. We plan to migrate to a [manual `cargo build` + `wasm-bindgen` + `wasm-opt` pipeline](https://nickb.dev/blog/life-after-wasm-pack-an-opinionated-deconstruction/) in a future release to eliminate the dependency on an archived tool.
+The wasm toolchain (`wasm32-unknown-unknown` rust target, `wasm-bindgen-cli` pinned to the `Cargo.lock` version, `wasm-opt`) is installed for you by `just setup` on first run.
 
 ### Setup
 
-Install git hooks before your first contribution:
+One-shot onboarding — installs git hooks, runs a `cargo check`, installs JS deps, installs the wasm toolchain:
 
 ```shell
-just setup
+just setup      # or: just init
 ```
+
+Re-run `just setup-wasm` alone if you just need to refresh the wasm toolchain without the full bootstrap.
 
 ### Build
 
@@ -70,29 +70,26 @@ just run -- --help
 # Run all Rust tests (spackle / spackle-cli / spackle-wasm)
 just test
 
-# Smoke-compile the wasm crate on wasm32-unknown-unknown without wasm-pack
-just check-wasm-target
-
 # Install the CLI binary locally
 just install
 ```
 
-#### TypeScript module (`@a2-ai/spackle`)
+#### TS package (`@a2-ai/spackle`)
 
-The TypeScript module lives in `ts/` and wraps the wasm binary. Full consumer docs are in [`ts/README.md`](ts/README.md) and [`docs/ts/`](docs/ts/).
-
-> `wasm-pack` must be installed (see [Prerequisites](#prerequisites)) to run any of the commands below.
+The TS package lives in `ts/` and consumes the wasm artifact as a `--target web` ESM bundle that runs in modern browsers and Bun. Full consumer docs are in [`ts/README.md`](ts/README.md) and [`docs/ts/`](docs/ts/).
 
 ```shell
-# Build all three wasm-pack targets (nodejs, web, bundler) → ts/pkg/
-just build-wasm
+# Build everything: CLI binary + wasm + TS dist.
+just build
 
-# Build wasm targets + emit TypeScript declarations to ts/dist/
-just build-wasm-ts
+# Or build one component at a time:
+just build-cli              # target/release/spackle
+just build-wasm             # ts/pkg/ (web-target wasm-bindgen + wasm-opt)
+just build-ts               # wasm + tsc emit to ts/dist/ (the TS package)
 
-# Run the bun test suite (builds wasm first)
-just test-wasm-pkg
+# Run the TS package's bun test suite (builds wasm first)
+just test-ts
 
 # Run the demo script (builds wasm first)
-just wasm-demo
+just demo-ts
 ```

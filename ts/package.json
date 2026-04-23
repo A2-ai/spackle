@@ -16,13 +16,9 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    },
-    "./pkg/nodejs": "./pkg/nodejs/spackle_wasm.js",
-    "./pkg/web": "./pkg/web/spackle_wasm.js",
-    "./pkg/bundler": "./pkg/bundler/spackle_wasm.js"
+    }
   },
   "scripts": {
-    "build": "bun scripts/build.ts",
     "build:ts": "tsc -p tsconfig.build.json",
     "test": "bun test",
     "demo": "bun scripts/demo.ts",

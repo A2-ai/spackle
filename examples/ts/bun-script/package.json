@@ -7,7 +7,7 @@
     "start": "bun generate.ts"
   },
   "dependencies": {
-    "@a2-ai/spackle": "file:../../../wasm"
+    "@a2-ai/spackle": "file:../../../ts"
   },
   "devDependencies": {
     "@types/bun": "latest"

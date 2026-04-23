@@ -60,11 +60,13 @@ spackle/
 │   └── spackle-wasm/        # cdylib, wasm-bindgen exports + MemoryFs
 │       ├── src/lib.rs       # three #[wasm_bindgen] exports + init
 │       └── src/memory_fs.rs # MemoryFs impls spackle::fs::FileSystem
+├── scripts/
+│   └── build-wasm.sh        # cargo build (wasm32) → wasm-bindgen --target web → wasm-opt
 ├── ts/                      # @a2-ai/spackle npm-shaped TS package
 │   ├── src/                 # TS orchestration + host helpers
-│   ├── tests/               # bun test (end-to-end via pkg/nodejs)
-│   ├── scripts/             # build.ts, demo.ts
-│   └── pkg/                 # wasm-pack outputs (nodejs, web, bundler)
+│   ├── tests/               # bun test (end-to-end via pkg/)
+│   ├── scripts/             # demo.ts
+│   └── pkg/                 # wasm-bindgen web-target output (flat — no subdirs)
 ├── docs/ts/                 # consumer-facing docs
 ├── examples/                # one full bun-script + framework stubs
 └── tests/                   # Rust integration + fixtures/
@@ -85,26 +87,18 @@ The `MemoryFs` (in `crates/spackle-wasm/src/memory_fs.rs`) auto-creates ancestor
 ## Build + test locally
 
 ```bash
+# First-time setup: git hooks, cargo check, bun install, wasm toolchain.
+just setup                          # or: just init
+
 # Native tests (spackle + spackle-cli).
 cargo test --workspace
 
-# Build the wasm crate for inspection (outputs /tmp/smoke).
-wasm-pack build crates/spackle-wasm --target nodejs --out-dir /tmp/smoke
+# Build the wasm artifact into ts/pkg/ (web target, flat layout).
+just build-wasm                     # wraps scripts/build-wasm.sh
 
-# Full TS package build — all three wasm-pack targets into ts/pkg/{nodejs,web,bundler}.
-cd ts && bun run scripts/build.ts
-
-# Bun test suite against the nodejs-target output.
-cd ts && bun test
+# Bun test suite for the TS package (builds wasm first).
+just test-ts
 ```
-
----
-
-## Adding a new wasm-pack target
-
-`ts/scripts/build.ts` iterates a hard-coded array of targets. Add the new target to that array; the generated `pkg/<target>/` dir is automatically gitignored. To expose it as a subpath export, add it to `ts/package.json`'s `exports` map (`./pkg/<target>: "./pkg/<target>/spackle_wasm.js"`).
-
-Consumer-facing guidance on which target to pick lives in [`/docs/ts/runtime-targets.md`](docs/wasm/runtime-targets.md).
 
 ---
 
