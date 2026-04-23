@@ -118,12 +118,16 @@ jobs:
 
       # Pin wasm-bindgen-cli to the exact version of the wasm-bindgen
       # crate — mismatches are the classic wasm-bindgen failure mode.
+      # `--force` is load-bearing: Swatinem/rust-cache restores
+      # ~/.cargo/.crates.toml so binstall thinks the binaries are
+      # installed, but the actual bins in ~/.cargo/bin/ aren't always
+      # in the cache. Force-install to guarantee the binary exists.
       - name: Install wasm-bindgen-cli + wasm-opt
         run: |
           WB_VERSION=$(cargo metadata --format-version 1 --locked \
             | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version' | head -1)
-          cargo binstall --no-confirm wasm-bindgen-cli --version "$WB_VERSION"
-          cargo binstall --no-confirm wasm-opt
+          cargo binstall --no-confirm --force wasm-bindgen-cli --version "$WB_VERSION"
+          cargo binstall --no-confirm --force wasm-opt
 
       - name: Build WASM (web)
         run: ./scripts/build-wasm.sh
