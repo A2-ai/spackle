@@ -2034,7 +2034,7 @@ dependencies = [
  "serde",
  "strum_macros",
  "tempfile",
- "tera 2.0.0-alpha.2",
+ "tera 2.0.0-alpha.3",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -2153,9 +2153,9 @@ dependencies = [
 
 [[package]]
 name = "tera"
-version = "2.0.0-alpha.2"
+version = "2.0.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e06589c04b730b500fe31fb2e79147106226afdfdb3a26f192761a4df81dcdee"
+checksum = "6b77ffb736b74f6be677ecae79cbaeb8a8072099593ec2666a68209ccb4ae21d"
 dependencies = [
  "globset",
  "serde",
