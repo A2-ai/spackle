@@ -27,7 +27,6 @@ toml = "1.1.2"
 async-process = "2.5.0"
 async-stream = "0.3.6"
 polyjuice = { git = "https://github.com/a2-ai/polyjuice", tag = "v0.1.0" }
-tera = "1.20.1"
 tokio = { version = "1.52.0", features = ["macros", "rt", "rt-multi-thread"] }
 tokio-stream = "0.1.18"
 users = "0.11.0"
@@ -40,12 +39,10 @@ tempfile = "3"
 walkdir = "2"
 
 # wasm32-unknown-unknown — `spackle` still compiles on wasm32 (consumed
-# by `crates/spackle-wasm`), so tera + its random-source shim live here.
-# - Full tera (builtins on — matches native behavior).
-# - getrandom 0.2 with `js` feature: tera → rand transitively needs a
-#   random source, and on the unknown target only the JS shim works.
+# by `crates/spackle-wasm`). tera is declared unconditionally above;
+# here we only pin the random-source shim that tera → rand needs
+# transitively on the `unknown` target, where only the JS feature works.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-tera = "1.20.1"
 getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 
 [profile.release]

@@ -20,12 +20,11 @@ serde-wasm-bindgen = "0.6"
 console_error_panic_hook = "0.1"
 # Needed for the native-parity planner in src/lib.rs — we template hook
 # command args before evaluating the `if` conditional, mirroring
-# run_hooks_stream ordering. Match spackle core's tera config exactly
-# (full default features / builtins on) — native hook templating uses
-# the slug / date / etc. filters, so our wasm-side templating must too.
-# Feature unification via the transitive spackle dep masks divergence
-# in practice; declaring it explicitly keeps the intent load-bearing.
-tera = "1.20.1"
+# run_hooks_stream ordering. Must match spackle core's tera
+# version/features exactly so wasm-side templating and native hook
+# templating behave identically; declaring explicitly keeps the intent
+# load-bearing even though the transitive spackle dep would pull it in.
+tera = { version = "2.0.0-alpha.3", features = ["glob_fs"] }
 
 # wasm32 toolchain bits: tera → rand transitively needs a random source;
 # on the `unknown` target only the JS shim works.

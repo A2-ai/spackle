@@ -669,25 +669,26 @@ default = true
 
     #[test]
     fn tera_builtin_filters_available_to_hook_command_templating() {
-        // Parity check: spackle core pulls tera with full defaults on,
-        // so native hook command templating supports builtins like
-        // `| slugify`. The wasm-side planner must match — a misaligned
-        // `default-features = false` on `tera` in spackle-wasm's
-        // Cargo.toml would strip builtin filters and diverge from
-        // native behavior. This test forces a builtin filter through
-        // the plan_hooks_native_parity pipeline and asserts it rendered
-        // (no template_errors).
+        // Parity check: spackle core and spackle-wasm must resolve to
+        // the same tera version/features, so native hook command
+        // templating and the wasm-side planner render identically. A
+        // misaligned `default-features = false` (or a feature drift) on
+        // `tera` in spackle-wasm's Cargo.toml would strip builtin
+        // filters and diverge from native behavior. This test forces a
+        // builtin filter through the plan_hooks_native_parity pipeline
+        // and asserts it rendered (no template_errors). Uses `upper`,
+        // which tera 2 registers unconditionally in `Tera::default()`.
         let toml = br#"
 [[hooks]]
 key = "with_filter"
-command = ["echo", "{{ raw | slugify }}"]
+command = ["echo", "{{ raw | upper }}"]
 default = true
 "#;
         let entries = vec![BundleEntry {
             path: "/project/spackle.toml".to_string(),
             bytes: toml.to_vec(),
         }];
-        let plan = call_with_bundle(entries, r#"{"raw": "Hello World"}"#, None);
+        let plan = call_with_bundle(entries, r#"{"raw": "hello world"}"#, None);
         let h = plan
             .as_array()
             .unwrap()
@@ -697,9 +698,9 @@ default = true
         // Clean plan — builtin filter rendered without a template_error.
         assert_eq!(h["should_run"], true, "got: {}", h);
         assert!(h.get("template_errors").is_none(), "got: {}", h);
-        // slugify("Hello World") = "hello-world" — asserts the filter
+        // upper("hello world") = "HELLO WORLD" — asserts the filter
         // actually ran, not just that the raw template passed through.
-        assert_eq!(h["command"][1], "hello-world", "got: {}", h);
+        assert_eq!(h["command"][1], "HELLO WORLD", "got: {}", h);
     }
 
     #[test]
