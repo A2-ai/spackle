@@ -63,13 +63,13 @@ You can mix: read a project from disk with `DiskFs.readProject`, inspect or muta
 - [API reference](../docs/ts/api.md) — shapes, options, response types
 - [Runtime targets](../docs/ts/runtime-targets.md) — nodejs vs web vs bundler
 - [Custom host](../docs/ts/custom-host.md) — bundle readers for S3 / git / anything else
-- [Hooks](../docs/ts/hooks.md) — `runHooks` / `planHooks`, `SpackleHooks` executor contract
+- [Hooks](../docs/ts/hooks.md) — `runHooksStream` / `planHooks`, `SpackleHooks` executor contract, SSE bridging
 - Runnable example: [`examples/wasm/bun-script/`](../examples/wasm/bun-script/)
 
 ---
 
 ## Known limitations
 
-- **Browser hosts need a custom `SpackleHooks`.** `runHooks()` uses `defaultHooks()` which picks `BunHooks` / `NodeHooks` at runtime; a browser throws with a clear message. Supply a custom executor (e.g. one that posts to a backend) to run hooks there. See [hooks docs](../docs/ts/hooks.md).
+- **Browser hosts need a custom `SpackleHooks`.** `runHooksStream()` uses `defaultHooks()` which picks `BunHooks` / `NodeHooks` at runtime; a browser throws with a clear message. Supply a custom executor (e.g. one that posts to a backend) to run hooks there. See [hooks docs](../docs/ts/hooks.md).
 - **UTF-8 paths only.**
 - **Whole-project marshalling.** Bundles live in memory during the call; fine for KB–MB templates, no streaming path yet.

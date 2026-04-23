@@ -14,7 +14,7 @@ import {
   generate,
   generateBundle,
   planHooks,
-  runHooks,
+  runHooksStream,
   validateSlotData,
 } from "../src/spackle.ts";
 
@@ -148,11 +148,13 @@ for (const fixture of ["basic_project", "bad_template"]) {
   console.log();
 }
 
-// --- planHooks + runHooks: two-call flow against hooks_fixture ---
+// --- planHooks + runHooksStream: two-call flow against hooks_fixture ---
 //
 // planHooks returns the resolved plan (templated commands, should-run,
-// skip reasons) without executing. runHooks then actually spawns the
-// commands via defaultHooks() (BunHooks under Bun, NodeHooks on Node).
+// skip reasons) without executing. runHooksStream then actually spawns
+// the commands via defaultHooks() (BunHooks under Bun, NodeHooks on
+// Node) and yields HookEvents as each hook progresses — this is the
+// shape you'd bridge directly to an SSE endpoint.
 
 {
   const ws = await workspace("hooks_fixture");
@@ -169,14 +171,32 @@ for (const fixture of ["basic_project", "bad_template"]) {
       console.log(`  FAILED: ${plan.error}`);
     }
 
-    console.log(`\n=== runHooks(hooks_fixture) → ${relative(process.cwd(), ws.outDir)} ===`);
-    // runHooks needs outDir to exist (cwd for spawned processes).
+    console.log(`\n=== runHooksStream(hooks_fixture) → ${relative(process.cwd(), ws.outDir)} ===`);
+    // runHooksStream needs outDir to exist (cwd for spawned processes).
     await (await import("node:fs/promises")).mkdir(ws.outDir, { recursive: true });
-    const run = await runHooks(ws.projectDir, ws.outDir, {}, fs);
-    if (run.ok) {
-      for (const r of run.results) console.log(`  ${r.key}  ${r.kind}`);
-    } else {
-      console.log(`  FAILED: ${run.error}`);
+    for await (const event of runHooksStream(ws.projectDir, ws.outDir, {}, fs)) {
+      switch (event.type) {
+        case "run_start":
+          console.log(`  [run_start] ${event.plan.length} hook(s) planned`);
+          break;
+        case "hook_start":
+          console.log(`  [hook_start] ${event.key}`);
+          break;
+        case "hook_end": {
+          const timing = event.durationMs !== undefined ? ` (${event.durationMs}ms)` : "";
+          console.log(`  [hook_end]   ${event.key} → ${event.result.kind}${timing}`);
+          break;
+        }
+        case "replan":
+          console.log(`  [replan]     after ${event.afterKey}; ${event.plan.length} remaining`);
+          break;
+        case "template_errors":
+          console.log(`  [template_errors] ${event.error}`);
+          break;
+        case "plan_error":
+          console.log(`  [plan_error] ${event.error}`);
+          break;
+      }
     }
   } finally {
     await rm(ws.root, { recursive: true, force: true });

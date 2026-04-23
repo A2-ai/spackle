@@ -1,6 +1,6 @@
 # API reference
 
-`@a2-ai/spackle` exposes five primary operations — `check`, `validateSlotData`, `generate`, `planHooks`, `runHooks` — plus `…Bundle` variants that skip disk I/O for the first three. Two host helpers (`DiskFs`, `MemoryFs`) handle moving data in and out; a `SpackleHooks` interface (with shipped `NodeHooks` / `BunHooks` impls + `defaultHooks()` auto-selector) handles subprocess execution for hooks.
+`@a2-ai/spackle` exposes five primary operations — `check`, `validateSlotData`, `generate`, `planHooks`, `runHooksStream` — plus `…Bundle` variants that skip disk I/O for the first three. Two host helpers (`DiskFs`, `MemoryFs`) handle moving data in and out; a `SpackleHooks` interface (with shipped `NodeHooks` / `BunHooks` impls + `defaultHooks()` auto-selector) handles subprocess execution for hooks.
 
 ## Core types
 
@@ -63,7 +63,7 @@ Rules enforced: every declared slot is present, types coerce (`"42"` → `Number
 
 ## `generate(projectDir, outDir, slotData, fs, opts?)`
 
-Run the full pipeline: copy non-template files, render `.j2` files, render path placeholders, write everything under `outDir`. Hooks are a separate call — see `runHooks()` below.
+Run the full pipeline: copy non-template files, render `.j2` files, render path placeholders, write everything under `outDir`. Hooks are a separate call — see `runHooksStream()` below.
 
 ```ts
 function generate(
@@ -121,12 +121,12 @@ interface HookPlanEntry {
 
 `hookRan` (optional): map of `{ hookKey: actualRanOutcome }`. Hooks present in this map are filtered from the returned plan (host already has their results) while `hook_ran_<key>` is pre-seeded so chained conditionals in downstream hooks evaluate against the real state.
 
-## `runHooks(projectDir, outDir, data, fs, opts?)`
+## `runHooksStream(projectDir, outDir, data, fs, opts?)`
 
-Run the project's hooks. Mirrors the native CLI's two-call shape: call after `generate()`. Reads the bundle, plans via wasm, executes each hook host-side via the injected or auto-selected `SpackleHooks`, and re-plans internally after any non-zero exit so chained conditionals re-evaluate against actual outcomes.
+Run the project's hooks, yielding `HookEvent`s as each hook progresses. Mirrors the native CLI's two-call shape: call after `generate()`. Reads the bundle, plans via wasm, executes each hook host-side via the injected or auto-selected `SpackleHooks`, and re-plans internally after any non-zero exit so chained conditionals re-evaluate against actual outcomes.
 
 ```ts
-function runHooks(
+function runHooksStream(
     projectDir: string,
     outDir: string,
     data: Record<string, string>,
@@ -137,11 +137,16 @@ function runHooks(
         cwd?: string;              // defaults to outDir
         env?: Record<string, string>;
     },
-): Promise<RunHooksResponse>;
+): AsyncGenerator<HookEvent>;
 
-type RunHooksResponse =
-    | { ok: true; results: HookRunResult[] }
-    | { ok: false; error: string; templateErrors?: { key: string; errors: string[] }[] };
+type HookEvent =
+    | { type: "run_start"; plan: HookPlanEntry[] }
+    | { type: "hook_start"; key: string; command: string[]; startedAt: number }
+    | { type: "hook_end"; key: string; result: HookRunResult;
+        startedAt?: number; finishedAt?: number; durationMs?: number }
+    | { type: "replan"; afterKey: string; plan: HookPlanEntry[] }
+    | { type: "template_errors"; error: string; templateErrors: { key: string; errors: string[] }[] }
+    | { type: "plan_error"; error: string };
 
 type HookRunResult =
     | { key; kind: "completed"; exitCode: 0; stdout; stderr }
@@ -149,11 +154,27 @@ type HookRunResult =
     | { key; kind: "skipped";   skipReason };
 ```
 
+Usage:
+
+```ts
+for await (const event of runHooksStream(projectDir, outDir, data, fs)) {
+    // drive UI transitions / SSE frames off each event
+}
+```
+
+Event protocol (full detail in [`docs/ts/hooks.md`](./hooks.md)):
+
+- `run_start` is first when the initial plan is clean.
+- Runnable hooks emit `hook_start` + `hook_end`; skipped / conditional-error hooks emit only `hook_end`.
+- `hook_end.durationMs` is present when the hook actually ran.
+- `replan` fires after a failed hook whenever chained conditionals need re-evaluation.
+- `template_errors` / `plan_error` are **terminal** — the iterator ends after yielding them.
+
 Failure semantics match native `run_hooks_stream`:
 
-- **Non-zero exit continues the run** — yields a `failed` result but subsequent hooks still execute. `hook_ran_<key>` stays `false`; chained `if = "{{ hook_ran_X }}"` conditionals naturally demote dependents.
-- **Template errors hard-abort** — an unresolved `{{ ... }}` in any hook's command produces `ok: false` before any execution (parity with `Error::ErrorRenderingTemplate` native). Checked on the initial plan AND after every re-plan.
-- **Re-plan failures surface via the response, not throws** — if the planner errors mid-run (shouldn't happen in practice), returns `ok: false, error: "re-plan failed after hook X: ..."`. `runHooks` never throws for expected outcomes.
+- **Non-zero exit continues the run** — emits `hook_end` with `kind: "failed"` but subsequent hooks still execute. `hook_ran_<key>` stays `false`; chained `if = "{{ hook_ran_X }}"` conditionals naturally demote dependents (visible via a `replan` event).
+- **Template errors hard-abort** — an unresolved `{{ ... }}` in any hook's command yields a terminal `template_errors` event before any execution (parity with `Error::ErrorRenderingTemplate` native). Checked on the initial plan AND after every re-plan.
+- **Re-plan failures surface as a terminal `plan_error` event, not throws** — if the planner errors mid-run (shouldn't happen in practice), yields `{ type: "plan_error", error: "re-plan failed after hook X: ..." }`. `runHooksStream` never throws for expected outcomes.
 
 ## `SpackleHooks` / `defaultHooks` / `detectHooksEnv`
 
@@ -208,7 +229,7 @@ function planHooksBundle(
 ): Promise<PlanHooksResponse>;
 ```
 
-`generateBundle` has no `runHooks` — bundle-only mode doesn't have a real `cwd` for subprocess execution. Use the disk-backed `runHooks()` above when you need hooks.
+`generateBundle` has no streaming-hooks counterpart — bundle-only mode doesn't have a real `cwd` for subprocess execution. Use the disk-backed `runHooksStream()` above when you need hooks.
 
 Pair with `MemoryFs.toBundle()` / `MemoryFs.fromBundle()` to inspect results in-memory.
 

@@ -68,8 +68,8 @@ export type ValidationResponse = { valid: true } | { valid: false; errors: strin
  * behavior host-side by mkdir'ing each dir even if no files live under
  * it.
  *
- * Hooks are a separate step — call `planHooks` / `runHooks` after
- * `generate` (mirrors the native CLI's two-call shape). */
+ * Hooks are a separate step — call `planHooks` / `runHooksStream`
+ * after `generate` (mirrors the native CLI's two-call shape). */
 export type GenerateResponse =
   | { ok: true; files: Bundle; dirs: string[] }
   | { ok: false; error: string };

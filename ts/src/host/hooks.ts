@@ -35,7 +35,7 @@ export interface SpackleHooks {
   ): Promise<HookExecuteResult>;
 }
 
-/** Per-hook outcome in the returned results array. */
+/** Per-hook outcome carried inside `hook_end` events. */
 export type HookRunResult =
   | {
       key: string;
@@ -61,11 +61,40 @@ export interface TemplateErrorDetail {
   errors: string[];
 }
 
-/** Top-level runner response. Discriminated union so the template-error
- * hard-abort case and the happy path share one consistent type. */
-export type RunHooksResponse =
-  | { ok: true; results: HookRunResult[] }
-  | { ok: false; error: string; templateErrors?: TemplateErrorDetail[] };
+/** Events yielded by `runHookPlanStream` / `runHooksStream`.
+ *
+ * Ordering guarantees:
+ * - `run_start` is always the first event if the initial plan is clean.
+ * - Each runnable hook emits `hook_start` then exactly one `hook_end`.
+ * - Skipped hooks (including conditional-error hooks, which surface as
+ *   `kind: "failed"` for native parity) emit only `hook_end`.
+ * - `replan` appears after a `hook_end` with `kind: "failed"` whenever
+ *   the remaining plan was re-evaluated against mutated `hook_ran` state.
+ * - `template_errors` and `plan_error` are terminal — the iterator ends
+ *   immediately after emitting them.
+ */
+export type HookEvent =
+  | { type: "run_start"; plan: HookPlanEntry[] }
+  | {
+      type: "hook_start";
+      key: string;
+      command: string[];
+      /** ms since epoch (Date.now()) when the subprocess was spawned. */
+      startedAt: number;
+    }
+  | {
+      type: "hook_end";
+      key: string;
+      result: HookRunResult;
+      /** Present for completed/failed (the hook actually ran); absent
+       * for skipped and conditional-error hooks (no subprocess). */
+      startedAt?: number;
+      finishedAt?: number;
+      durationMs?: number;
+    }
+  | { type: "replan"; afterKey: string; plan: HookPlanEntry[] }
+  | { type: "template_errors"; error: string; templateErrors: TemplateErrorDetail[] }
+  | { type: "plan_error"; error: string };
 
 export interface RunHookPlanOptions {
   bundle: Bundle;
@@ -372,7 +401,7 @@ export function defaultHooks(env: HooksEnv = detectHooksEnv()): SpackleHooks {
   if (env.hasBun) return new BunHooks();
   if (env.hasNode) return new NodeHooks();
   throw new Error(
-    "no subprocess available in this environment — provide a custom SpackleHooks to runHooks()",
+    "no subprocess available in this environment — provide a custom SpackleHooks to runHooksStream()",
   );
 }
 
@@ -390,25 +419,33 @@ type Planner = (
 
 /**
  * Internal worker that takes a pre-bound planner (via `loadSpackleWasm()`
- * in `spackle.ts`) and iterates the plan. Matches native
- * `run_hooks_stream` semantics exactly. Exported for direct use by the
- * `spackle.ts` layer — most callers should use `runHooks()` there.
+ * in `spackle.ts`) and iterates the plan, yielding events in real time.
+ * Matches native `run_hooks_stream` semantics exactly. Exported for
+ * direct use by the `spackle.ts` layer — most callers should use
+ * `runHooksStream()` there.
+ *
+ * Event protocol: see `HookEvent`. The generator emits `run_start` once,
+ * then per-hook `hook_start` (runnable hooks only) + `hook_end`, with
+ * optional `replan` events between failures and their follow-ups.
+ * Terminal `template_errors` / `plan_error` events end the iterator.
  */
-export async function runHookPlan(
+export async function* runHookPlanStream(
   planner: Planner,
   opts: RunHookPlanOptions,
-): Promise<RunHooksResponse> {
+): AsyncGenerator<HookEvent> {
   const hooks = opts.hooks ?? defaultHooks();
   const cwd = opts.cwd ?? opts.outDir;
 
-  /** Walk a plan for template_errors. Returns a RunHooksResponse error
-   * if any are present (hard abort, matching native
-   * Error::ErrorRenderingTemplate), or `null` if the plan is clean.
-   * Applied to the initial plan AND every re-plan — a re-plan's data
-   * context differs from the initial's (hook_ran_* state has been
-   * updated), so a previously-clean hook could surface errors on
-   * re-plan if its command depends on mutated state. */
-  const scanTemplateErrors = (p: HookPlanEntry[]): RunHooksResponse | null => {
+  /** Walk a plan for template_errors. Returns a terminal event if any
+   * are present (hard abort, matching native Error::ErrorRenderingTemplate),
+   * or `null` if the plan is clean. Applied to the initial plan AND every
+   * re-plan — a re-plan's data context differs from the initial's
+   * (hook_ran_* state has been updated), so a previously-clean hook
+   * could surface errors on re-plan if its command depends on mutated
+   * state. */
+  const scanTemplateErrors = (
+    p: HookPlanEntry[],
+  ): Extract<HookEvent, { type: "template_errors" }> | null => {
     const errs: TemplateErrorDetail[] = [];
     for (const e of p) {
       if (e.template_errors && e.template_errors.length > 0) {
@@ -418,7 +455,7 @@ export async function runHookPlan(
     const first = errs[0];
     if (first === undefined) return null;
     return {
-      ok: false,
+      type: "template_errors",
       error: `template error in hook ${first.key}: ${first.errors.join("; ")}`,
       templateErrors: errs,
     };
@@ -426,14 +463,22 @@ export async function runHookPlan(
 
   const initial = planner(opts.bundle, opts.projectDir, opts.outDir, opts.data, undefined);
   if (!initial.ok) {
-    return { ok: false, error: initial.error };
+    yield { type: "plan_error", error: initial.error };
+    return;
   }
 
   const initialErrs = scanTemplateErrors(initial.plan);
-  if (initialErrs !== null) return initialErrs;
+  if (initialErrs !== null) {
+    yield initialErrs;
+    return;
+  }
+
+  // Yielded plans / commands are cloned so consumer mutations (e.g.
+  // a UI reducer accidentally splicing a row) can never reach back
+  // into the runner's own iteration state.
+  yield { type: "run_start", plan: structuredClone(initial.plan) };
 
   const hookRan: Record<string, boolean> = {};
-  const results: HookRunResult[] = [];
   let plan: HookPlanEntry[] = initial.plan;
   let idx = 0;
 
@@ -446,20 +491,28 @@ export async function runHookPlan(
       // evaluation error as Failed(HookError::ConditionalFailed), not
       // Skipped. Our planner surfaces these as skip_reason starting
       // with "conditional_error:" — re-categorize to "failed" here so
-      // the runner response matches native outcome kinds. hook_ran is
+      // the event stream matches native outcome kinds. hook_ran is
       // already false (planner never flipped it); no re-plan needed.
       const reason = entry.skip_reason ?? "unknown";
       if (reason.startsWith("conditional_error:")) {
-        results.push({
+        yield {
+          type: "hook_end",
           key: entry.key,
-          kind: "failed",
-          exitCode: -1,
-          stdout: new Uint8Array(),
-          stderr: new Uint8Array(),
-          error: reason,
-        });
+          result: {
+            key: entry.key,
+            kind: "failed",
+            exitCode: -1,
+            stdout: new Uint8Array(),
+            stderr: new Uint8Array(),
+            error: reason,
+          },
+        };
       } else {
-        results.push({ key: entry.key, kind: "skipped", skipReason: reason });
+        yield {
+          type: "hook_end",
+          key: entry.key,
+          result: { key: entry.key, kind: "skipped", skipReason: reason },
+        };
       }
       idx += 1;
       continue;
@@ -469,6 +522,13 @@ export async function runHookPlan(
     // result rather than a thrown exception, to match the native
     // CommandLaunchFailed shape. Hooks run sequentially (native parity
     // per run_hooks_stream) so the await-in-loop is load-bearing.
+    const startedAt = Date.now();
+    // Clone `command` — we're about to pass the same array to
+    // `hooks.execute` below; a consumer mutating the yielded payload
+    // between the yield and the await would otherwise alter what gets
+    // spawned.
+    yield { type: "hook_start", key: entry.key, command: [...entry.command], startedAt };
+
     let outcome: HookExecuteResult;
     let launchError: string | undefined;
     try {
@@ -483,15 +543,24 @@ export async function runHookPlan(
         stderr: new Uint8Array(),
       };
     }
+    const finishedAt = Date.now();
+    const durationMs = finishedAt - startedAt;
 
     if (outcome.ok) {
-      results.push({
+      yield {
+        type: "hook_end",
         key: entry.key,
-        kind: "completed",
-        exitCode: 0,
-        stdout: outcome.stdout,
-        stderr: outcome.stderr,
-      });
+        result: {
+          key: entry.key,
+          kind: "completed",
+          exitCode: 0,
+          stdout: outcome.stdout,
+          stderr: outcome.stderr,
+        },
+        startedAt,
+        finishedAt,
+        durationMs,
+      };
       hookRan[entry.key] = true;
       idx += 1;
       continue;
@@ -500,14 +569,21 @@ export async function runHookPlan(
     // Non-zero exit (or launch error). Continue — native parity per
     // src/hook.rs:527. Flip hookRan=false (already default, but be
     // explicit so re-plan includes it), then re-plan remaining hooks.
-    results.push({
+    yield {
+      type: "hook_end",
       key: entry.key,
-      kind: "failed",
-      exitCode: outcome.exitCode,
-      stdout: outcome.stdout,
-      stderr: outcome.stderr,
-      ...(launchError ? { error: launchError } : {}),
-    });
+      result: {
+        key: entry.key,
+        kind: "failed",
+        exitCode: outcome.exitCode,
+        stdout: outcome.stdout,
+        stderr: outcome.stderr,
+        ...(launchError ? { error: launchError } : {}),
+      },
+      startedAt,
+      finishedAt,
+      durationMs,
+    };
     hookRan[entry.key] = false;
 
     // Re-plan the remainder with actual hookRan state so chained
@@ -516,20 +592,22 @@ export async function runHookPlan(
     // returned plan is strictly the still-unexecuted tail.
     const replan = planner(opts.bundle, opts.projectDir, opts.outDir, opts.data, hookRan);
     if (!replan.ok) {
-      // Re-plan error mid-run: surface via the response contract, not
-      // an exception. Callers that care about partial results can
-      // inspect what they've accumulated; the top-level { ok: false }
-      // signals the run as a whole didn't complete.
-      return {
-        ok: false,
+      // Re-plan error mid-run: surface as a terminal event, not an
+      // exception. Consumers that care about partial results have
+      // already seen every prior hook_end event.
+      yield {
+        type: "plan_error",
         error: `re-plan failed after hook ${entry.key}: ${replan.error}`,
       };
+      return;
     }
     const replanErrs = scanTemplateErrors(replan.plan);
-    if (replanErrs !== null) return replanErrs;
+    if (replanErrs !== null) {
+      yield replanErrs;
+      return;
+    }
     plan = replan.plan;
     idx = 0;
+    yield { type: "replan", afterKey: entry.key, plan: structuredClone(plan) };
   }
-
-  return { ok: true, results };
 }

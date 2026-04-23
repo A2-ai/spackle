@@ -1,8 +1,11 @@
-// End-to-end tests for the hooks pipeline — plan_hooks (wasm) + runHooks
-// (host-side executor). Exercises the default runner (BunHooks under Bun)
-// against the hooks_fixture, plus mock-executor cases for the native
-// parity semantics: continue-on-failure, chained-conditional re-plan,
-// template-error hard abort.
+// End-to-end tests for the hooks pipeline — plan_hooks (wasm) +
+// runHooksStream / runHookPlanStream (host-side executor). Exercises
+// the default runner (BunHooks under Bun) against the hooks_fixture,
+// plus mock-executor cases for the native parity semantics:
+// continue-on-failure, chained-conditional re-plan, template-error
+// hard abort. Additionally covers the streaming event protocol:
+// run_start ordering, hook_start/hook_end pairing, replan emission,
+// timing fields.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
@@ -17,9 +20,11 @@ import {
   formatArgv,
   parseShellLine,
   planHooks,
-  runHookPlan,
-  runHooks,
+  runHookPlanStream,
+  runHooksStream,
+  type HookEvent,
   type HookExecuteResult,
+  type HookRunResult,
   type PlanHooksResponse,
   type SpackleHooks,
 } from "../src/spackle.ts";
@@ -33,6 +38,22 @@ async function workspace(fixture: string) {
   await cp(join(FIXTURES, fixture), projectDir, { recursive: true });
   const outDir = join(root, "output");
   return { root, projectDir, outDir };
+}
+
+/** Drain an AsyncIterable<HookEvent> into an array. Used across tests
+ * that only care about the final event set, not real-time ordering. */
+async function drain(stream: AsyncIterable<HookEvent>): Promise<HookEvent[]> {
+  const events: HookEvent[] = [];
+  for await (const e of stream) events.push(e);
+  return events;
+}
+
+/** Pull the per-hook outcomes out of a drained event list. Preserves
+ * emission order. */
+function resultsOf(events: HookEvent[]): HookRunResult[] {
+  const out: HookRunResult[] = [];
+  for (const e of events) if (e.type === "hook_end") out.push(e.result);
+  return out;
 }
 
 /** Record each execute() call, return a scripted outcome per invocation.
@@ -131,7 +152,7 @@ describe("planHooks", () => {
   });
 });
 
-describe("runHooks (default runner — actually spawns)", () => {
+describe("runHooksStream (default runner — actually spawns)", () => {
   const cleanup: string[] = [];
   beforeEach(() => void (cleanup.length = 0));
   afterEach(async () => {
@@ -147,11 +168,9 @@ describe("runHooks (default runner — actually spawns)", () => {
     const { mkdir } = await import("node:fs/promises");
     await mkdir(ws.outDir, { recursive: true });
 
-    const res = await runHooks(ws.projectDir, ws.outDir, {}, fs);
-    expect(res.ok).toBe(true);
-    if (res.ok) {
-      expect(res.results.map((r) => r.kind)).toEqual(["completed", "completed", "completed"]);
-    }
+    const events = await drain(runHooksStream(ws.projectDir, ws.outDir, {}, fs));
+    const results = resultsOf(events);
+    expect(results.map((r) => r.kind)).toEqual(["completed", "completed", "completed"]);
 
     // hook_a wrote "hook_a" to hook_a.out inside cwd (=outDir).
     const aOut = await readFile(join(ws.outDir, "hook_a.out"), "utf8");
@@ -162,6 +181,43 @@ describe("runHooks (default runner — actually spawns)", () => {
     const names = await readFile(join(ws.outDir, "names.out"), "utf8");
     expect(names).toContain("hooks-demo");
     expect(names).toContain("output"); // basename of ws.outDir
+  });
+
+  test("emits run_start, hook_start/hook_end pairs with timing fields", async () => {
+    const ws = await workspace("hooks_fixture");
+    cleanup.push(ws.root);
+    const fs = new DiskFs({ workspaceRoot: ws.root });
+
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(ws.outDir, { recursive: true });
+
+    const events = await drain(runHooksStream(ws.projectDir, ws.outDir, {}, fs));
+
+    // First event must be run_start with the initial plan.
+    expect(events[0]?.type).toBe("run_start");
+    if (events[0]?.type === "run_start") {
+      expect(events[0].plan.map((e) => e.key)).toEqual(["hook_a", "hook_b", "hook_names"]);
+    }
+
+    // Every runnable hook emits hook_start immediately before hook_end.
+    // All three hooks in this fixture run successfully, so we expect
+    // three matched pairs following run_start.
+    const body = events.slice(1);
+    expect(body.length).toBe(6);
+    for (let i = 0; i < body.length; i += 2) {
+      const start = body[i];
+      const end = body[i + 1];
+      expect(start?.type).toBe("hook_start");
+      expect(end?.type).toBe("hook_end");
+      if (start?.type === "hook_start" && end?.type === "hook_end") {
+        expect(start.key).toBe(end.key);
+        expect(typeof start.startedAt).toBe("number");
+        expect(end.startedAt).toBe(start.startedAt);
+        expect(typeof end.finishedAt).toBe("number");
+        expect(end.durationMs).toBeGreaterThanOrEqual(0);
+        expect(end.finishedAt ?? 0).toBeGreaterThanOrEqual(start.startedAt);
+      }
+    }
   });
 });
 
@@ -216,7 +272,7 @@ async function fixtureBundle(ws: { projectDir: string }, fs: DiskFs) {
   return fs.readProject(ws.projectDir, { virtualRoot: "/project" });
 }
 
-describe("runHookPlan — injected mock executor (native parity cases)", () => {
+describe("runHookPlanStream — injected mock executor (native parity cases)", () => {
   const cleanup: string[] = [];
   beforeEach(() => void (cleanup.length = 0));
   afterEach(async () => {
@@ -239,24 +295,35 @@ describe("runHookPlan — injected mock executor (native parity cases)", () => {
 
     const { loadSpackleWasm } = await import("../src/wasm/index.ts");
     const wasm = await loadSpackleWasm();
-    const res = await runHookPlan((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
-      bundle,
-      projectDir: "/project",
-      outDir: ws.outDir,
-      data: {},
-      hooks: mock,
-      cwd: ws.root, // fixture root exists; outDir may not
-    });
-    expect(res.ok).toBe(true);
-    if (res.ok) {
-      const byKey = Object.fromEntries(res.results.map((r) => [r.key, r]));
-      expect(byKey.hook_a?.kind).toBe("failed");
-      expect(byKey.hook_b?.kind).toBe("skipped");
-      if (byKey.hook_b?.kind === "skipped") {
-        expect(byKey.hook_b.skipReason).toBe("false_conditional");
-      }
-      // hook_names is independent; runs regardless of hook_a's failure.
-      expect(byKey.hook_names?.kind).toBe("completed");
+    const events = await drain(
+      runHookPlanStream((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
+        bundle,
+        projectDir: "/project",
+        outDir: ws.outDir,
+        data: {},
+        hooks: mock,
+        cwd: ws.root, // fixture root exists; outDir may not
+      }),
+    );
+
+    // No terminal error events — run completed cleanly.
+    expect(events.some((e) => e.type === "template_errors")).toBe(false);
+    expect(events.some((e) => e.type === "plan_error")).toBe(false);
+
+    const byKey = Object.fromEntries(resultsOf(events).map((r) => [r.key, r]));
+    expect(byKey.hook_a?.kind).toBe("failed");
+    expect(byKey.hook_b?.kind).toBe("skipped");
+    if (byKey.hook_b?.kind === "skipped") {
+      expect(byKey.hook_b.skipReason).toBe("false_conditional");
+    }
+    // hook_names is independent; runs regardless of hook_a's failure.
+    expect(byKey.hook_names?.kind).toBe("completed");
+
+    // Failure should have triggered a replan event naming hook_a.
+    const replan = events.find((e) => e.type === "replan");
+    expect(replan).toBeDefined();
+    if (replan?.type === "replan") {
+      expect(replan.afterKey).toBe("hook_a");
     }
   });
 
@@ -273,28 +340,26 @@ describe("runHookPlan — injected mock executor (native parity cases)", () => {
 
     const { loadSpackleWasm } = await import("../src/wasm/index.ts");
     const wasm = await loadSpackleWasm();
-    const res = await runHookPlan((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
-      bundle,
-      projectDir: "/project",
-      outDir: ws.outDir,
-      data: {},
-      hooks: mock,
-      cwd: ws.root,
-    });
+    await drain(
+      runHookPlanStream((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
+        bundle,
+        projectDir: "/project",
+        outDir: ws.outDir,
+        data: {},
+        hooks: mock,
+        cwd: ws.root,
+      }),
+    );
 
-    expect(res.ok).toBe(true);
-    if (res.ok) {
-      // Mock was called for hook_a (which failed) and hook_names
-      // (which runs after re-plan). hook_b was demoted — mock NOT
-      // called for it.
-      const commandsCalled = mock.calls.map((c) => c.command.join(" "));
-      expect(commandsCalled.some((c) => c.includes("hook_a"))).toBe(true);
-      expect(commandsCalled.some((c) => c.includes("hook_b"))).toBe(false);
-      expect(commandsCalled.some((c) => c.includes("_project_name"))).toBe(false);
-    }
+    // Mock was called for hook_a (which failed) and hook_names (which
+    // runs after re-plan). hook_b was demoted — mock NOT called for it.
+    const commandsCalled = mock.calls.map((c) => c.command.join(" "));
+    expect(commandsCalled.some((c) => c.includes("hook_a"))).toBe(true);
+    expect(commandsCalled.some((c) => c.includes("hook_b"))).toBe(false);
+    expect(commandsCalled.some((c) => c.includes("_project_name"))).toBe(false);
   });
 
-  test("re-plan failure mid-run returns ok=false (does not throw)", async () => {
+  test("re-plan failure mid-run emits terminal plan_error (does not throw)", async () => {
     const ws = await workspace("hooks_fixture");
     cleanup.push(ws.root);
     const fs = new DiskFs({ workspaceRoot: ws.root });
@@ -323,18 +388,22 @@ describe("runHookPlan — injected mock executor (native parity cases)", () => {
       return {};
     });
 
-    const res = await runHookPlan(planner, {
-      bundle,
-      projectDir: "/project",
-      outDir: ws.outDir,
-      data: {},
-      hooks: mock,
-      cwd: ws.root,
-    });
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expect(res.error).toContain("re-plan failed");
-      expect(res.error).toContain("synthetic re-plan failure");
+    const events = await drain(
+      runHookPlanStream(planner, {
+        bundle,
+        projectDir: "/project",
+        outDir: ws.outDir,
+        data: {},
+        hooks: mock,
+        cwd: ws.root,
+      }),
+    );
+
+    const terminal = events[events.length - 1];
+    expect(terminal?.type).toBe("plan_error");
+    if (terminal?.type === "plan_error") {
+      expect(terminal.error).toContain("re-plan failed");
+      expect(terminal.error).toContain("synthetic re-plan failure");
     }
   });
 
@@ -369,23 +438,24 @@ default = true
 
     const { loadSpackleWasm } = await import("../src/wasm/index.ts");
     const wasm = await loadSpackleWasm();
-    const res = await runHookPlan((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
-      bundle,
-      projectDir: "/project",
-      outDir: "/tmp",
-      data: {},
-      hooks: mock,
-      cwd: "/tmp",
-    });
-    expect(res.ok).toBe(true);
-    if (res.ok) {
-      const byKey = Object.fromEntries(res.results.map((r) => [r.key, r]));
-      expect(byKey.hook_ok?.kind).toBe("completed");
-      expect(byKey.hook_fail?.kind).toBe("failed");
-      // hook_dep must still run — executed hook_ok remains in items set
-      // for needs resolution, and hook_dep's needs = [hook_ok] is met.
-      expect(byKey.hook_dep?.kind).toBe("completed");
-    }
+    const events = await drain(
+      runHookPlanStream((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
+        bundle,
+        projectDir: "/project",
+        outDir: "/tmp",
+        data: {},
+        hooks: mock,
+        cwd: "/tmp",
+      }),
+    );
+
+    expect(events.some((e) => e.type === "plan_error")).toBe(false);
+    const byKey = Object.fromEntries(resultsOf(events).map((r) => [r.key, r]));
+    expect(byKey.hook_ok?.kind).toBe("completed");
+    expect(byKey.hook_fail?.kind).toBe("failed");
+    // hook_dep must still run — executed hook_ok remains in items set
+    // for needs resolution, and hook_dep's needs = [hook_ok] is met.
+    expect(byKey.hook_dep?.kind).toBe("completed");
   });
 
   test("conditional evaluation error surfaces as failed, not skipped (native parity)", async () => {
@@ -395,6 +465,8 @@ default = true
     // that isn't "true"/"false"). Our planner surfaces this as
     // skip_reason="conditional_error: ...", and the runner must
     // re-categorize it to { kind: "failed" } — not "skipped".
+    // Because the hook never ran, hook_start is NOT emitted for it —
+    // only hook_end with kind: "failed".
     const toml = `
 [[hooks]]
 key = "bad_cond"
@@ -407,24 +479,25 @@ default = true
     const mock = new MockHooks();
     const { loadSpackleWasm } = await import("../src/wasm/index.ts");
     const wasm = await loadSpackleWasm();
-    const res = await runHookPlan((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
-      bundle,
-      projectDir: "/project",
-      outDir: "/tmp",
-      data: {},
-      hooks: mock,
-      cwd: "/tmp",
-    });
+    const events = await drain(
+      runHookPlanStream((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
+        bundle,
+        projectDir: "/project",
+        outDir: "/tmp",
+        data: {},
+        hooks: mock,
+        cwd: "/tmp",
+      }),
+    );
 
-    expect(res.ok).toBe(true);
-    if (res.ok) {
-      const bad = res.results.find((r) => r.key === "bad_cond");
-      expect(bad).toBeDefined();
-      expect(bad?.kind).toBe("failed");
-      if (bad?.kind === "failed") {
-        expect(bad.error).toContain("conditional_error");
-      }
+    const bad = resultsOf(events).find((r) => r.key === "bad_cond");
+    expect(bad).toBeDefined();
+    expect(bad?.kind).toBe("failed");
+    if (bad?.kind === "failed") {
+      expect(bad.error).toContain("conditional_error");
     }
+    // No hook_start for bad_cond — the runner skipped execute entirely.
+    expect(events.some((e) => e.type === "hook_start" && e.key === "bad_cond")).toBe(false);
     // Command never executed — planner short-circuited before execute.
     expect(mock.calls.length).toBe(0);
   });
@@ -446,28 +519,82 @@ default = true
     const mock = new MockHooks();
     const { loadSpackleWasm } = await import("../src/wasm/index.ts");
     const wasm = await loadSpackleWasm();
-    const res = await runHookPlan((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
-      bundle,
-      projectDir: "/project",
-      outDir: "/tmp",
-      data: {},
-      hooks: mock,
-      cwd: "/tmp",
-    });
+    const events = await drain(
+      runHookPlanStream((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
+        bundle,
+        projectDir: "/project",
+        outDir: "/tmp",
+        data: {},
+        hooks: mock,
+        cwd: "/tmp",
+      }),
+    );
 
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expect(res.error).toContain("template error");
-      expect(res.templateErrors?.[0]?.key).toBe("masked");
+    // Terminal event is template_errors; no run_start emitted because
+    // the hard abort happens before we enter the execution loop.
+    expect(events.length).toBe(1);
+    const terminal = events[0];
+    expect(terminal?.type).toBe("template_errors");
+    if (terminal?.type === "template_errors") {
+      expect(terminal.error).toContain("template error");
+      expect(terminal.templateErrors[0]?.key).toBe("masked");
     }
     expect(mock.calls.length).toBe(0);
   });
 
-  test("template-error hard abort: no execute() calls, ok=false", async () => {
+  test("consumer mutations of yielded payloads do not leak into runner state", async () => {
+    // Regression guard: run_start.plan and hook_start.command used to
+    // share references with the runner's own iteration state. A
+    // consumer (e.g. a UI reducer) mutating those objects could
+    // reorder hooks or alter what actually gets spawned. The
+    // orchestrator now clones at the yield boundary; this test
+    // verifies that by aggressively mutating every received payload
+    // and asserting the actual execution was unaffected.
+    const ws = await workspace("hooks_fixture");
+    cleanup.push(ws.root);
+    const fs = new DiskFs({ workspaceRoot: ws.root });
+    const bundle = await fixtureBundle(ws, fs);
+
+    const mock = new MockHooks();
+    const { loadSpackleWasm } = await import("../src/wasm/index.ts");
+    const wasm = await loadSpackleWasm();
+
+    for await (const event of runHookPlanStream(
+      (b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr),
+      {
+        bundle,
+        projectDir: "/project",
+        outDir: ws.outDir,
+        data: {},
+        hooks: mock,
+        cwd: ws.root,
+      },
+    )) {
+      if (event.type === "run_start") {
+        // Try to derail iteration: truncate the plan, and corrupt each
+        // surviving entry's command.
+        event.plan.length = 0;
+      } else if (event.type === "hook_start") {
+        // Try to change what the runner is about to spawn.
+        event.command.length = 0;
+        event.command.push("not-a-real-binary", "--danger");
+      }
+    }
+
+    // All three hooks must have run with their original commands,
+    // despite the consumer's mutations.
+    expect(mock.calls.length).toBe(3);
+    for (const call of mock.calls) {
+      expect(call.command[0]).toBe("sh");
+      expect(call.command.includes("not-a-real-binary")).toBe(false);
+    }
+  });
+
+  test("template-error hard abort: no execute() calls, terminal template_errors", async () => {
     // Build an inline bundle with a hook whose command references an
     // undefined variable. Tera's one_off returns an error for
-    // undefined variables → template_errors is non-empty → runHookPlan
-    // must abort before calling execute().
+    // undefined variables → template_errors is non-empty →
+    // runHookPlanStream must abort before calling execute().
     const toml = `
 [[hooks]]
 key = "broken"
@@ -479,20 +606,23 @@ default = true
     const mock = new MockHooks();
     const { loadSpackleWasm } = await import("../src/wasm/index.ts");
     const wasm = await loadSpackleWasm();
-    const res = await runHookPlan((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
-      bundle,
-      projectDir: "/project",
-      outDir: "/tmp",
-      data: {},
-      hooks: mock,
-      cwd: "/tmp",
-    });
+    const events = await drain(
+      runHookPlanStream((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
+        bundle,
+        projectDir: "/project",
+        outDir: "/tmp",
+        data: {},
+        hooks: mock,
+        cwd: "/tmp",
+      }),
+    );
 
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expect(res.error).toContain("template error");
-      expect(res.templateErrors).toBeDefined();
-      expect(res.templateErrors?.[0]?.key).toBe("broken");
+    expect(events.length).toBe(1);
+    const terminal = events[0];
+    expect(terminal?.type).toBe("template_errors");
+    if (terminal?.type === "template_errors") {
+      expect(terminal.error).toContain("template error");
+      expect(terminal.templateErrors[0]?.key).toBe("broken");
     }
     expect(mock.calls.length).toBe(0);
   });

@@ -15,7 +15,7 @@
 //     — pure bundle-to-bundle; for memory-fs / preview flows.
 
 import { DiskFs } from "./host/disk-fs.ts";
-import { runHookPlan, type RunHooksResponse, type SpackleHooks } from "./host/hooks.ts";
+import { type HookEvent, runHookPlanStream, type SpackleHooks } from "./host/hooks.ts";
 import { loadSpackleWasm } from "./wasm/index.ts";
 import type {
   Bundle,
@@ -103,9 +103,10 @@ export async function validateSlotDataBundle(
  * DiskFs handles both the read (projectDir → bundle) and write (output
  * bundle → outDir) legs.
  *
- * Hooks are a separate step — call `runHooks()` after `generate()` if
- * the project defines any. Mirrors the native CLI's two-call shape
- * (`project.generate(...)` then `project.run_hooks_stream(...)`).
+ * Hooks are a separate step — iterate `runHooksStream()` after
+ * `generate()` if the project defines any. Mirrors the native CLI's
+ * two-call shape (`project.generate(...)` then
+ * `project.run_hooks_stream(...)`).
  */
 export async function generate(
   projectDir: string,
@@ -177,38 +178,54 @@ export async function planHooksBundle(
 }
 
 /**
- * Run the project's hooks. Reads the project into a bundle, plans via
- * wasm, and executes host-side via `opts.hooks ?? defaultHooks()`.
+ * Run the project's hooks, yielding `HookEvent`s as they occur. Reads
+ * the project into a bundle, plans via wasm, and executes host-side via
+ * `opts.hooks ?? defaultHooks()`.
  *
  * Mirrors native `Project::run_hooks_stream` at `src/lib.rs:246`:
  * `data` is the full data map (slots + hook toggles). `_project_name` /
  * `_output_name` are injected wasm-side.
  *
- * Failure semantics match native: non-zero exit yields a `failed`
- * result but the run continues; chained `hook_ran_<key>` conditionals
- * re-evaluate against actual outcomes via an in-loop re-plan. Template
- * rendering failures are a hard abort before any execution (returns
- * `{ ok: false, error, templateErrors }`).
+ * Event protocol: see `HookEvent`. Consumers `for await` the generator
+ * and update their UI on each `hook_start` / `hook_end` transition;
+ * this is the hook for SSE bridging — bridge by yielding each event as
+ * an SSE frame. Terminal `template_errors` / `plan_error` events end
+ * the iterator (no throws for expected failure modes).
+ *
+ * Failure semantics match native: non-zero exit yields a `hook_end`
+ * with `kind: "failed"` but the run continues; chained
+ * `hook_ran_<key>` conditionals re-evaluate against actual outcomes via
+ * an in-loop re-plan (visible as a `replan` event). Template rendering
+ * failures are a hard abort before any execution (terminal
+ * `template_errors` event).
  */
-export async function runHooks(
+export function runHooksStream(
   projectDir: string,
   outDir: string,
   data: Record<string, string>,
   fs: DiskFs,
   opts: RunHooksOptions = {},
-): Promise<RunHooksResponse> {
+): AsyncGenerator<HookEvent> {
   const virtualDir = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
   const bundle = fs.readProject(projectDir, { virtualRoot: virtualDir });
-  const wasm = await loadSpackleWasm();
-  return runHookPlan((b, pdir, odir, d, hookRan) => wasm.planHooks(b, pdir, odir, d, hookRan), {
-    bundle,
-    projectDir: virtualDir,
-    outDir,
-    data,
-    hooks: opts.hooks,
-    cwd: opts.cwd ?? outDir,
-    env: opts.env,
-  });
+  // Wrap the planner call in an async bridge so the generator can start
+  // yielding events without awaiting wasm load outside the iterator.
+  async function* inner(): AsyncGenerator<HookEvent> {
+    const wasm = await loadSpackleWasm();
+    yield* runHookPlanStream(
+      (b, pdir, odir, d, hookRan) => wasm.planHooks(b, pdir, odir, d, hookRan),
+      {
+        bundle,
+        projectDir: virtualDir,
+        outDir,
+        data,
+        hooks: opts.hooks,
+        cwd: opts.cwd ?? outDir,
+        env: opts.env,
+      },
+    );
+  }
+  return inner();
 }
 
 export type { SpackleWasm } from "./wasm/index.ts";
@@ -227,12 +244,12 @@ export {
   detectHooksEnv,
   formatArgv,
   parseShellLine,
-  runHookPlan,
+  runHookPlanStream,
+  type HookEvent,
   type HookExecuteResult,
   type HookRunResult,
   type HooksEnv,
   type RunHookPlanOptions,
-  type RunHooksResponse,
   type SpackleHooks,
   type TemplateErrorDetail,
 } from "./host/hooks.ts";
