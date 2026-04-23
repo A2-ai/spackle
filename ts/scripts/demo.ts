@@ -1,7 +1,7 @@
 // Walk through the public API in `../src/spackle.ts` so you can eyeball
-// the output after a wasm-pack build.
+// the output after a wasm build.
 //
-// Run: `just wasm-demo` or `cd ts && bun run scripts/demo.ts`
+// Run: `just demo-ts` or `cd ts && bun run scripts/demo.ts`
 
 import { cp, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

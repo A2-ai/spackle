@@ -7,3 +7,7 @@ pre-commit:
     run-clippy:
       run: cargo clippy --workspace
       # stage_fixed: true
+
+    ts-test:
+      glob: "ts/**/*.{ts,tsx,json}"
+      run: cd ts && bun test

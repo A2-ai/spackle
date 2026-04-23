@@ -11,10 +11,13 @@ spackle/
 ├── crates/
 │   └── spackle-wasm/     # cdylib, wasm-bindgen exports + Rust MemoryFs.
 │                         # Depends on `spackle` via path.
+├── scripts/
+│   └── build-wasm.sh     # cargo build (wasm32) → wasm-bindgen --target web → wasm-opt.
+│                         # Single source of truth; called by `just build-wasm` and CI.
 ├── ts/                   # @a2-ai/spackle TS package (npm-shaped, GitHub-distributed).
 │   ├── src/              # TS orchestration + host helpers.
 │   ├── src/wasm/         # Internal wasm-bindgen wrapper subsystem (keep named wasm/).
-│   ├── pkg/              # wasm-pack outputs {nodejs,web,bundler} — gitignored.
+│   ├── pkg/              # wasm-bindgen web-target output (flat; no subdirs) — gitignored.
 │   └── dist/             # tsc emit for the npm package entry — gitignored.
 ├── docs/
 │   ├── configuration.md  # core spackle config
@@ -25,20 +28,27 @@ spackle/
                            # Leave alone.
 ```
 
-`WASM.md` is the contributor-architecture doc for the wasm path.
+`docs/design/wasm.md` is the contributor-architecture doc for the wasm path.
 
 ## Key commands
 
 ```bash
+# Onboarding (first clone; also available as `just init`)
+just setup                      # git hooks + cargo check + bun install + setup-wasm
+just setup-wasm                 # wasm toolchain alone (wasm32 + wasm-bindgen-cli + wasm-opt)
+
 # Native (Rust)
 cargo test --workspace          # ~98 tests across spackle / cli / spackle-wasm
-just check-wasm-target          # compile spackle-wasm on wasm32-unknown-unknown
 
-# WASM (@a2-ai/spackle package)
-just build-wasm                 # wasm-pack × 3 targets → ts/pkg/{nodejs,web,bundler}
-just build-wasm-ts              # above + tsc emit to ts/dist/
-just test-wasm-pkg              # builds wasm, then bun test in ts/
-just wasm-demo                  # runs ts/scripts/demo.ts
+# Build (all / per-component)
+just build                      # CLI binary + wasm + TS dist
+just build-cli                  # target/release/spackle
+just build-wasm                 # scripts/build-wasm.sh → ts/pkg/ (web target, flat)
+just build-ts                   # wasm + tsc emit to ts/dist/ (npm package)
+
+# TS package (@a2-ai/spackle) — test / demo
+just test-ts                    # builds wasm, then bun test in ts/
+just demo-ts                    # runs ts/scripts/demo.ts
 ```
 
 CI: `.github/workflows/ci.yaml` runs cargo tests + bun tests. `.github/workflows/build.yaml` is the release pipeline (goreleaser CLI binaries + wasm tarball).
@@ -57,7 +67,7 @@ CI: `.github/workflows/ci.yaml` runs cargo tests + bun tests. `.github/workflows
 
 ## Distribution
 
-**Not published to npm.** The wasm TS package ships as a tarball attached to each GitHub release (`a2-ai-spackle-<version>.tgz`, from `bun pm pack` in the release workflow). Install via release asset URL or git+ssh. See `ts/README.md`.
+**Not published to npm.** The wasm TS package ships as a tarball attached to each GitHub release (`a2-ai-spackle-<version>.tgz`, from `bun pm pack` in the release workflow). `bun add git+ssh:...` does **not** work because `package.json` is at `ts/`, not the repo root, and no JS package manager supports subpath specifiers on git URLs. For dev iteration use `bun link` or a local tarball; for shared pre-releases use the GitHub release asset URL. See `ts/README.md` for the full install menu.
 
 ## Non-obvious invariants (don't accidentally break)
 
@@ -67,8 +77,9 @@ CI: `.github/workflows/ci.yaml` runs cargo tests + bun tests. `.github/workflows
 - **Output bundle carries `files` AND `dirs`.** Empty dirs must survive the round-trip to match native `copy::copy`'s `create_dir_all` behavior. Dropping `dirs` silently regresses parity.
 - **`DiskFs.writeOutput` refuses a pre-existing `outDir`.** Matches native `GenerateError::AlreadyExists`. Don't weaken this without matching native too.
 - **Path containment uses `path.resolve` + prefix check, not `split("/")` blocklists.** Handles platform-specific separators transparently.
-- **`slugify` appears in `pkg/*/spackle_wasm.d.ts`.** Incidental tera export. Ignore.
-- **wasm-pack's nodejs target inits eagerly; web/bundler need `await init()` first.** The TS wrapper layer only uses nodejs; browser consumers reach for the explicit subpath (`@a2-ai/spackle/pkg/web`).
+- **`slugify` appears in `pkg/spackle_wasm.d.ts`.** Incidental tera export. Ignore.
+- **Web target requires `await init()` before exports work.** `ts/src/wasm/index.ts` calls it lazily inside `loadSpackleWasm()` and caches the promise; consumers of the TS wrapper see an async API and never touch init themselves.
+- **`wasm-bindgen-cli` version must match the `wasm-bindgen` crate version exactly.** `scripts/build-wasm.sh` reads it from `Cargo.lock` and refuses to run on mismatch; `just setup-wasm` installs the right one.
 
 ## Hooks
 
@@ -98,5 +109,5 @@ The `FileSystem` trait is hand-rolled, not borrowed from `vfs` or similar. Adopt
 
 ## Before editing
 
-- If you're touching the wasm path, skim `WASM.md` for the architecture + invariants.
+- If you're touching the wasm path, skim `docs/design/wasm.md` for the architecture + invariants.
 - If you're touching tests or fixtures, see `tests/fixtures/` (basic_project, bad_template, typed_slots) — the bun tests consume the same fixtures.

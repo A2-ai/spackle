@@ -31,15 +31,15 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace
 
-      # Smoke-compile the wasm crate on wasm32 to catch target-specific
-      # regressions without running a full wasm-pack cycle.
+      # Smoke-compile the wasm crate on wasm32 in the Rust-only job to
+      # catch target regressions without installing the wasm toolchain.
       - name: Add wasm32-unknown-unknown target
         run: rustup target add wasm32-unknown-unknown
       - name: Build spackle-wasm for wasm32
         run: cargo build -p spackle-wasm --target wasm32-unknown-unknown
 
   wasm-pkg:
-    name: WASM package (bun test)
+    name: TS package (bun test)
     runs-on: ubuntu-latest
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: true
@@ -55,19 +55,23 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.POLYJUICE_DEPLOY_KEY }}
 
-      - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Add wasm32-unknown-unknown target
+        run: rustup target add wasm32-unknown-unknown
 
-      # Build all three wasm-pack targets so nodejs/web/bundler can't
-      # silently break. The bun test suite runs against nodejs (the TS
-      # wrapper imports eagerly from pkg/nodejs/); web and bundler are
-      # compile-smokes until a browser/bundler example exercises them.
-      - name: Build WASM (nodejs) for bun test
-        run: wasm-pack build crates/spackle-wasm --target nodejs --out-dir ../../ts/pkg/nodejs
-      - name: Build WASM (web) smoke
-        run: wasm-pack build crates/spackle-wasm --target web --out-dir ../../ts/pkg/web
-      - name: Build WASM (bundler) smoke
-        run: wasm-pack build crates/spackle-wasm --target bundler --out-dir ../../ts/pkg/bundler
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      # Pin wasm-bindgen-cli to the exact version of the wasm-bindgen
+      # crate — mismatches are the classic wasm-bindgen failure mode.
+      - name: Install wasm-bindgen-cli + wasm-opt
+        run: |
+          WB_VERSION=$(cargo metadata --format-version 1 --locked \
+            | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version' | head -1)
+          cargo binstall --no-confirm wasm-bindgen-cli --version "$WB_VERSION"
+          cargo binstall --no-confirm wasm-opt
+
+      - name: Build WASM (web)
+        run: ./scripts/build-wasm.sh
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -80,7 +84,7 @@ jobs:
         working-directory: ts
         run: bun test
 
-      - name: Type-check wasm package
+      - name: Type-check TS package
         working-directory: ts
         run: bunx tsc --noEmit
 

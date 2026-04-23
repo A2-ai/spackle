@@ -88,9 +88,8 @@ jobs:
 
   # WASM artifact — built once on ubuntu, packed as an npm-style tarball
   # so downstream repos (eventual spackle-web) can `bun add <url>` it.
-  # Uses the `nodejs` wasm-pack target since that's what a Bun server
-  # will consume; web/bundler targets are still built/smoke-tested in
-  # ci.yaml on every PR but aren't shipped as release assets yet.
+  # Web-target ESM output via wasm-bindgen-cli + wasm-opt; runs in both
+  # modern browsers and Bun.
   wasm:
     name: WASM
     runs-on: ubuntu-latest
@@ -108,20 +107,26 @@ jobs:
       - name: Cache rust
         uses: Swatinem/rust-cache@v2
 
-      - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
-      # Build all three wasm-pack targets into ts/pkg/ (matches the
-      # shape the published npm package uses at runtime).
-      - name: Build WASM (nodejs)
-        run: wasm-pack build crates/spackle-wasm --target nodejs --out-dir ../../ts/pkg/nodejs
+      - name: Add wasm32-unknown-unknown target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      # Pin wasm-bindgen-cli to the exact version of the wasm-bindgen
+      # crate — mismatches are the classic wasm-bindgen failure mode.
+      - name: Install wasm-bindgen-cli + wasm-opt
+        run: |
+          WB_VERSION=$(cargo metadata --format-version 1 --locked \
+            | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version' | head -1)
+          cargo binstall --no-confirm wasm-bindgen-cli --version "$WB_VERSION"
+          cargo binstall --no-confirm wasm-opt
+
       - name: Build WASM (web)
-        run: wasm-pack build crates/spackle-wasm --target web --out-dir ../../ts/pkg/web
-      - name: Build WASM (bundler)
-        run: wasm-pack build crates/spackle-wasm --target bundler --out-dir ../../ts/pkg/bundler
+        run: ./scripts/build-wasm.sh
 
       - name: Install TS deps
         working-directory: ts
@@ -131,9 +136,9 @@ jobs:
         working-directory: ts
         run: bunx tsc -p tsconfig.build.json
 
-      # Pack the whole wasm package (src, dist, pkg, README) into an
-      # npm-style tarball. `.npmignore` excludes tests / scripts /
-      # tsconfig / lockfile.
+      # Pack the whole TS package (src, dist, pkg, README) — including
+      # the embedded wasm bundle — into an npm-style tarball. `.npmignore`
+      # excludes tests / scripts / tsconfig / lockfile.
       - name: Pack TS tarball
         run: |
           mkdir -p dist-ts
