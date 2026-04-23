@@ -40,20 +40,59 @@ brew install a2-ai/tap/spackle
 
 ## Development
 
-```shell
-# Setup git hooks
-just setup
+### Prerequisites
 
+- [Rust](https://rustup.rs/)
+- [Bun](https://bun.sh/) — required to build and test the TypeScript module
+- [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) — required to build the WebAssembly targets for the TypeScript module:
+  ```shell
+  cargo install wasm-pack
+  ```
+
+> **Note on wasm-pack:** The rustwasm working group [sunset wasm-pack in July 2025](https://blog.rust-lang.org/inside-rust/2025/07/21/sunsetting-the-rustwasm-github-org/). We continue to use it today because it handles target installation, `wasm-bindgen-cli` version pinning, and `wasm-opt` optimization in a single step. We plan to migrate to a [manual `cargo build` + `wasm-bindgen` + `wasm-opt` pipeline](https://nickb.dev/blog/life-after-wasm-pack-an-opinionated-deconstruction/) in a future release to eliminate the dependency on an archived tool.
+
+### Setup
+
+Install git hooks before your first contribution:
+
+```shell
+just setup
+```
+
+### Build
+
+#### Native (Rust)
+
+```shell
 # Run the CLI
 just run -- --help
 
-# Run tests
+# Run all Rust tests (spackle / spackle-cli / spackle-wasm)
 just test
 
-# Install locally
+# Smoke-compile the wasm crate on wasm32-unknown-unknown without wasm-pack
+just check-wasm-target
+
+# Install the CLI binary locally
 just install
 ```
 
-## Typescript Module
+#### TypeScript module (`@a2-ai/spackle`)
 
-Spackle has been rewritten to be able to be translated to a Typescript module. Please find the README for that module here: [`ts/README.md`](ts/README.md)
+The TypeScript module lives in `ts/` and wraps the wasm binary. Full consumer docs are in [`ts/README.md`](ts/README.md) and [`docs/ts/`](docs/ts/).
+
+> `wasm-pack` must be installed (see [Prerequisites](#prerequisites)) to run any of the commands below.
+
+```shell
+# Build all three wasm-pack targets (nodejs, web, bundler) → ts/pkg/
+just build-wasm
+
+# Build wasm targets + emit TypeScript declarations to ts/dist/
+just build-wasm-ts
+
+# Run the bun test suite (builds wasm first)
+just test-wasm-pkg
+
+# Run the demo script (builds wasm first)
+just wasm-demo
+```
