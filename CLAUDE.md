@@ -1,4 +1,4 @@
-# spackle — repo guide for Claude
+# spackle
 
 Project templating tool. Rust core + native CLI + WebAssembly surface for JS hosts.
 
