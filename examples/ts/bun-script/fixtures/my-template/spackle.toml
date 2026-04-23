@@ -1,0 +1,11 @@
+name = "my-template"
+
+[[slots]]
+key = "name"
+type = "String"
+description = "Project name; also used as the output file name."
+
+[[slots]]
+key = "project_type"
+type = "String"
+description = "Short language / runtime tag — e.g. 'rust', 'bun'."

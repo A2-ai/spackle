@@ -1,7 +1,8 @@
+#[cfg(not(target_arch = "wasm32"))]
+use std::fmt::Display;
 use std::{
     collections::HashMap,
-    fmt::Display,
-    fs, io,
+    io,
     path::{Path, PathBuf},
 };
 
@@ -9,13 +10,17 @@ use fronma::{engines::Toml, parser::parse_with_engine};
 use template::RenderedFile;
 use tera::{Context, Tera};
 use thiserror::Error;
+
+#[cfg(not(target_arch = "wasm32"))]
 use tokio_stream::Stream;
+#[cfg(not(target_arch = "wasm32"))]
 use users::User;
 
 pub mod config;
 pub mod copy;
+pub mod fs;
 pub mod hook;
-mod needs;
+pub mod needs;
 pub mod slot;
 pub mod template;
 
@@ -47,6 +52,7 @@ pub enum GenerateError {
     FileError(#[from] template::FileError),
 }
 
+/// Errors surfaced by [`Project::render_single_file`].
 #[derive(Error, Debug)]
 pub enum SingleFileError {
     #[error("Error reading project file: {0}")]
@@ -59,26 +65,29 @@ pub enum SingleFileError {
     Render(tera::Error),
 }
 
-// Gets the output name as the canonicalized path's file stem
+/// Derive a human-readable output name from `out_dir`.
+///
+/// Returns the final path component, falling back to `"project"` for
+/// paths that have none (e.g. `/`). Does NOT canonicalize — under
+/// wasm32 (`JsFs` path) canonicalize would require host-side fs access
+/// that we explicitly avoid in the fs-bridge architecture. Callers
+/// that want canonical paths should resolve them before passing in.
 pub fn get_output_name(out_dir: &Path) -> String {
-    let path = match out_dir.canonicalize() {
-        Ok(path) => path,
-        // If the path cannot be canonicalized (e.g. not created yet), we can ignore
-        Err(_) => out_dir.to_path_buf(),
-    };
-
-    path.file_name()
+    out_dir
+        .file_name()
         .unwrap_or("project".as_ref())
         .to_string_lossy()
         .to_string()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub enum RunHooksError {
     BadConfig(config::Error),
     HookError(hook::Error),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Display for RunHooksError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -88,9 +97,8 @@ impl Display for RunHooksError {
     }
 }
 
-// Loads the project from the specified directory or path and validates it
-pub fn load_project(path: &PathBuf) -> Result<Project, LoadError> {
-    let config = config::load(path).map_err(|e| LoadError::ConfigError {
+pub fn load_project<F: fs::FileSystem>(fs: &F, path: &PathBuf) -> Result<Project, LoadError> {
+    let config = config::load(fs, path).map_err(|e| LoadError::ConfigError {
         path: path.to_owned(),
         error: e,
     })?;
@@ -112,26 +120,23 @@ pub struct Project {
 }
 
 impl Project {
-    /// Gets the name of the project or if one isn't specified, from the directory name
+    /// Project name — `config.name` if set, otherwise the directory's
+    /// file stem. Does NOT canonicalize; see `get_output_name` for the
+    /// same rationale (no host fs access from wasm32).
     pub fn get_name(&self) -> String {
         if let Some(name) = &self.config.name {
             return name.clone();
         }
 
-        let path = match self.path.canonicalize() {
-            Ok(path) => path,
-            Err(_) => return "".to_string(),
-        };
-
-        return path
+        self.path
             .file_stem()
             .unwrap_or_default()
             .to_string_lossy()
-            .into_owned();
+            .into_owned()
     }
 
-    pub fn check(&self) -> Result<(), CheckError> {
-        if let Err(e) = template::validate(&self.path, &self.config.slots) {
+    pub fn check<F: fs::FileSystem>(&self, fs: &F) -> Result<(), CheckError> {
+        if let Err(e) = template::validate(fs, &self.path, &self.config.slots) {
             return Err(CheckError::TemplateError(e));
         }
 
@@ -145,28 +150,29 @@ impl Project {
     /// Generates a filled directory from the specified spackle project.
     ///
     /// out_dir is the path to what will become the filled directory
-    pub fn generate(
+    pub fn generate<F: fs::FileSystem>(
         &self,
+        fs: &F,
         project_dir: &PathBuf,
         out_dir: &PathBuf,
         slot_data: &HashMap<String, String>,
     ) -> Result<Vec<RenderedFile>, GenerateError> {
-        if out_dir.exists() {
+        if fs.exists(out_dir) {
             return Err(GenerateError::AlreadyExists(out_dir.clone()));
         }
 
-        let config = config::load_dir(project_dir).map_err(GenerateError::BadConfig)?;
+        let config = config::load_dir(fs, project_dir).map_err(GenerateError::BadConfig)?;
 
         let mut slot_data = slot_data.clone();
         slot_data.insert("_project_name".to_string(), self.get_name());
         slot_data.insert("_output_name".to_string(), get_output_name(out_dir));
 
         // Copy all non-template files to the output directory
-        copy::copy(project_dir, &out_dir, &config.ignore, &slot_data)
+        copy::copy(fs, project_dir, &out_dir, &config.ignore, &slot_data)
             .map_err(GenerateError::CopyError)?;
 
         // Render template files to the output directory
-        let results = template::fill(project_dir, out_dir, &slot_data)
+        let results = template::fill(fs, project_dir, out_dir, &slot_data)
             .map_err(GenerateError::TemplateError)?;
 
         // Split vector into vector of rendered files and vector of errors
@@ -182,8 +188,9 @@ impl Project {
         Ok(okay_results)
     }
 
-    pub fn copy_files(
+    pub fn copy_files<F: fs::FileSystem>(
         &self,
+        fs: &F,
         out_dir: &Path,
         data: &HashMap<String, String>,
     ) -> Result<copy::CopyResult, copy::Error> {
@@ -191,11 +198,12 @@ impl Project {
         data.insert("_project_name".to_string(), self.get_name());
         data.insert("_output_name".to_string(), get_output_name(out_dir));
 
-        copy::copy(&self.path, out_dir, &self.config.ignore, &data)
+        copy::copy(fs, &self.path, out_dir, &self.config.ignore, &data)
     }
 
-    pub fn render_templates(
+    pub fn render_templates<F: fs::FileSystem>(
         &self,
+        fs: &F,
         out_dir: &Path,
         data: &HashMap<String, String>,
     ) -> Result<Vec<Result<template::RenderedFile, template::FileError>>, tera::Error> {
@@ -203,34 +211,38 @@ impl Project {
         data.insert("_project_name".to_string(), self.get_name());
         data.insert("_output_name".to_string(), get_output_name(out_dir));
 
-        template::fill(&self.path, out_dir, &data)
+        template::fill(fs, &self.path, out_dir, &data)
     }
 
-    /// Renders a single-file spackle project (a `.j2t` file containing TOML
-    /// frontmatter + a Tera template body) and returns the rendered output.
+    /// Render a single-file (`.j2t`) project into a string.
     ///
-    /// The file is re-read from `self.path`; only the body is rendered.
-    /// Special variables (`_project_name`, `_output_name`) are *not* injected —
-    /// single-file projects have no output directory concept at the library
-    /// level.
-    pub fn render_single_file(
+    /// Single-file projects carry TOML frontmatter (delimited by `---`)
+    /// followed by a Tera template body. There's no output directory and
+    /// no `_project_name` / `_output_name` special vars — the body is
+    /// rendered purely against the passed `data`.
+    ///
+    /// Reads `self.path` through the provided `FileSystem` so the same
+    /// method works natively and in wasm (where the JS adapter supplies
+    /// the fs).
+    pub fn render_single_file<F: fs::FileSystem>(
         &self,
+        fs: &F,
         data: &HashMap<String, String>,
     ) -> Result<String, SingleFileError> {
-        let file_contents = fs::read_to_string(&self.path).map_err(SingleFileError::Read)?;
+        let bytes = fs.read_file(&self.path).map_err(SingleFileError::Read)?;
+        let file_contents = String::from_utf8(bytes).map_err(|e| {
+            SingleFileError::Read(io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+        })?;
 
         let body = parse_with_engine::<config::Config, Toml>(&file_contents)
             .map_err(SingleFileError::Parse)?
             .body;
 
         let context = Context::from_serialize(data).map_err(SingleFileError::Context)?;
-
         Tera::one_off(body, &context, false).map_err(SingleFileError::Render)
     }
 
-    /// Runs the hooks in the generated spackle project.
-    ///
-    /// out_dir is the path to the filled directory
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn run_hooks_stream(
         &self,
         out_dir: &Path,
@@ -253,9 +265,7 @@ impl Project {
         Ok(result)
     }
 
-    /// Runs the hooks in the generated spackle project.
-    ///
-    /// out_dir is the path to the filled directory
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn run_hooks(
         &self,
         out_dir: &Path,
@@ -287,4 +297,8 @@ mod tests {
         let path = Path::new("/path/to/output.name");
         assert_eq!(get_output_name(path), "output.name");
     }
+
+    // End-to-end `load_project` + `Project::check` coverage lives in
+    // `tests/templating.rs` and `tests/single_file.rs` — those exercise
+    // the real fixture tree and the new fs-trait signatures together.
 }

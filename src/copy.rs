@@ -1,12 +1,10 @@
 use std::{
     collections::HashMap,
     fmt::Display,
-    fs,
     path::{Path, PathBuf},
 };
 
 use tera::{Context, Tera};
-use walkdir::WalkDir;
 
 use crate::{config::CONFIG_FILE, template::has_template_ext};
 
@@ -33,7 +31,8 @@ pub struct CopyResult {
     pub skipped_count: usize,
 }
 
-pub fn copy(
+pub fn copy<F: FileSystem>(
+    fs: &F,
     src: &Path,
     dest: &Path,
     skip: &Vec<String>,
@@ -65,26 +64,31 @@ pub fn copy(
                 return false;
             }
 
-            true
-        })
-        .collect::<Vec<_>>();
+        let name = rel_path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
 
-    for entry in entries {
-        let entry = entry.map_err(|e| Error {
-            source: e.into(),
-            path: src.to_path_buf(),
-        })?;
+        if skip.iter().any(|s| s == &name) {
+            skipped_count += 1;
+            skipped_ancestors.push(rel_path.clone());
+            continue;
+        }
+        if name == CONFIG_FILE {
+            skipped_ancestors.push(rel_path.clone());
+            continue;
+        }
+        if name.ends_with(TEMPLATE_EXT) {
+            // .j2 files are skipped here; template::fill handles them.
+            continue;
+        }
 
-        let src_path = entry.path();
-        let relative_path = src_path.strip_prefix(src).map_err(|e| Error {
-            source: e.into(),
-            path: src_path.to_path_buf(),
-        })?;
-        let dst_path_maybe_template = dest.join(relative_path);
+        let src_path = src.join(&rel_path);
+        let dst_path_maybe_template = dest.join(&rel_path);
 
         let context = Context::from_serialize(data).map_err(|e| Error {
             source: e.into(),
-            path: src_path.to_path_buf(),
+            path: src_path.clone(),
         })?;
         let dst_path: PathBuf =
             match Tera::one_off(&dst_path_maybe_template.to_string_lossy(), &context, false) {
@@ -92,29 +96,36 @@ pub fn copy(
                 Err(e) => {
                     return Err(Error {
                         source: e.into(),
-                        path: dst_path_maybe_template.to_path_buf(),
+                        path: dst_path_maybe_template.clone(),
                     });
                 }
             };
 
-        if entry.file_type().is_dir() {
-            fs::create_dir_all(&dst_path).map_err(|e| Error {
-                source: e.into(),
-                path: dst_path.clone(),
-            })?;
-        } else if entry.file_type().is_file() {
-            if let Some(parent) = dst_path.parent() {
-                fs::create_dir_all(parent).map_err(|e| Error {
-                    source: e.into(),
-                    path: parent.to_path_buf(),
+        match stat.file_type {
+            FileType::Directory => {
+                fs.create_dir_all(&dst_path).map_err(|e| Error {
+                    source: Box::new(e),
+                    path: dst_path.clone(),
                 })?;
             }
-            fs::copy(src_path, &dst_path).map_err(|e| Error {
-                source: e.into(),
-                path: dst_path.clone(),
-            })?;
-
-            copied_count += 1;
+            FileType::File => {
+                if let Some(parent) = dst_path.parent() {
+                    fs.create_dir_all(parent).map_err(|e| Error {
+                        source: Box::new(e),
+                        path: parent.to_path_buf(),
+                    })?;
+                }
+                fs.copy_file(&src_path, &dst_path).map_err(|e| Error {
+                    source: Box::new(e),
+                    path: dst_path.clone(),
+                })?;
+                copied_count += 1;
+            }
+            FileType::Symlink | FileType::Other => {
+                // Symlinks and other special entries are not copied —
+                // matches prior walkdir behavior (only is_dir / is_file
+                // branches).
+            }
         }
     }
 
@@ -147,8 +158,9 @@ mod tests {
         }
 
         copy(
-            src_dir,
-            dst_dir,
+            &crate::fs::StdFs::new(),
+            &src_dir,
+            &dst_dir,
             &vec!["file-0.txt".to_string()],
             &HashMap::from([("foo".to_string(), "bar".to_string())]),
         )
@@ -184,8 +196,9 @@ mod tests {
         fs::write(subdir.join("file-0.txt"), "file-0.txt").unwrap();
 
         copy(
-            src_dir,
-            dst_dir,
+            &crate::fs::StdFs::new(),
+            &src_dir,
+            &dst_dir,
             &vec!["file-0.txt".to_string()],
             &HashMap::from([("foo".to_string(), "bar".to_string())]),
         )
@@ -221,8 +234,9 @@ mod tests {
         assert!(src_dir.join("{{template_name}}.tmpl").exists());
 
         copy(
-            src_dir,
-            dst_dir,
+            &crate::fs::StdFs::new(),
+            &src_dir,
+            &dst_dir,
             &vec![],
             &HashMap::from([
                 ("template_name".to_string(), "template".to_string()),

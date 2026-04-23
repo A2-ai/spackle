@@ -417,6 +417,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "console_error_panic_hook"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a06aeb73f470f66dcdbf7223caeebb85984942f22f1adb2a088cf9668146bbbc"
+dependencies = [
+ "cfg-if",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -831,8 +841,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "wasi",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -842,12 +854,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0de51e6874e94e7bf76d726fc5d13ba782deca734ff60d5bb2fb2607c7406555"
 dependencies = [
  "cfg-if",
- "js-sys",
  "libc",
  "r-efi",
  "wasip2",
  "wasip3",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -1114,7 +1124,6 @@ checksum = "7b4a6248eb93a4401ed2f37dfe8ea592d3cf05b7cf4f8efa867b6895af7e094e"
 dependencies = [
  "console",
  "once_cell",
- "serde",
  "similar",
  "tempfile",
 ]
@@ -1847,6 +1856,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-wasm-bindgen"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8302e169f0eddcc139c70f139d19d6467353af16f9fce27e8c30158036a1e16b"
+dependencies = [
+ "js-sys",
+ "serde",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2028,10 +2058,11 @@ dependencies = [
  "async-stream",
  "colored",
  "fronma",
- "getrandom 0.4.2",
+ "getrandom 0.2.17",
  "insta",
  "polyjuice",
  "serde",
+ "serde_json",
  "strum_macros",
  "tempfile",
  "tera 2.0.0-alpha.3",
@@ -2039,8 +2070,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "toml 1.1.2+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
  "users",
  "walkdir",
 ]
@@ -2061,6 +2090,23 @@ dependencies = [
  "spackle",
  "tera 1.20.1",
  "toml 1.1.2+spec-1.1.0",
+]
+
+[[package]]
+name = "spackle-wasm"
+version = "0.0.1"
+dependencies = [
+ "console_error_panic_hook",
+ "getrandom 0.2.17",
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_bytes",
+ "serde_json",
+ "spackle",
+ "tera",
+ "thiserror",
+ "wasm-bindgen",
 ]
 
 [[package]]

@@ -3,6 +3,16 @@
 # Rust
 target
 render
+
+# Build outputs for the wasm artifact (ts/pkg/) and the TS package
+# (ts/dist/), plus local node_modules / scratch output.
+ts/node_modules
+ts/output
+ts/pkg
+ts/dist
+
+# Example workspaces
+examples/**/node_modules
+examples/**/output
+
 .DS_Store
-*.snap.new
-.*.pending-snap

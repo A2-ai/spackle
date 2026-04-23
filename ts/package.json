@@ -1,0 +1,38 @@
+{
+  "name": "@a2-ai/spackle",
+  "version": "0.0.1",
+  "description": "spackle project templating, as a WebAssembly module for JS hosts.",
+  "repository": "https://github.com/a2-ai/spackle",
+  "files": [
+    "src",
+    "pkg",
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build:ts": "tsc -p tsconfig.build.json",
+    "test": "bun test",
+    "demo": "bun scripts/demo.ts",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^22.19.17",
+    "oxfmt": "^0.42.0",
+    "oxlint": "^1.61.0",
+    "oxlint-tsgolint": "^0.17.4",
+    "typescript": "^5.9.3"
+  }
+}

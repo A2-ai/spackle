@@ -50,7 +50,8 @@ fn main() {
 
     let cli = Cli::parse();
 
-    let project = match spackle::load_project(&cli.project_path) {
+    let fs = spackle::fs::StdFs::new();
+    let project = match spackle::load_project(&fs, &cli.project_path) {
         Ok(p) => p,
         Err(e) => {
             eprintln!(

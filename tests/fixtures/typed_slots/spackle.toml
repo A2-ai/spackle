@@ -1,0 +1,11 @@
+[[slots]]
+key = "name"
+type = "String"
+
+[[slots]]
+key = "count"
+type = "Number"
+
+[[slots]]
+key = "enabled"
+type = "Boolean"

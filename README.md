@@ -40,16 +40,56 @@ brew install a2-ai/tap/spackle
 
 ## Development
 
-```shell
-# Setup git hooks
-just setup
+### Prerequisites
 
+- [Rust](https://rustup.rs/)
+- [Bun](https://bun.sh/) — required to build and test the TS package
+- [just](https://github.com/casey/just) — task runner; drives `setup` / `build-wasm` / etc.
+- [jq](https://jqlang.org/) — used by `scripts/build-wasm.sh` to pin the wasm-bindgen CLI version from `Cargo.lock`
+
+The wasm toolchain (`wasm32-unknown-unknown` rust target, `wasm-bindgen-cli` pinned to the `Cargo.lock` version, `wasm-opt`) is installed for you by `just setup` on first run.
+
+### Setup
+
+One-shot onboarding — installs git hooks, runs a `cargo check`, installs JS deps, installs the wasm toolchain:
+
+```shell
+just setup      # or: just init
+```
+
+Re-run `just setup-wasm` alone if you just need to refresh the wasm toolchain without the full bootstrap.
+
+### Build
+
+#### Native (Rust)
+
+```shell
 # Run the CLI
 just run -- --help
 
-# Run tests
+# Run all Rust tests (spackle / spackle-cli / spackle-wasm)
 just test
 
-# Install locally
+# Install the CLI binary locally
 just install
+```
+
+#### TS package (`@a2-ai/spackle`)
+
+The TS package lives in `ts/` and consumes the wasm artifact as a `--target web` ESM bundle that runs in modern browsers and Bun. Full consumer docs are in [`ts/README.md`](ts/README.md) and [`docs/ts/`](docs/ts/).
+
+```shell
+# Build everything: CLI binary + wasm + TS dist.
+just build
+
+# Or build one component at a time:
+just build-cli              # target/release/spackle
+just build-wasm             # ts/pkg/ (web-target wasm-bindgen + wasm-opt)
+just build-ts               # wasm + tsc emit to ts/dist/ (the TS package)
+
+# Run the TS package's bun test suite (builds wasm first)
+just test-ts
+
+# Run the demo script (builds wasm first)
+just demo-ts
 ```
