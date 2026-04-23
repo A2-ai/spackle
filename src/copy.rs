@@ -6,8 +6,7 @@ use std::{
 
 use tera::{Context, Tera};
 
-use crate::fs::{self as fsmod, FileSystem, FileType};
-use crate::{config::CONFIG_FILE, template::TEMPLATE_EXT};
+use crate::{config::CONFIG_FILE, template::has_template_ext};
 
 #[derive(Debug)]
 pub struct Error {
@@ -42,36 +41,28 @@ pub fn copy<F: FileSystem>(
     let mut copied_count = 0;
     let mut skipped_count = 0;
 
-    // Ensure the destination root exists. The old walkdir-based flow
-    // yielded the source root as its first entry, which resulted in a
-    // `create_dir_all(dest)` call before any children were processed.
-    // Our `fsmod::walk` only yields descendants — so do this eagerly to
-    // preserve behavior downstream (notably: hooks that cwd into
-    // `dest` need it to exist even when the source tree was empty).
-    fs.create_dir_all(dest).map_err(|e| Error {
-        source: Box::new(e),
-        path: dest.to_path_buf(),
-    })?;
+    let entries = WalkDir::new(src)
+        .into_iter()
+        .filter_entry(|entry| {
+            // Skip those that match "skip"
+            if skip
+                .iter()
+                .any(|s| entry.file_name().to_string_lossy() == *s)
+            {
+                skipped_count += 1;
+                return false;
+            }
 
-    // Recursive walk via the fs trait. Yields each descendant as
-    // (path_relative_to_src, stat). We filter + re-root + template the
-    // destination path, then either mkdir or copy.
-    let entries = fsmod::walk(fs, src).map_err(|e| Error {
-        source: Box::new(e),
-        path: src.to_path_buf(),
-    })?;
+            // TODO pull these out and pass as args if possible
+            // Skip config file
+            if entry.file_name() == CONFIG_FILE {
+                return false;
+            }
 
-    // First pass: apply the skip/config-file/.j2 filter on a per-entry
-    // basis. Unlike walkdir::filter_entry we can't prune whole subtrees
-    // in a single pass — so we explicitly compute an "ancestor skipped"
-    // set while iterating (entries are in DFS order).
-    let mut skipped_ancestors: Vec<PathBuf> = Vec::new();
-
-    for (rel_path, stat) in entries {
-        // If any ancestor was skipped, skip everything under it.
-        if skipped_ancestors.iter().any(|a| rel_path.starts_with(a)) {
-            continue;
-        }
+            // Skip template files (handled by template::fill)
+            if has_template_ext(&entry.file_name().to_string_lossy()) {
+                return false;
+            }
 
         let name = rel_path
             .file_name()
@@ -231,9 +222,10 @@ mod tests {
         let src_dir = src.path();
         let dst_dir = dst.path();
 
-        // A file whose name contains template syntax but does not end with .j2
-        // should have its name replaced while contents remain untouched.
-        // The .j2 extension marks files whose *contents* get rendered.
+        // A file whose name contains template syntax but does not end with a
+        // template extension (.j2 / .tera) should have its name replaced while
+        // contents remain untouched. A template extension marks files whose
+        // *contents* get rendered.
         fs::write(
             src_dir.join(format!("{}.tmpl", "{{template_name}}")),
             "{{_output_name}}",

@@ -415,7 +415,7 @@ pub fn run_hooks_stream(
     // Apply template to command
     let mut templated_hooks = Vec::new();
     for hook in queued_hooks {
-        let context = Context::from_serialize(data.clone())
+        let context = Context::from_serialize(data)
             .map_err(|e| Error::ErrorRenderingTemplate(hook.clone(), e))?;
 
         let command = hook

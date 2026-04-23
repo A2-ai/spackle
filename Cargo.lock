@@ -2065,7 +2065,7 @@ dependencies = [
  "serde_json",
  "strum_macros",
  "tempfile",
- "tera",
+ "tera 2.0.0-alpha.3",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -2088,7 +2088,7 @@ dependencies = [
  "rocket",
  "rust-embed",
  "spackle",
- "tera",
+ "tera 1.20.1",
  "toml 1.1.2+spec-1.1.0",
 ]
 
@@ -2195,6 +2195,17 @@ dependencies = [
  "serde_json",
  "slug",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "tera"
+version = "2.0.0-alpha.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b77ffb736b74f6be677ecae79cbaeb8a8072099593ec2666a68209ccb4ae21d"
+dependencies = [
+ "globset",
+ "serde",
+ "walkdir",
 ]
 
 [[package]]

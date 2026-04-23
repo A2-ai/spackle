@@ -12,7 +12,33 @@ use thiserror::Error;
 use super::slot::Slot;
 use crate::fs::{self as fsmod, FileSystem, FileType};
 
-pub const TEMPLATE_EXT: &str = ".j2";
+/// File extensions that mark a file as a template.
+///
+/// Files ending with any of these are routed through `template::fill`
+/// instead of `copy::copy`; the extension is stripped from the output path.
+pub const TEMPLATE_EXTS: &[&str] = &[".j2", ".tera"];
+
+/// Returns `true` if `name` ends with any of the configured template extensions.
+pub fn has_template_ext(name: &str) -> bool {
+    TEMPLATE_EXTS.iter().any(|ext| name.ends_with(ext))
+}
+
+/// If `name` ends with a template extension, returns the name without it.
+/// Only the trailing extension is stripped (e.g. `foo.j2.tera` → `foo.j2`).
+pub fn strip_template_ext(name: &str) -> Option<&str> {
+    TEMPLATE_EXTS.iter().find_map(|ext| name.strip_suffix(ext))
+}
+
+/// Glob suffix matching any template extension, for use with Tera's
+/// `load_from_glob` (globwalk supports brace alternation).
+fn template_glob_suffix() -> String {
+    let alts = TEMPLATE_EXTS
+        .iter()
+        .map(|ext| ext.trim_start_matches('.'))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("*.{{{}}}", alts)
+}
 
 /// Validate templates in memory: check that all variable references in the
 /// templates resolve to known slot keys (or the special _project_name /
@@ -61,18 +87,14 @@ pub fn render_in_memory(
     templates: &HashMap<String, String>,
     data: &HashMap<String, String>,
 ) -> Result<Vec<Result<RenderedFile, FileError>>, tera::Error> {
-    let mut tera = Tera::default();
-    for (path, content) in templates {
-        tera.add_raw_template(path, content)
-            .map_err(|e| tera::Error::msg(format!("failed to add template {}: {}", path, e)))?;
-    }
+    let glob = project_dir.join("**").join(template_glob_suffix());
+
+    let mut tera = Tera::new();
+    tera.load_from_glob(&glob.to_string_lossy())?;
+
     let context = Context::from_serialize(data)?;
 
-    let template_names: Vec<String> = tera.get_template_names().map(|s| s.to_string()).collect();
-    let rendered = template_names.iter().map(|template_name| {
-        // std::time::Instant is not available on wasm32-unknown-unknown
-        // (no OS clock). Use Duration::ZERO as a placeholder there.
-        #[cfg(not(target_arch = "wasm32"))]
+    let rendered_templates = tera.templates.iter().map(|(template_name, _)| {
         let start_time = std::time::Instant::now();
 
         // Render the file contents
@@ -86,11 +108,11 @@ pub fn render_in_memory(
             }
         };
 
-        // Render the file name (allows {{ var }} in filenames)
-        let mut rendered_name = template_name.to_string();
-        if rendered_name.ends_with(TEMPLATE_EXT) {
-            let mut tera_clone = tera.clone();
-            rendered_name = match tera_clone.render_str(&rendered_name, &context) {
+        // Render the file name
+        let mut template_name = template_name.to_string();
+        if has_template_ext(&template_name) {
+            let tera = tera.clone();
+            template_name = match tera.render_str(&template_name, &context, false) {
                 Ok(s) => s,
                 Err(e) => {
                     return Err(FileError {
@@ -101,11 +123,14 @@ pub fn render_in_memory(
             };
         }
 
+        let template_name = strip_template_ext(&template_name).unwrap_or(template_name.as_str());
+
         // Strip .j2 suffix
         let rendered_name = match rendered_name.strip_suffix(TEMPLATE_EXT) {
             Some(name) => name.to_string(),
             None => rendered_name,
         };
+
 
         #[cfg(not(target_arch = "wasm32"))]
         let elapsed = start_time.elapsed();
@@ -257,14 +282,32 @@ impl Display for ValidateError {
 
 // Validates the templates in the directory against the slots
 // Returns an error if any of the templates reference a slot that doesn't exist
-pub fn validate<F: FileSystem>(fs: &F, dir: &Path, slots: &Vec<Slot>) -> Result<(), ValidateError> {
-    let templates = collect_templates(fs, dir).map_err(|e| {
-        ValidateError::TeraError(tera::Error::msg(format!(
-            "failed to walk project dir: {}",
-            e
-        )))
-    })?;
-    validate_in_memory(&templates, slots)
+pub fn validate(dir: &PathBuf, slots: &Vec<Slot>) -> Result<(), ValidateError> {
+    let glob = dir.join("**").join(template_glob_suffix());
+
+    let mut tera = Tera::new();
+    tera.load_from_glob(&glob.to_string_lossy())
+        .map_err(ValidateError::TeraError)?;
+    let mut context = Context::from_serialize(
+        &slots
+            .iter()
+            .map(|s| (s.key.clone(), ""))
+            .collect::<HashMap<_, _>>(),
+    )
+    .map_err(ValidateError::TeraError)?;
+    context.insert("_project_name".to_string(), "");
+    context.insert("_output_name".to_string(), "");
+
+    let errors = tera
+        .templates
+        .iter()
+        .filter_map(
+            |(template_name, _)| match tera.render(template_name, &context) {
+                Ok(_) => None,
+                Err(e) => Some((template_name.to_string(), e)),
+            },
+        )
+        .collect::<Vec<_>>();
 }
 
 #[cfg(test)]
