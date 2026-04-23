@@ -121,10 +121,6 @@ key = "description"
     let proj = load_project(&StdFs::new(), &path).unwrap();
 
     let rendered = proj
-//         .render_single_file(&data(&[
-//             ("cmd", "build"),
-//             ("description", "compile sources"),
-//         ]))
         .render_single_file(
             &StdFs::new(),
             &data(&[("cmd", "build"), ("description", "compile sources")]),

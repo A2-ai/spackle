@@ -329,30 +329,16 @@ fn copy_skips_template_extensions() {
     // with the template extension gets copied.
     for src_name in &["only.j2", "only.tera"] {
         let project = scaffold(&[("spackle.toml", ""), (src_name, "rendered")]);
-        let proj = load_project(&project.path()).unwrap();
+        let proj = load_project(&StdFs::new(), &project.path()).unwrap();
         let out = out_dir();
         let dst = out.path().join("out");
 
-        proj.generate(&project.path(), &dst, &HashMap::new())
+        proj.generate(&StdFs::new(), &project.path(), &dst, &HashMap::new())
             .unwrap();
 
         let files = list_files(&dst);
         assert_eq!(files, vec!["only".to_string()], "case {}", src_name);
     }
-fn copy_skips_j2_files_from_copy_pass() {
-    // `.j2` files are handled by template::fill, not copy::copy. A project
-    // with only a `.j2` file should still produce exactly one output file
-    // (the rendered one) — no stray source file ending in `.j2` gets copied.
-    let project = scaffold(&[("spackle.toml", ""), ("only.j2", "rendered")]);
-    let proj = load_project(&StdFs::new(), &project.path()).unwrap();
-    let out = out_dir();
-    let dst = out.path().join("out");
-
-    proj.generate(&StdFs::new(), &project.path(), &dst, &HashMap::new())
-        .unwrap();
-
-    let files = list_files(&dst);
-    assert_eq!(files, vec!["only".to_string()]);
 }
 
 #[test]
