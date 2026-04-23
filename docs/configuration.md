@@ -6,9 +6,13 @@ A spackle project is defined by a `spackle.toml` file at the root directory. Bel
 
 <span style="color: darkseagreen;">{s}</span> = slot environment (`{{ }}` will be replaced by slot values)
 
+### Templating syntax
+
+Slot environments — `.j2` / `.tera` file contents, file names, and <span style="color: darkseagreen;">{s}</span> fields — are rendered with [Tera](https://keats.github.io/tera/docs/). See the Tera docs for the full template syntax (variables, filters, conditionals, loops, etc.).
+
 ### Global slots
 
-Global slots are available in all slot environments (`.j2` file contents, file names, <span style="color: darkseagreen;">{s}</span> fields).
+Global slots are available in all slot environments (`.j2` / `.tera` file contents, file names, <span style="color: darkseagreen;">{s}</span> fields).
 
 - `_project_name` `string`
   - The name of the project itself

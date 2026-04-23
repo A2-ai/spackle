@@ -17,8 +17,7 @@ getrandom = { version = "0.4.2", features = ["wasm_js"] }
 polyjuice = { git = "https://github.com/a2-ai/polyjuice", tag = "v0.1.0" }
 serde = { version = "1.0.228", features = ["derive"] }
 strum_macros = "0.28.0"
-tera = "1.20.1"
-# tera = { version = "2.0.0-alpha.2", features = ["glob_fs"] }
+tera = { version = "2.0.0-alpha.3", features = ["glob_fs"] }
 thiserror = "2.0.18"
 tokio = { version = "1.52.0", features = ["macros", "rt", "rt-multi-thread"] }
 tokio-stream = "0.1.18"

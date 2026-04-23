@@ -26,7 +26,7 @@ Options:
 ## Project configuration
 
 A spackle project is defined by a `spackle.toml` file at the root directory. Slots defined in the configuration will
-fill files templated with a `.j2` extension.
+fill files templated with a `.j2` or `.tera` extension. Template contents are rendered with [Tera](https://keats.github.io/tera/docs/) — see its docs for the full syntax.
 
 Visit the below page for a full manual on how to configure a spackle project:
 
