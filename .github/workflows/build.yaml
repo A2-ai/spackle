@@ -86,10 +86,81 @@ jobs:
           path: dist/${{ matrix.platform }}
           retention-days: 1
 
+  # WASM artifact — built once on ubuntu, packed as an npm-style tarball
+  # so downstream repos (eventual spackle-web) can `bun add <url>` it.
+  # Web-target ESM output via wasm-bindgen-cli + wasm-opt; runs in both
+  # modern browsers and Bun.
+  wasm:
+    name: WASM
+    runs-on: ubuntu-latest
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Grant access to private repository
+        uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.POLYJUICE_DEPLOY_KEY }}
+
+      - name: Cache rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Add wasm32-unknown-unknown target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      # Pin wasm-bindgen-cli to the exact version of the wasm-bindgen
+      # crate — mismatches are the classic wasm-bindgen failure mode.
+      # `--force` is load-bearing: Swatinem/rust-cache restores
+      # ~/.cargo/.crates.toml so binstall thinks the binaries are
+      # installed, but the actual bins in ~/.cargo/bin/ aren't always
+      # in the cache. Force-install to guarantee the binary exists.
+      - name: Install wasm-bindgen-cli + wasm-opt
+        run: |
+          WB_VERSION=$(cargo metadata --format-version 1 --locked \
+            | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version' | head -1)
+          cargo binstall --no-confirm --force wasm-bindgen-cli --version "$WB_VERSION"
+          cargo binstall --no-confirm --force wasm-opt
+
+      - name: Build WASM (web)
+        run: ./scripts/build-wasm.sh
+
+      - name: Install TS deps
+        working-directory: ts
+        run: bun install --frozen-lockfile
+
+      - name: Emit TS dist
+        working-directory: ts
+        run: bunx tsc -p tsconfig.build.json
+
+      # Pack the whole TS package (src, dist, pkg, README) — including
+      # the embedded wasm bundle — into an npm-style tarball. `.npmignore`
+      # excludes tests / scripts / tsconfig / lockfile.
+      - name: Pack TS tarball
+        run: |
+          mkdir -p dist-ts
+          cd ts
+          bun pm pack --destination ../dist-ts
+          ls -la ../dist-ts
+
+      - name: Upload TS artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ts
+          path: dist-ts/*.tgz
+          retention-days: 1
+
   # Merge step - combine artifacts and create release
   release:
     name: Release
-    needs: prepare
+    needs: [prepare, wasm]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -115,8 +186,16 @@ jobs:
             fi
           done
 
+      # Download the WASM tarball into the path goreleaser's
+      # `release.extra_files` glob expects (./dist-ts/spackle-*.tgz).
+      - name: Download TS artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ts
+          path: dist-ts
+
       - name: List artifact files
-        run: find dist -type f | sort
+        run: find dist dist-ts -type f | sort
 
       - name: Generate tap token
         if: inputs.release == true

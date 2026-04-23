@@ -1,32 +1,50 @@
 [package]
 name = "spackle"
-version = "0.4.3"
+version = "0.5.0-rc1"
 edition = "2021"
 repository = "https://github.com/a2-ai/spackle"
 description = "A frictionless project templating tool."
 
+[lib]
+crate-type = ["rlib"]
+
 [workspace]
-members = ["cli"]
+members = ["cli", "crates/spackle-wasm"]
 
 [dependencies]
-async-process = "2.5.0"
-async-stream = "0.3.6"
 colored = "3.1.1"
 fronma = { version = "0.2.0", features = ["toml"] }
-getrandom = { version = "0.4.2", features = ["wasm_js"] }
-polyjuice = { git = "https://github.com/a2-ai/polyjuice", tag = "v0.1.0" }
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0"
 strum_macros = "0.28.0"
 tera = { version = "2.0.0-alpha.3", features = ["glob_fs"] }
 thiserror = "2.0.18"
+toml = "1.1.2"
+
+# Native-only — these require OS APIs that wasm32 doesn't have.
+# Used by native hook execution (`hook::run_hooks_stream`) and `StdFs`.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+async-process = "2.5.0"
+async-stream = "0.3.6"
+polyjuice = { git = "https://github.com/a2-ai/polyjuice", tag = "v0.1.0" }
 tokio = { version = "1.52.0", features = ["macros", "rt", "rt-multi-thread"] }
 tokio-stream = "0.1.18"
-toml = "1.1.2"
-tracing = "0.1.44"
-tracing-subscriber = "0.3.23"
 users = "0.11.0"
-walkdir = "2.5.0"
 
 [dev-dependencies]
-insta = { version = "1.43.2", features = ["yaml"] }
-tempfile = "3.14.0"
+insta = "1"
+tempfile = "3"
+# Used by the integration-test harness in `tests/common/` for walking
+# generated output trees. Not imported by lib code.
+walkdir = "2"
+
+# wasm32-unknown-unknown — `spackle` still compiles on wasm32 (consumed
+# by `crates/spackle-wasm`). tera is declared unconditionally above;
+# here we only pin the random-source shim that tera → rand needs
+# transitively on the `unknown` target, where only the JS feature works.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
+
+[profile.release]
+opt-level = "s"
+lto = true

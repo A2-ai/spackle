@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+use spackle::fs::StdFs;
 use spackle::{config, load_project, LoadError, SingleFileError};
 
 mod common;
@@ -52,7 +53,7 @@ type = "String"
 "#;
     let (_project, path) = scaffold_j2t(contents);
 
-    let cfg = config::load_file(&path).expect("load_file should parse frontmatter");
+    let cfg = config::load_file(&StdFs::new(), &path).expect("load_file should parse frontmatter");
     let keys: Vec<_> = cfg.slots.iter().map(|s| s.key.clone()).collect();
     assert_eq!(keys, vec!["cmd".to_string(), "description".to_string()]);
 }
@@ -67,7 +68,7 @@ body
 "#;
     let (_project, path) = scaffold_j2t(contents);
 
-    let cfg = config::load(&path).expect("load should dispatch to load_file");
+    let cfg = config::load(&StdFs::new(), &path).expect("load should dispatch to load_file");
     assert_eq!(cfg.slots.len(), 1);
     assert_eq!(cfg.slots[0].key, "x");
 }
@@ -81,7 +82,8 @@ key = "y"
 "#,
     )]);
 
-    let cfg = config::load(project.path()).expect("load should dispatch to load_dir");
+    let cfg =
+        config::load(&StdFs::new(), project.path()).expect("load should dispatch to load_dir");
     assert_eq!(cfg.slots.len(), 1);
     assert_eq!(cfg.slots[0].key, "y");
 }
@@ -96,7 +98,7 @@ key = "slot_a"
 "#;
     let (_project, path) = scaffold_j2t(contents);
 
-    let proj = load_project(&path).expect("load_project should accept a .j2t file");
+    let proj = load_project(&StdFs::new(), &path).expect("load_project should accept a .j2t file");
     assert_eq!(proj.path, path);
     assert_eq!(proj.config.slots.len(), 1);
 }
@@ -116,13 +118,13 @@ key = "description"
 {{ cmd }}: {{ description }}
 "#;
     let (_project, path) = scaffold_j2t(contents);
-    let proj = load_project(&path).unwrap();
+    let proj = load_project(&StdFs::new(), &path).unwrap();
 
     let rendered = proj
-        .render_single_file(&data(&[
-            ("cmd", "build"),
-            ("description", "compile sources"),
-        ]))
+        .render_single_file(
+            &StdFs::new(),
+            &data(&[("cmd", "build"), ("description", "compile sources")]),
+        )
         .unwrap();
 
     insta::assert_snapshot!(rendered.trim_end(), @"build: compile sources");
@@ -139,10 +141,10 @@ key = "mode"
 {% if mode == "debug" %}DEBUG {{ mode | upper }}{% else %}RELEASE{% endif %}
 "#;
     let (_project, path) = scaffold_j2t(contents);
-    let proj = load_project(&path).unwrap();
+    let proj = load_project(&StdFs::new(), &path).unwrap();
 
     let rendered = proj
-        .render_single_file(&data(&[("mode", "debug")]))
+        .render_single_file(&StdFs::new(), &data(&[("mode", "debug")]))
         .unwrap();
     insta::assert_snapshot!(rendered.trim_end(), @"DEBUG DEBUG");
 }
@@ -159,9 +161,11 @@ key = "x"
 {{ _project_name }}
 "#;
     let (_project, path) = scaffold_j2t(contents);
-    let proj = load_project(&path).unwrap();
+    let proj = load_project(&StdFs::new(), &path).unwrap();
 
-    let err = proj.render_single_file(&data(&[("x", "v")])).unwrap_err();
+    let err = proj
+        .render_single_file(&StdFs::new(), &data(&[("x", "v")]))
+        .unwrap_err();
     assert!(matches!(err, SingleFileError::Render(_)));
 }
 
@@ -173,7 +177,7 @@ key = "x"
 fn missing_frontmatter_delimiters_errors() {
     // A template body with no `---` delimiters at all.
     let (_project, path) = scaffold_j2t("{{ just_a_body }}\n");
-    let proj_result = load_project(&path);
+    let proj_result = load_project(&StdFs::new(), &path);
     match proj_result {
         Ok(_) => panic!("expected frontmatter parse error"),
         Err(LoadError::ConfigError { error, .. }) => {
@@ -196,7 +200,7 @@ this is = not valid = toml
 body
 "#;
     let (_project, path) = scaffold_j2t(contents);
-    match load_project(&path) {
+    match load_project(&StdFs::new(), &path) {
         Ok(_) => panic!("expected frontmatter parse error"),
         Err(LoadError::ConfigError { error, .. }) => {
             assert!(
@@ -217,10 +221,10 @@ key = "known"
 {{ unknown_slot }}
 "#;
     let (_project, path) = scaffold_j2t(contents);
-    let proj = load_project(&path).unwrap();
+    let proj = load_project(&StdFs::new(), &path).unwrap();
 
     let err = proj
-        .render_single_file(&data(&[("known", "v")]))
+        .render_single_file(&StdFs::new(), &data(&[("known", "v")]))
         .unwrap_err();
     assert!(matches!(err, SingleFileError::Render(_)));
 }
@@ -228,7 +232,7 @@ key = "known"
 #[test]
 fn load_missing_file_surfaces_as_config_error() {
     let missing = PathBuf::from("tests/data/__missing__.j2t");
-    match load_project(&missing) {
+    match load_project(&StdFs::new(), &missing) {
         Ok(_) => panic!("expected LoadError for missing file"),
         Err(LoadError::ConfigError { error, .. }) => {
             assert!(
@@ -251,9 +255,11 @@ key = "x"
 {{ x }}
 "#;
     let (_project, path) = scaffold_j2t(contents);
-    let proj = load_project(&path).unwrap();
+    let proj = load_project(&StdFs::new(), &path).unwrap();
     fs::remove_file(&path).unwrap();
 
-    let err = proj.render_single_file(&data(&[("x", "v")])).unwrap_err();
+    let err = proj
+        .render_single_file(&StdFs::new(), &data(&[("x", "v")]))
+        .unwrap_err();
     assert!(matches!(err, SingleFileError::Read(_)));
 }

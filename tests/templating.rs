@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use spackle::fs::StdFs;
 use spackle::template::{self, FileErrorKind, ValidateError};
 use spackle::{load_project, CheckError, GenerateError, LoadError};
 
@@ -29,7 +30,8 @@ fn data(pairs: &[(&str, &str)]) -> HashMap<String, String> {
 /// files collected into a sorted `Vec<(relative_path, contents)>`.
 fn fill_all(project: &common::Scaffold, data: &HashMap<String, String>) -> Vec<(String, String)> {
     let out = out_dir();
-    let results = template::fill(&project.path(), out.path(), data)
+    let fs = StdFs::new();
+    let results = template::fill(&fs, &project.path(), out.path(), data)
         .expect("fill should load templates")
         .into_iter()
         .map(|r| r.expect("render should succeed"))
@@ -88,12 +90,12 @@ fn renders_special_project_name() {
         ),
         ("readme.j2", "project: {{ _project_name }}"),
     ]);
-    let proj = load_project(&project.path()).unwrap();
+    let proj = load_project(&StdFs::new(), &project.path()).unwrap();
     let out = out_dir();
     let dst = out.path().join("generated");
 
     let files = proj
-        .generate(&project.path(), &dst, &HashMap::new())
+        .generate(&StdFs::new(), &project.path(), &dst, &HashMap::new())
         .unwrap();
 
     let readme = files.iter().find(|f| f.path.ends_with("readme")).unwrap();
@@ -106,12 +108,12 @@ fn renders_special_output_name() {
         ("spackle.toml", ""),
         ("where.j2", "output: {{ _output_name }}"),
     ]);
-    let proj = load_project(&project.path()).unwrap();
+    let proj = load_project(&StdFs::new(), &project.path()).unwrap();
     let out = out_dir();
     let dst = out.path().join("chosen-output");
 
     let files = proj
-        .generate(&project.path(), &dst, &HashMap::new())
+        .generate(&StdFs::new(), &project.path(), &dst, &HashMap::new())
         .unwrap();
     let where_file = files.iter().find(|f| f.path.ends_with("where")).unwrap();
     insta::assert_snapshot!(where_file.contents, @"output: chosen-output");
@@ -303,11 +305,11 @@ fn copy_templates_directory_name() {
         ),
         ("{{ _project_name }}/readme.txt", "plain body {{ var }}"),
     ]);
-    let proj = load_project(&project.path()).unwrap();
+    let proj = load_project(&StdFs::new(), &project.path()).unwrap();
     let out = out_dir();
     let dst = out.path().join("out");
 
-    proj.generate(&project.path(), &dst, &data(&[("var", "x")]))
+    proj.generate(&StdFs::new(), &project.path(), &dst, &data(&[("var", "x")]))
         .unwrap();
 
     let files = list_files(&dst);
@@ -327,11 +329,11 @@ fn copy_skips_template_extensions() {
     // with the template extension gets copied.
     for src_name in &["only.j2", "only.tera"] {
         let project = scaffold(&[("spackle.toml", ""), (src_name, "rendered")]);
-        let proj = load_project(&project.path()).unwrap();
+        let proj = load_project(&StdFs::new(), &project.path()).unwrap();
         let out = out_dir();
         let dst = out.path().join("out");
 
-        proj.generate(&project.path(), &dst, &HashMap::new())
+        proj.generate(&StdFs::new(), &project.path(), &dst, &HashMap::new())
             .unwrap();
 
         let files = list_files(&dst);
@@ -350,11 +352,11 @@ fn copy_respects_ignore_patterns() {
         ("keep.txt", "ok"),
         ("secrets.txt", "shh"),
     ]);
-    let proj = load_project(&project.path()).unwrap();
+    let proj = load_project(&StdFs::new(), &project.path()).unwrap();
     let out = out_dir();
     let dst = out.path().join("out");
 
-    proj.generate(&project.path(), &dst, &HashMap::new())
+    proj.generate(&StdFs::new(), &project.path(), &dst, &HashMap::new())
         .unwrap();
 
     let files = list_files(&dst);
@@ -369,8 +371,8 @@ fn copy_respects_ignore_patterns() {
 fn error_undefined_variable_in_content() {
     let project = scaffold(&[("bad.j2", "{{ missing_slot }}")]);
     let out = out_dir();
-    let results =
-        template::fill(&project.path(), out.path(), &HashMap::new()).expect("load should succeed");
+    let results = template::fill(&StdFs::new(), &project.path(), out.path(), &HashMap::new())
+        .expect("load should succeed");
 
     assert_eq!(results.len(), 1);
     let err = results.into_iter().next().unwrap().unwrap_err();
@@ -387,8 +389,8 @@ fn error_undefined_variable_in_filename() {
     // so rendering the name should fail.
     let project = scaffold(&[("{{ missing_name }}.j2", "body")]);
     let out = out_dir();
-    let results =
-        template::fill(&project.path(), out.path(), &HashMap::new()).expect("load should succeed");
+    let results = template::fill(&StdFs::new(), &project.path(), out.path(), &HashMap::new())
+        .expect("load should succeed");
 
     let err = results.into_iter().next().unwrap().unwrap_err();
     assert!(
@@ -405,14 +407,21 @@ returns Err instead of panicking."]
 fn error_malformed_syntax() {
     // Malformed syntax should surface as a Tera load error from `fill`.
     let project = scaffold(&[("busted.j2", "{% if foo %}oops")]);
-    let err = template::fill(&project.path(), out_dir().path(), &HashMap::new()).unwrap_err();
+    let err = template::fill(
+        &StdFs::new(),
+        &project.path(),
+        out_dir().path(),
+        &HashMap::new(),
+    )
+    .unwrap_err();
+    // We don't inspect the inner message — any tera::Error is correct here.
     assert!(!format!("{err}").is_empty());
 }
 
 #[test]
 fn validate_rejects_missing_slot_reference() {
     let project = scaffold(&[("file.j2", "{{ unlisted }}")]);
-    let err = template::validate(&project.path(), &vec![]).unwrap_err();
+    let err = template::validate(&StdFs::new(), &project.path(), &vec![]).unwrap_err();
     assert!(matches!(err, ValidateError::RenderError(_)));
 }
 
@@ -423,7 +432,7 @@ fn validate_accepts_fully_covered_template() {
         key: "listed".to_string(),
         ..Default::default()
     }];
-    assert!(template::validate(&project.path(), &slots).is_ok());
+    assert!(template::validate(&StdFs::new(), &project.path(), &slots).is_ok());
 }
 
 // ---------------------------------------------------------------------------
@@ -441,8 +450,8 @@ key = "defined_field"
         ),
         ("good.j2", "{{ defined_field }}"),
     ]);
-    let proj = load_project(&project.path()).unwrap();
-    assert!(proj.check().is_ok());
+    let proj = load_project(&StdFs::new(), &project.path()).unwrap();
+    assert!(proj.check(&StdFs::new()).is_ok());
 }
 
 #[test]
@@ -455,23 +464,23 @@ type = "Number"
 default = "not-a-number"
 "#,
     )]);
-    let proj = load_project(&project.path()).unwrap();
-    let err = proj.check().unwrap_err();
+    let proj = load_project(&StdFs::new(), &project.path()).unwrap();
+    let err = proj.check(&StdFs::new()).unwrap_err();
     assert!(matches!(err, CheckError::SlotError(_)));
 }
 
 #[test]
 fn check_surfaces_template_error_for_undefined_reference() {
     let project = scaffold(&[("spackle.toml", ""), ("bad.j2", "{{ invalid_slot }}")]);
-    let proj = load_project(&project.path()).unwrap();
-    let err = proj.check().unwrap_err();
+    let proj = load_project(&StdFs::new(), &project.path()).unwrap();
+    let err = proj.check(&StdFs::new()).unwrap_err();
     assert!(matches!(err, CheckError::TemplateError(_)));
 }
 
 #[test]
 fn load_surfaces_config_error_for_missing_config() {
     let missing = PathBuf::from("tests/data/__does_not_exist__");
-    match load_project(&missing) {
+    match load_project(&StdFs::new(), &missing) {
         Ok(_) => panic!("expected LoadError for missing config dir"),
         Err(e) => assert!(matches!(e, LoadError::ConfigError { .. })),
     }
@@ -484,7 +493,8 @@ fn load_surfaces_config_error_for_missing_config() {
 #[test]
 fn generate_basic_project_fixture() {
     let fixture = PathBuf::from("tests/fixtures/basic_project");
-    let proj = load_project(&fixture).unwrap();
+    let fs = StdFs::new();
+    let proj = load_project(&fs, &fixture).unwrap();
 
     let out = out_dir();
     let dst = out.path().join("basic_project_out");
@@ -495,7 +505,7 @@ fn generate_basic_project_fixture() {
         ("filename", "dynamic"),
     ]);
 
-    proj.generate(&fixture, &dst, &data).unwrap();
+    proj.generate(&fs, &fixture, &dst, &data).unwrap();
 
     // Structural snapshot — what files exist, relative to out dir.
     let tree = list_files(&dst);
@@ -513,14 +523,14 @@ fn generate_basic_project_fixture() {
 #[test]
 fn generate_fails_when_out_dir_exists() {
     let project = scaffold(&[("spackle.toml", "")]);
-    let proj = load_project(&project.path()).unwrap();
+    let proj = load_project(&StdFs::new(), &project.path()).unwrap();
 
     let out = out_dir();
     let dst = out.path().join("pre-existing");
     std::fs::create_dir_all(&dst).unwrap();
 
     let err = proj
-        .generate(&project.path(), &dst, &HashMap::new())
+        .generate(&StdFs::new(), &project.path(), &dst, &HashMap::new())
         .unwrap_err();
     assert!(matches!(err, GenerateError::AlreadyExists(_)));
 }

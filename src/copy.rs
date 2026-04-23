@@ -1,13 +1,12 @@
 use std::{
     collections::HashMap,
     fmt::Display,
-    fs,
     path::{Path, PathBuf},
 };
 
 use tera::{Context, Tera};
-use walkdir::WalkDir;
 
+use crate::fs::{self as fsmod, FileSystem, FileType};
 use crate::{config::CONFIG_FILE, template::has_template_ext};
 
 #[derive(Debug)]
@@ -33,7 +32,8 @@ pub struct CopyResult {
     pub skipped_count: usize,
 }
 
-pub fn copy(
+pub fn copy<F: FileSystem>(
+    fs: &F,
     src: &Path,
     dest: &Path,
     skip: &Vec<String>,
@@ -42,49 +42,63 @@ pub fn copy(
     let mut copied_count = 0;
     let mut skipped_count = 0;
 
-    let entries = WalkDir::new(src)
-        .into_iter()
-        .filter_entry(|entry| {
-            // Skip those that match "skip"
-            if skip
-                .iter()
-                .any(|s| entry.file_name().to_string_lossy() == *s)
-            {
-                skipped_count += 1;
-                return false;
-            }
+    // Ensure the destination root exists. The old walkdir-based flow
+    // yielded the source root as its first entry, which resulted in a
+    // `create_dir_all(dest)` call before any children were processed.
+    // Our `fsmod::walk` only yields descendants — so do this eagerly to
+    // preserve behavior downstream (notably: hooks that cwd into
+    // `dest` need it to exist even when the source tree was empty).
+    fs.create_dir_all(dest).map_err(|e| Error {
+        source: Box::new(e),
+        path: dest.to_path_buf(),
+    })?;
 
-            // TODO pull these out and pass as args if possible
-            // Skip config file
-            if entry.file_name() == CONFIG_FILE {
-                return false;
-            }
+    // Recursive walk via the fs trait. Yields each descendant as
+    // (path_relative_to_src, stat). We filter + re-root + template the
+    // destination path, then either mkdir or copy.
+    let entries = fsmod::walk(fs, src).map_err(|e| Error {
+        source: Box::new(e),
+        path: src.to_path_buf(),
+    })?;
 
-            // Skip template files (handled by template::fill)
-            if has_template_ext(&entry.file_name().to_string_lossy()) {
-                return false;
-            }
+    // First pass: apply the skip/config-file/template-ext filter on a
+    // per-entry basis. Unlike walkdir::filter_entry we can't prune whole
+    // subtrees in a single pass — so we explicitly compute an "ancestor
+    // skipped" set while iterating (entries are in DFS order).
+    let mut skipped_ancestors: Vec<PathBuf> = Vec::new();
 
-            true
-        })
-        .collect::<Vec<_>>();
+    for (rel_path, stat) in entries {
+        // If any ancestor was skipped, skip everything under it.
+        if skipped_ancestors.iter().any(|a| rel_path.starts_with(a)) {
+            continue;
+        }
 
-    for entry in entries {
-        let entry = entry.map_err(|e| Error {
-            source: e.into(),
-            path: src.to_path_buf(),
-        })?;
+        let name = rel_path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
 
-        let src_path = entry.path();
-        let relative_path = src_path.strip_prefix(src).map_err(|e| Error {
-            source: e.into(),
-            path: src_path.to_path_buf(),
-        })?;
-        let dst_path_maybe_template = dest.join(relative_path);
+        if skip.iter().any(|s| s == &name) {
+            skipped_count += 1;
+            skipped_ancestors.push(rel_path.clone());
+            continue;
+        }
+        if name == CONFIG_FILE {
+            skipped_ancestors.push(rel_path.clone());
+            continue;
+        }
+        if has_template_ext(&name) {
+            // Template files (.j2 / .tera) are skipped here;
+            // template::fill handles them.
+            continue;
+        }
+
+        let src_path = src.join(&rel_path);
+        let dst_path_maybe_template = dest.join(&rel_path);
 
         let context = Context::from_serialize(data).map_err(|e| Error {
             source: e.into(),
-            path: src_path.to_path_buf(),
+            path: src_path.clone(),
         })?;
         let dst_path: PathBuf =
             match Tera::one_off(&dst_path_maybe_template.to_string_lossy(), &context, false) {
@@ -92,29 +106,36 @@ pub fn copy(
                 Err(e) => {
                     return Err(Error {
                         source: e.into(),
-                        path: dst_path_maybe_template.to_path_buf(),
+                        path: dst_path_maybe_template.clone(),
                     });
                 }
             };
 
-        if entry.file_type().is_dir() {
-            fs::create_dir_all(&dst_path).map_err(|e| Error {
-                source: e.into(),
-                path: dst_path.clone(),
-            })?;
-        } else if entry.file_type().is_file() {
-            if let Some(parent) = dst_path.parent() {
-                fs::create_dir_all(parent).map_err(|e| Error {
-                    source: e.into(),
-                    path: parent.to_path_buf(),
+        match stat.file_type {
+            FileType::Directory => {
+                fs.create_dir_all(&dst_path).map_err(|e| Error {
+                    source: Box::new(e),
+                    path: dst_path.clone(),
                 })?;
             }
-            fs::copy(src_path, &dst_path).map_err(|e| Error {
-                source: e.into(),
-                path: dst_path.clone(),
-            })?;
-
-            copied_count += 1;
+            FileType::File => {
+                if let Some(parent) = dst_path.parent() {
+                    fs.create_dir_all(parent).map_err(|e| Error {
+                        source: Box::new(e),
+                        path: parent.to_path_buf(),
+                    })?;
+                }
+                fs.copy_file(&src_path, &dst_path).map_err(|e| Error {
+                    source: Box::new(e),
+                    path: dst_path.clone(),
+                })?;
+                copied_count += 1;
+            }
+            FileType::Symlink | FileType::Other => {
+                // Symlinks and other special entries are not copied —
+                // matches prior walkdir behavior (only is_dir / is_file
+                // branches).
+            }
         }
     }
 
@@ -147,8 +168,9 @@ mod tests {
         }
 
         copy(
-            src_dir,
-            dst_dir,
+            &crate::fs::StdFs::new(),
+            &src_dir,
+            &dst_dir,
             &vec!["file-0.txt".to_string()],
             &HashMap::from([("foo".to_string(), "bar".to_string())]),
         )
@@ -184,8 +206,9 @@ mod tests {
         fs::write(subdir.join("file-0.txt"), "file-0.txt").unwrap();
 
         copy(
-            src_dir,
-            dst_dir,
+            &crate::fs::StdFs::new(),
+            &src_dir,
+            &dst_dir,
             &vec!["file-0.txt".to_string()],
             &HashMap::from([("foo".to_string(), "bar".to_string())]),
         )
@@ -221,8 +244,9 @@ mod tests {
         assert!(src_dir.join("{{template_name}}.tmpl").exists());
 
         copy(
-            src_dir,
-            dst_dir,
+            &crate::fs::StdFs::new(),
+            &src_dir,
+            &dst_dir,
             &vec![],
             &HashMap::from([
                 ("template_name".to_string(), "template".to_string()),

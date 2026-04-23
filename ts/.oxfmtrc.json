@@ -1,0 +1,8 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "ignorePatterns": ["**/*.gen.ts", "dist/**", "pkg/**"],
+  "sortTailwindcss": {
+    "enabled": true
+  },
+  "sortImports": {}
+}

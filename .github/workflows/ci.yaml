@@ -30,3 +30,76 @@ jobs:
 
       - name: Run clippy
         run: cargo clippy --workspace
+
+      # Smoke-compile the wasm crate on wasm32 in the Rust-only job to
+      # catch target regressions without installing the wasm toolchain.
+      - name: Add wasm32-unknown-unknown target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Build spackle-wasm for wasm32
+        run: cargo build -p spackle-wasm --target wasm32-unknown-unknown
+
+  wasm-pkg:
+    name: TS package (bun test)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Cache rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Grant access to private repository
+        uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.POLYJUICE_DEPLOY_KEY }}
+
+      - name: Add wasm32-unknown-unknown target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      # Pin wasm-bindgen-cli to the exact version of the wasm-bindgen
+      # crate — mismatches are the classic wasm-bindgen failure mode.
+      # `--force` is load-bearing: Swatinem/rust-cache restores
+      # ~/.cargo/.crates.toml so binstall thinks the binaries are
+      # installed, but the actual bins in ~/.cargo/bin/ aren't always
+      # in the cache. Force-install to guarantee the binary exists.
+      - name: Install wasm-bindgen-cli + wasm-opt
+        run: |
+          WB_VERSION=$(cargo metadata --format-version 1 --locked \
+            | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version' | head -1)
+          cargo binstall --no-confirm --force wasm-bindgen-cli --version "$WB_VERSION"
+          cargo binstall --no-confirm --force wasm-opt
+
+      - name: Build WASM (web)
+        run: ./scripts/build-wasm.sh
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install bun deps
+        working-directory: ts
+        run: bun install --frozen-lockfile
+
+      - name: Run bun test
+        working-directory: ts
+        run: bun test
+
+      - name: Type-check TS package
+        working-directory: ts
+        run: bunx tsc --noEmit
+
+      - name: TS Lint
+        working-directory: ts
+        run: bun run lint
+
+      - name: TS Format check
+        working-directory: ts
+        run: bun run fmt:check
+
+      - name: Build TS dist (typings)
+        working-directory: ts
+        run: bunx tsc -p tsconfig.build.json
