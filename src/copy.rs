@@ -8,7 +8,7 @@ use std::{
 use tera::{Context, Tera};
 use walkdir::WalkDir;
 
-use crate::{config::CONFIG_FILE, template::TEMPLATE_EXT};
+use crate::{config::CONFIG_FILE, template::has_template_ext};
 
 #[derive(Debug)]
 pub struct Error {
@@ -60,8 +60,8 @@ pub fn copy(
                 return false;
             }
 
-            // Skip .j2 files
-            if entry.file_name().to_string_lossy().ends_with(TEMPLATE_EXT) {
+            // Skip template files (handled by template::fill)
+            if has_template_ext(&entry.file_name().to_string_lossy()) {
                 return false;
             }
 
@@ -209,9 +209,10 @@ mod tests {
         let src_dir = src.path();
         let dst_dir = dst.path();
 
-        // A file whose name contains template syntax but does not end with .j2
-        // should have its name replaced while contents remain untouched.
-        // The .j2 extension marks files whose *contents* get rendered.
+        // A file whose name contains template syntax but does not end with a
+        // template extension (.j2 / .tera) should have its name replaced while
+        // contents remain untouched. A template extension marks files whose
+        // *contents* get rendered.
         fs::write(
             src_dir.join(format!("{}.tmpl", "{{template_name}}")),
             "{{_output_name}}",

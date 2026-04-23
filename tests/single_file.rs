@@ -119,7 +119,10 @@ key = "description"
     let proj = load_project(&path).unwrap();
 
     let rendered = proj
-        .render_single_file(&data(&[("cmd", "build"), ("description", "compile sources")]))
+        .render_single_file(&data(&[
+            ("cmd", "build"),
+            ("description", "compile sources"),
+        ]))
         .unwrap();
 
     insta::assert_snapshot!(rendered.trim_end(), @"build: compile sources");
@@ -138,7 +141,9 @@ key = "mode"
     let (_project, path) = scaffold_j2t(contents);
     let proj = load_project(&path).unwrap();
 
-    let rendered = proj.render_single_file(&data(&[("mode", "debug")])).unwrap();
+    let rendered = proj
+        .render_single_file(&data(&[("mode", "debug")]))
+        .unwrap();
     insta::assert_snapshot!(rendered.trim_end(), @"DEBUG DEBUG");
 }
 
@@ -214,7 +219,9 @@ key = "known"
     let (_project, path) = scaffold_j2t(contents);
     let proj = load_project(&path).unwrap();
 
-    let err = proj.render_single_file(&data(&[("known", "v")])).unwrap_err();
+    let err = proj
+        .render_single_file(&data(&[("known", "v")]))
+        .unwrap_err();
     assert!(matches!(err, SingleFileError::Render(_)));
 }
 

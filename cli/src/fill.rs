@@ -508,7 +508,11 @@ pub fn run_single(
     let result = match project.render_single_file(slot_data) {
         Ok(result) => result,
         Err(e) => {
-            eprintln!("❌ {}\n{}", "Error rendering template".bright_red(), e.to_string().red());
+            eprintln!(
+                "❌ {}\n{}",
+                "Error rendering template".bright_red(),
+                e.to_string().red()
+            );
             exit(1);
         }
     };
