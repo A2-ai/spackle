@@ -1827,7 +1827,7 @@ dependencies = [
 
 [[package]]
 name = "spackle-wasm"
-version = "0.0.1"
+version = "0.5.0-rc1"
 dependencies = [
  "console_error_panic_hook",
  "getrandom 0.2.17",

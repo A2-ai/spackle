@@ -1,6 +1,6 @@
 {
   "name": "@a2-ai/spackle",
-  "version": "0.0.1",
+  "version": "0.5.0-rc1",
   "description": "spackle project templating, as a WebAssembly module for JS hosts.",
   "repository": "https://github.com/a2-ai/spackle",
   "files": [
