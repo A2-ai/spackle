@@ -1,10 +1,7 @@
-// WASM-SIDE - server/runtime-default entry over the wasm-bindgen exports.
+// Browser bundler entry over the wasm-bindgen exports.
 //
-// The wasm-bindgen `--target web` output at `../../pkg/spackle_wasm.js`
-// exposes pure-function exports plus a default `init`. This default entry
-// preserves the existing package-relative WASM URL behavior for Bun/Node-like
-// runtimes. Browser bundlers should resolve the package export's `browser`
-// condition to `./browser.ts`, which imports the `.wasm` asset directly.
+// Importing the .wasm file with `?url` lets Vite/Rollup own the asset URL in
+// dev and production instead of relying on a runtime /node_modules path.
 
 import initWasm, {
   check as wasmCheck,
@@ -12,9 +9,10 @@ import initWasm, {
   plan_hooks as wasmPlanHooks,
   validate_slot_data as wasmValidateSlotData,
 } from "../../pkg/spackle_wasm.js";
+import wasmUrl from "../../pkg/spackle_wasm_bg.wasm?url";
 import { createSpackleWasmLoader } from "./runtime.ts";
 
-/** Load the WASM module once per process. Subsequent calls return the
+/** Load the WASM module once per browser session. Subsequent calls return the
  * same client. Safe to await concurrently. */
 export const loadSpackleWasm = createSpackleWasmLoader(
   {
@@ -24,7 +22,7 @@ export const loadSpackleWasm = createSpackleWasmLoader(
     generate: wasmGenerate,
     planHooks: wasmPlanHooks,
   },
-  new URL("../../pkg/spackle_wasm_bg.wasm", import.meta.url),
+  wasmUrl,
 );
 
 export type { SpackleWasm } from "./runtime.ts";

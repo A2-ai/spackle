@@ -19,7 +19,12 @@
     },
     "./wasm": {
       "types": "./dist/wasm/index.d.ts",
+      "browser": "./dist/wasm/browser.js",
       "default": "./dist/wasm/index.js"
+    },
+    "./wasm/browser": {
+      "types": "./dist/wasm/browser.d.ts",
+      "default": "./dist/wasm/browser.js"
     }
   },
   "scripts": {
