@@ -20,8 +20,8 @@ permissions:
 
 jobs:
   # Split step - build binaries on each platform
-  prepare:
-    name: Prepare
+  cli:
+    name: CLI
     strategy:
       matrix:
         include:
