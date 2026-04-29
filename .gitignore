@@ -15,4 +15,7 @@ ts/dist
 examples/**/node_modules
 examples/**/output
 
+# Claude code
+.claude/settings.local.json
+
 .DS_Store
