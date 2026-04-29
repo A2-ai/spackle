@@ -160,7 +160,7 @@ jobs:
   # Merge step - combine artifacts and create release
   release:
     name: Release
-    needs: [prepare, wasm]
+    needs: [cli, wasm]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
