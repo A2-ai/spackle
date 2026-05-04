@@ -228,8 +228,12 @@ export function runHooksStream(
   return inner();
 }
 
-export type { SpackleWasm } from "./wasm/index.ts";
-export { loadSpackleWasm } from "./wasm/index.ts";
+export type {
+  ConfigureSpackleWasmOptions,
+  SpackleWasm,
+  SpackleWasmModuleSource,
+} from "./wasm/index.ts";
+export { configureSpackleWasm, loadSpackleWasm } from "./wasm/index.ts";
 export {
   DiskFs,
   type DiskFsOptions,

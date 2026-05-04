@@ -25,6 +25,9 @@
     "./wasm/browser": {
       "types": "./dist/wasm/browser.d.ts",
       "default": "./dist/wasm/browser.js"
+    },
+    "./pkg/spackle_wasm_bg.wasm": {
+      "default": "./pkg/spackle_wasm_bg.wasm"
     }
   },
   "scripts": {

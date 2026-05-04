@@ -19,6 +19,12 @@ type InitWasm = (
     | Promise<InitInput>,
 ) => Promise<unknown>;
 
+export type SpackleWasmModuleSource = InitInput | Promise<InitInput>;
+
+export interface ConfigureSpackleWasmOptions {
+  moduleOrPath: SpackleWasmModuleSource;
+}
+
 export interface RawWasmExports {
   initWasm: InitWasm;
   check(projectBundle: unknown, projectDir: string): string;
@@ -62,21 +68,44 @@ export interface SpackleWasm {
   ): PlanHooksResponse;
 }
 
+export interface SpackleWasmLoaderPair {
+  loadSpackleWasm: () => Promise<SpackleWasm>;
+  configureSpackleWasm: (options: ConfigureSpackleWasmOptions) => void;
+}
+
 export function createSpackleWasmLoader(
   raw: RawWasmExports,
-  moduleOrPath: InitInput | Promise<InitInput>,
-): () => Promise<SpackleWasm> {
+  defaultModuleOrPath?: SpackleWasmModuleSource,
+): SpackleWasmLoaderPair {
   let cached: Promise<SpackleWasm> | null = null;
+  let override: SpackleWasmModuleSource | null = null;
 
-  return function loadSpackleWasm(): Promise<SpackleWasm> {
-    if (!cached) cached = initialize(raw, moduleOrPath);
+  function configureSpackleWasm(options: ConfigureSpackleWasmOptions): void {
+    if (cached) {
+      throw new Error("configureSpackleWasm must be called before loadSpackleWasm");
+    }
+    override = options.moduleOrPath;
+  }
+
+  function loadSpackleWasm(): Promise<SpackleWasm> {
+    if (!cached) {
+      const source = override ?? defaultModuleOrPath;
+      if (source === undefined) {
+        throw new Error(
+          "Spackle WASM module source is not configured. Call configureSpackleWasm({ moduleOrPath }) before using @a2-ai/spackle.",
+        );
+      }
+      cached = initialize(raw, source);
+    }
     return cached;
-  };
+  }
+
+  return { loadSpackleWasm, configureSpackleWasm };
 }
 
 async function initialize(
   raw: RawWasmExports,
-  moduleOrPath: InitInput | Promise<InitInput>,
+  moduleOrPath: SpackleWasmModuleSource,
 ): Promise<SpackleWasm> {
   await raw.initWasm({ module_or_path: moduleOrPath });
   // wasm-bindgen's generated .d.ts types the JSON / JsValue exports as

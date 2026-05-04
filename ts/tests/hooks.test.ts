@@ -16,6 +16,7 @@ import {
   BunHooks,
   DiskFs,
   NodeHooks,
+  configureSpackleWasm,
   defaultHooks,
   formatArgv,
   parseShellLine,
@@ -30,6 +31,13 @@ import {
 } from "../src/spackle.ts";
 
 const FIXTURES = resolve(import.meta.dir, "..", "..", "tests", "fixtures");
+const WASM = resolve(import.meta.dir, "..", "pkg", "spackle_wasm_bg.wasm");
+
+try {
+  configureSpackleWasm({ moduleOrPath: readFile(WASM) });
+} catch (err) {
+  if (!(err instanceof Error) || !err.message.includes("before loadSpackleWasm")) throw err;
+}
 
 async function workspace(fixture: string) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-hooks-")));

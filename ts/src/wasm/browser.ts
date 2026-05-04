@@ -12,9 +12,7 @@ import initWasm, {
 import wasmUrl from "../../pkg/spackle_wasm_bg.wasm?url";
 import { createSpackleWasmLoader } from "./runtime.ts";
 
-/** Load the WASM module once per browser session. Subsequent calls return the
- * same client. Safe to await concurrently. */
-export const loadSpackleWasm = createSpackleWasmLoader(
+export const { loadSpackleWasm, configureSpackleWasm } = createSpackleWasmLoader(
   {
     initWasm,
     check: wasmCheck,
@@ -25,7 +23,11 @@ export const loadSpackleWasm = createSpackleWasmLoader(
   wasmUrl,
 );
 
-export type { SpackleWasm } from "./runtime.ts";
+export type {
+  ConfigureSpackleWasmOptions,
+  SpackleWasm,
+  SpackleWasmModuleSource,
+} from "./runtime.ts";
 export type {
   Bundle,
   BundleEntry,
