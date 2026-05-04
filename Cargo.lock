@@ -1788,7 +1788,7 @@ dependencies = [
 
 [[package]]
 name = "spackle"
-version = "0.5.0-rc2"
+version = "0.5.0-rc3"
 dependencies = [
  "async-process",
  "async-stream",
@@ -1812,7 +1812,7 @@ dependencies = [
 
 [[package]]
 name = "spackle-cli"
-version = "0.5.0-rc2"
+version = "0.5.0-rc3"
 dependencies = [
  "anyhow",
  "atty",
@@ -1829,7 +1829,7 @@ dependencies = [
 
 [[package]]
 name = "spackle-wasm"
-version = "0.5.0-rc2"
+version = "0.5.0-rc3"
 dependencies = [
  "console_error_panic_hook",
  "getrandom 0.2.17",
