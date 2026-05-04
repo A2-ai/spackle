@@ -5,6 +5,10 @@
 // preserves the existing package-relative WASM URL behavior for Bun/Node-like
 // runtimes. Browser bundlers should resolve the package export's `browser`
 // condition to `./browser.ts`, which imports the `.wasm` asset directly.
+// Standalone bundle hosts (single-file output via `bun build`, `.deb`
+// payloads, etc.) where `import.meta.url` no longer resolves to the
+// package root should call `configureSpackleWasm({ moduleOrPath })` with
+// their own bytes / URL / module before the first `loadSpackleWasm()`.
 
 import initWasm, {
   check as wasmCheck,
@@ -14,9 +18,7 @@ import initWasm, {
 } from "../../pkg/spackle_wasm.js";
 import { createSpackleWasmLoader } from "./runtime.ts";
 
-/** Load the WASM module once per process. Subsequent calls return the
- * same client. Safe to await concurrently. */
-export const loadSpackleWasm = createSpackleWasmLoader(
+export const { loadSpackleWasm, configureSpackleWasm } = createSpackleWasmLoader(
   {
     initWasm,
     check: wasmCheck,
@@ -27,7 +29,11 @@ export const loadSpackleWasm = createSpackleWasmLoader(
   new URL("../../pkg/spackle_wasm_bg.wasm", import.meta.url),
 );
 
-export type { SpackleWasm } from "./runtime.ts";
+export type {
+  ConfigureSpackleWasmOptions,
+  SpackleWasm,
+  SpackleWasmModuleSource,
+} from "./runtime.ts";
 export type {
   Bundle,
   BundleEntry,

@@ -3,7 +3,7 @@
 //
 // Run: `just demo-ts` or `cd ts && bun run scripts/demo.ts`
 
-import { cp, mkdtemp, realpath, rm } from "node:fs/promises";
+import { cp, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
@@ -11,6 +11,7 @@ import {
   DiskFs,
   MemoryFs,
   check,
+  configureSpackleWasm,
   generate,
   generateBundle,
   planHooks,
@@ -20,6 +21,9 @@ import {
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
 const FIXTURES = join(REPO_ROOT, "tests", "fixtures");
+configureSpackleWasm({
+  moduleOrPath: readFile(join(import.meta.dir, "..", "pkg", "spackle_wasm_bg.wasm")),
+});
 
 /** Throwaway workspace seeded with a fixture. */
 async function workspace(fixture: string) {
