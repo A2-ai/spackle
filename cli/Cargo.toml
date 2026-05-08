@@ -12,7 +12,8 @@ path = "src/main.rs"
 spackle = { path = "../" }
 clap = { version = "4.6.1", features = ["derive"] }
 colored = "3.1.1"
-rocket = { version = "0.5.1", features = ["json"] }
+tokio = { version = "1.52.3", features = ["macros", "rt", "rt-multi-thread"] }
+tokio-stream = "0.1.18"
 rust-embed = "8.11.0"
 atty = "0.2.14"
 toml = "1.1.2"

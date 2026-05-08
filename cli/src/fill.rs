@@ -2,7 +2,6 @@ use crate::{check, util::file_path_completer::FilePathCompleter, Cli};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use inquire::{validator::Validation, Confirm, CustomType, Text};
-use rocket::{futures::StreamExt, tokio};
 use spackle::{
     hook::{self, Hook, HookError, HookResult, HookResultKind, HookStreamResult},
     slot::{self, Slot, SlotType},
@@ -10,6 +9,7 @@ use spackle::{
 };
 use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant};
 use tokio::pin;
+use tokio_stream::StreamExt;
 
 fn parse_flag_data(flag_data: &Vec<String>) -> HashMap<String, String> {
     flag_data
