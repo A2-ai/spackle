@@ -63,7 +63,7 @@ Rules enforced: every declared slot is present, types coerce (`"42"` → `Number
 
 ## `generate(projectDir, outDir, slotData, fs, opts?)`
 
-Run the full pipeline: copy non-template files, render `.j2` files, render path placeholders, write everything under `outDir`. Hooks are a separate call — see `runHooksStream()` below.
+Run the full pipeline: copy non-template files, render `.j2` files, render path placeholders, write everything under `outDir`. Each rendered entry is **streamed straight to disk** as Rust produces it — peak memory is bounded by one file, not by the whole rendered output. Hooks are a separate call — see `runHooksStream()` below.
 
 ```ts
 function generate(
@@ -75,16 +75,22 @@ function generate(
         virtualProjectDir?: string;
         virtualOutDir?: string;
     },
-): Promise<GenerateResponse>;
+): Promise<GenerateDiskResponse>;
 
-type GenerateResponse =
-    | { ok: true; files: Bundle; dirs: string[] }
+type GenerateDiskResponse =
+    | { ok: true; files: number; dirs: number }
     | { ok: false; error: string };
 ```
 
-`result.files` carries the rendered bundle with paths **relative to `outDir`**. `result.dirs` carries directory paths (also relative) — present so **empty directories survive the round-trip**. Native `spackle generate` calls `create_dir_all` for every directory walked during the copy pass; without emitting them, a project whose `drafts/` directory is fully ignored (every file filtered out) would still have `drafts/` created on native but silently dropped under wasm. Hosts writing output manually MUST mkdir each entry in `dirs` to match native behavior.
+The success shape is **counts**, not a materialized bundle. The rendered tree lands directly under `outDir`; if you also need the bytes in memory (preview, in-process consumers), call `generateBundle` instead.
 
-`DiskFs.writeOutput` (built-in) handles both `files` and `dirs` for you. Output-dir contract: `writeOutput` throws if `outDir` already exists, matching native's `GenerateError::AlreadyExists`.
+Output-dir contract: `generate` (via `DiskFs.prepareOutDir`) throws if `outDir` already exists, matching native's `GenerateError::AlreadyExists`. The check runs **before** the wasm call, so a pre-existing target fails fast with no Rust-side work.
+
+Errors mid-stream are not rolled back: any files already written before the failure remain on disk (matches native CLI behavior). Pick a fresh `outDir` per run.
+
+The input read (`fs.readProject(projectDir)`) is still eager — the project bundle is materialized in memory before the stream starts. Templates are typically small on input and large on output, so the streaming win is on the output side; lazy input reads are deferred to a later change.
+
+> **Breaking change (vs. 0.5.0-rc3):** `generate` previously returned `{ ok: true; files: Bundle; dirs: string[] }` and host code consumed `result.files` / `result.dirs` to render UI. Migration: read the rendered tree from disk, or switch to `generateBundle` if you specifically need the bundle shape in memory.
 
 ## `planHooks(projectDir, outDir, data, fs, opts?)`
 
@@ -220,6 +226,11 @@ function generateBundle(
     slotData: SlotData,
     opts?: { virtualProjectDir?: string; virtualOutDir?: string },
 ): Promise<GenerateResponse>;
+function generateStream(
+    bundle: Bundle,
+    slotData: SlotData,
+    opts?: { virtualProjectDir?: string; virtualOutDir?: string },
+): AsyncGenerator<GenerateStreamEvent>;
 function planHooksBundle(
     projectBundle: Bundle,
     virtualProjectDir: string,
@@ -227,9 +238,27 @@ function planHooksBundle(
     data: Record<string, string>,
     hookRan?: Record<string, boolean>,
 ): Promise<PlanHooksResponse>;
+
+type GenerateResponse =
+    | { ok: true; files: Bundle; dirs: string[] }
+    | { ok: false; error: string };
+
+type GenerateStreamEvent =
+    | { kind: "file"; path: string; bytes: Uint8Array }
+    | { kind: "dir"; path: string }
+    | { kind: "error"; error: string }
+    | { kind: "done" };
 ```
 
-`generateBundle` has no streaming-hooks counterpart — bundle-only mode doesn't have a real `cwd` for subprocess execution. Use the disk-backed `runHooksStream()` above when you need hooks.
+Three modes for in-memory consumers:
+
+- **`generateBundle`** — buffers every streamed entry into a `{ files, dirs }` bundle. Same shape and semantics as the pre-streaming API; suited to in-process preview where you want the whole rendered tree at once. **Does not reduce peak memory** — the buffer holds everything. Output is **deduped by path** (later writes replace earlier ones, matching disk-streaming's `writeFileSync` overwrite semantics — relevant when both `copy::copy` and `template::fill` produce the same output path) and **sorted by path** for deterministic ordering across runs.
+- **`generateStream`** — yields each entry as an `AsyncGenerator` event with a terminal `done` / `error`. Use for progress UIs or anything driven off an async iterator. **Also does not reduce peak memory**: the wasm call is synchronous, so events accumulate in a queue while Rust runs and flush out after. The win here is API ergonomics, not memory.
+- **`generate(projectDir, outDir, …)`** — the only path that genuinely bounds peak memory at one entry, because writes happen synchronously inside the host callback (see above).
+
+Output bundle paths are **relative to `virtualOutDir`** (default `/output`). `dirs` exists so empty directories survive the round-trip — native `spackle generate` calls `create_dir_all` for every directory walked during the copy pass, including ones whose contents are fully ignored. Without emitting dir entries, a project whose `drafts/` directory is fully ignored would still have `drafts/` created on native but silently dropped under wasm.
+
+`generateBundle` / `generateStream` have no streaming-hooks counterpart — bundle-only mode doesn't have a real `cwd` for subprocess execution. Use the disk-backed `runHooksStream()` above when you need hooks.
 
 Pair with `MemoryFs.toBundle()` / `MemoryFs.fromBundle()` to inspect results in-memory.
 
@@ -241,18 +270,32 @@ Pair with `MemoryFs.toBundle()` / `MemoryFs.fromBundle()` to inspect results in-
 class DiskFs {
     constructor(opts: { workspaceRoot: string });
     readProject(projectDir: string, opts?: { virtualRoot?: string }): Bundle;
+    assertOutDirAvailable(outDir: string): string;
+    prepareOutDir(outDir: string): string;
+    ensureOutDir(outDir: string): string;
+    writeEntry(outDir: string, entry: GenerateStreamEntry): void;
     writeOutput(
         outDir: string,
         input: Bundle | { files: Bundle; dirs?: string[] },
     ): void;
 }
+
+type GenerateStreamEntry =
+    | { kind: "file"; path: string; bytes: Uint8Array }
+    | { kind: "dir"; path: string };
 ```
 
-`writeOutput` accepts either a flat `Bundle` (files only — convenient for hand-rolled calls) or the `{ files, dirs }` shape returned by `generate`. Pass `{ files, dirs }` to preserve empty directories. Ancestor dirs for file writes are created automatically either way.
+Three write APIs at three layers:
 
-**`outDir` must not already exist.** `writeOutput` refuses a pre-existing `outDir` with an `already exists` error (parity with native `spackle generate`). Callers should pick a fresh path per run, or `rm -rf` the target before calling.
+- **`assertOutDirAvailable(outDir)`** — AlreadyExists + workspaceRoot containment check; returns the canonical path **without creating the directory**. Streaming `generate(...)` uses this so wasm validation failures (bad config, type-mismatched slot data, malformed bundle) leave no empty `outDir` on disk — `writeEntry`'s recursive parent-mkdir creates `outDir` lazily on the first event, matching native `Project::generate` which only creates the destination as part of `copy::copy`.
+- **`prepareOutDir(outDir)`** — `assertOutDirAvailable` + eagerly creates the directory. Use this when you've already buffered the full output (`generateBundle` → `writeOutput`).
+- **`ensureOutDir(outDir)`** — idempotent `mkdir -p` with workspaceRoot containment. Used by streaming `generate(...)` after a successful wasm call to handle the empty-project case (no events fire, but native still creates an empty `outDir`).
+- **`writeEntry(outDir, entry)`** — sync sibling for the streaming-generate path: each `wasm.generate` callback synchronously routes a file or dir entry to disk. Re-validates `outDir` containment under `workspaceRoot` per call so external streaming consumers can't accidentally write outside the DiskFs root. Parent dirs for files are mkdir'd recursively (idempotent), which is also what creates `outDir` itself when `assertOutDirAvailable` was used in lieu of `prepareOutDir`.
+- **`writeOutput(outDir, input)`** — convenience for callers that already buffered. Accepts either a flat `Bundle` (files only) or the `{ files, dirs }` shape returned by `generateBundle`. Internally calls `prepareOutDir` then loops `writeEntry`.
 
-**Containment:** `workspaceRoot` is canonicalized once. Every path fed into `readProject` / `writeOutput` must resolve under it; anything else throws. Per-entry traversal is blocked using `path.resolve` + prefix comparison — rejects `../escape`, absolute overrides, and any OS-normalized escape.
+**`outDir` must not already exist.** Both `prepareOutDir` and `writeOutput` refuse a pre-existing `outDir` with an `already exists` error (parity with native `spackle generate`). Callers should pick a fresh path per run, or `rm -rf` the target before calling.
+
+**Containment:** `workspaceRoot` is canonicalized once. Every path fed into `readProject` / `prepareOutDir` / `writeEntry` / `writeOutput` must resolve under it; anything else throws. Per-entry traversal is blocked using `path.resolve` + prefix comparison — rejects `../escape`, absolute overrides, and any OS-normalized escape.
 
 ### `MemoryFs`
 
@@ -273,6 +316,7 @@ Pure TS. No filesystem interaction. Useful for tests and preview flows.
 ## Known limitations
 
 - **UTF-8 paths only.** The bundle boundary doesn't round-trip non-UTF-8 filenames.
-- **Whole-project marshalling.** Input and output bundles materialize in memory. Fine for typical templates (KB–MB); very large fixtures should wait on a streaming path.
+- **Input bundle still materialized in memory.** `DiskFs.readProject` reads the whole project before generation begins. The streaming path bounds **output** memory at one entry, but a very large project tree still occupies its full size on the input side. A lazy-input change is deferred to a later PR; templates are typically small on input and large on output, so the output streaming wins back the dominant peak today.
+- **`generateStream` does not reduce peak memory.** The wasm call is synchronous, so streamed entries accumulate in a queue and flush after the call returns. Use `generate(projectDir, outDir, ...)` for true streaming-to-disk; `generateStream` is for ergonomics only.
 - **Browser-side hooks require a custom `SpackleHooks`.** `defaultHooks()` throws in environments without Bun or Node. See [hooks.md](./hooks.md).
 - **`run_as_user` / polyjuice not exposed.** Native CLI can spawn hooks as another user; wasm path can't. Wrap it in a custom `SpackleHooks.execute` if needed.

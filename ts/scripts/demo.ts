@@ -107,7 +107,7 @@ for (const fixture of ["basic_project", "bad_template"]) {
       fs,
     );
     if (result.ok) {
-      for (const f of result.files) console.log(`  ${f.path}  (${f.bytes.length} bytes)`);
+      console.log(`  streamed ${result.files} file(s), ${result.dirs} dir(s) to disk`);
     } else {
       console.log(`  FAILED: ${result.error}`);
     }

@@ -25,7 +25,7 @@ import {
   sep as pathSep,
 } from "node:path";
 
-import type { Bundle } from "../wasm/types.ts";
+import type { Bundle, GenerateStreamEntry } from "../wasm/types.ts";
 
 /** Shape of a successful `generate` response — kept here (rather than
  * in wasm/types.ts) so DiskFs's signature doesn't import the full
@@ -103,46 +103,115 @@ export class DiskFs {
   }
 
   /**
-   * Write a rendered output bundle to `outDir`.
+   * Verify `outDir` is contained under `workspaceRoot` and does not
+   * already exist; return its canonical absolute path. Does NOT
+   * create the directory.
    *
-   * Accepts either a flat `Bundle` (just files) or an object with
-   * `files` + `dirs` — when `dirs` is present, each listed directory
-   * is mkdir'd so empty dirs created by the Rust copy pass survive
-   * the round-trip (native spackle calls `create_dir_all` for every
-   * Directory entry during copy).
+   * Use this in streaming-generate flows where you want to fail fast
+   * on AlreadyExists / containment without leaving an empty `outDir`
+   * on disk if a downstream step (e.g., wasm validation) errors out
+   * before any entry has streamed. `writeEntry` recursively mkdirs the
+   * parent of each entry it writes, so `outDir` gets created lazily on
+   * the first write — matching native `Project::generate`, which only
+   * creates the destination as part of `copy::copy`.
    *
    * Contract (matches native `GenerateError::AlreadyExists`):
    *   `outDir` must NOT already exist on disk. If it does, throws —
    *   same as `spackle generate` on native.
+   */
+  assertOutDirAvailable(outDir: string): string {
+    const absOut = this.containDiskForCreate(outDir);
+    if (existsSync(absOut)) {
+      throw new Error(`assertOutDirAvailable: output directory already exists: ${absOut}`);
+    }
+    return absOut;
+  }
+
+  /**
+   * `assertOutDirAvailable` + create the directory. Use this when
+   * you've already buffered the full output (e.g., `generateBundle` →
+   * `writeOutput`) — eager creation matches the buffered model.
+   * Streaming callers should use `assertOutDirAvailable` and let
+   * `writeEntry` create the directory lazily.
+   */
+  prepareOutDir(outDir: string): string {
+    const absOut = this.assertOutDirAvailable(outDir);
+    mkdirSync(absOut, { recursive: true });
+    return absOut;
+  }
+
+  /**
+   * Idempotent `mkdir -p` for `outDir`, with workspaceRoot
+   * containment. Unlike `prepareOutDir`, this does NOT throw if the
+   * directory already exists — used by streaming generate to preserve
+   * native parity for empty projects, where no streamed events fire
+   * and `writeEntry`'s parent-mkdir never runs.
+   */
+  ensureOutDir(outDir: string): string {
+    const absOut = this.containDiskForCreate(outDir);
+    mkdirSync(absOut, { recursive: true });
+    return absOut;
+  }
+
+  /**
+   * Write a single streamed entry to disk under `outDir`.
    *
-   * Containment: `outDir` must resolve under `workspaceRoot` (we walk
-   * up to the nearest existing ancestor and canonicalize that).
-   * Per-entry traversal guard uses `path.resolve` to normalize
-   * platform-specific separators; `../x.txt`, `..\x.txt`, and any
-   * normalized escape are all rejected.
+   * Sync sibling of `writeOutput` for the streaming-generate path:
+   * `wasm.generate(...)` invokes a host callback per file/dir entry,
+   * and that callback ends up here, dropping bytes to disk before the
+   * next event arrives. Peak memory is bounded by the size of one
+   * entry, not by the rendered output.
+   *
+   * Re-validates that `outDir` is under `workspaceRoot` on every call
+   * (via `containDiskForCreate`) so external streaming consumers can't
+   * accidentally write outside the DiskFs root by passing an
+   * arbitrary path. After the first write, `outDir` exists and the
+   * canonicalization hits the existing-path branch — single
+   * `realpathSync`, microseconds per call.
+   *
+   * Containment for the entry's relative path uses `containedJoin` so
+   * traversal escapes (`../`, absolute paths, platform-specific
+   * separators) are rejected before any write. Parent dirs are
+   * mkdir'd recursively (idempotent) — that's also what creates
+   * `outDir` itself on the first write when `assertOutDirAvailable`
+   * was used in lieu of `prepareOutDir`.
+   */
+  writeEntry(outDir: string, entry: GenerateStreamEntry): void {
+    const absOut = this.containDiskForCreate(outDir);
+    const absPath = this.containedJoin(absOut, entry.path);
+    if (entry.kind === "dir") {
+      mkdirSync(absPath, { recursive: true });
+      return;
+    }
+    mkdirSync(pathDirname(absPath), { recursive: true });
+    writeFileSync(absPath, entry.bytes);
+  }
+
+  /**
+   * Write a rendered output bundle to `outDir` (buffered shape).
+   *
+   * Accepts either a flat `Bundle` (just files) or an object with
+   * `files` + `dirs` — when `dirs` is present, each listed directory
+   * is mkdir'd so empty dirs created by the Rust copy pass survive
+   * the round-trip.
+   *
+   * Same contract as `prepareOutDir` + a loop of `writeEntry` calls;
+   * use this when you already have the full bundle in memory (e.g.,
+   * from `generateBundle`). Streaming callers should drive
+   * `writeEntry` directly off the wasm callback to avoid the
+   * intermediate buffer.
    */
   writeOutput(outDir: string, input: Bundle | WriteOutputInput): void {
     const { files, dirs } = Array.isArray(input)
       ? { files: input, dirs: undefined as string[] | undefined }
       : input;
 
-    const absOut = this.containDiskForCreate(outDir);
-    if (existsSync(absOut)) {
-      throw new Error(`writeOutput: output directory already exists: ${absOut}`);
-    }
-    mkdirSync(absOut, { recursive: true });
-
-    // Create empty dirs first so the final tree matches native
-    // generation even when a directory has no files under it.
+    const absOut = this.prepareOutDir(outDir);
     for (const rel of dirs ?? []) {
-      const absDir = this.containedJoin(absOut, rel);
-      mkdirSync(absDir, { recursive: true });
+      this.writeEntry(absOut, { kind: "dir", path: rel });
     }
-
     for (const entry of files) {
-      const absFile = this.containedJoin(absOut, entry.path);
-      mkdirSync(pathDirname(absFile), { recursive: true });
-      writeFileSync(absFile, entry.bytes);
+      this.writeEntry(absOut, { kind: "file", path: entry.path, bytes: entry.bytes });
     }
   }
 
@@ -156,7 +225,7 @@ export class DiskFs {
   private containedJoin(absBase: string, rel: string): string {
     const resolved = pathResolve(absBase, rel);
     if (resolved !== absBase && !resolved.startsWith(absBase + pathSep)) {
-      throw new Error(`writeOutput: entry path escapes outDir: ${rel}`);
+      throw new Error(`entry path escapes outDir: ${rel}`);
     }
     return resolved;
   }

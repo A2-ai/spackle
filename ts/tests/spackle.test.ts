@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import {
+  type Bundle,
   DiskFs,
   MemoryFs,
   check,
@@ -15,6 +16,8 @@ import {
   configureSpackleWasm,
   generate,
   generateBundle,
+  generateStream,
+  loadSpackleWasm,
   validateSlotData,
 } from "../src/spackle.ts";
 
@@ -111,8 +114,9 @@ describe("spackle (DiskFs)", () => {
     );
     expect(res.ok).toBe(true);
     if (res.ok) {
-      const paths = res.files.map((f) => f.path).toSorted();
-      expect(paths).toContain("README.md");
+      // Streaming generate returns counts, not a materialized bundle —
+      // verify the rendered tree is actually on disk.
+      expect(res.files).toBeGreaterThan(0);
 
       const readme = await readFile(join(ws.outDir, "README.md"), "utf8");
       expect(readme).toContain("HI, world!");
@@ -184,5 +188,233 @@ describe("spackle (bundle-only / MemoryFs)", () => {
       expect(copied).toBeDefined();
       expect(new TextDecoder().decode(copied)).toContain("{{ greeting }}");
     }
+  });
+});
+
+describe("spackle (streaming generate)", () => {
+  async function basicBundle() {
+    return bundleFromDisk(
+      ["spackle.toml", "README.md.j2", "docs/static.md", "src/{{ filename }}.txt.j2"],
+      join(FIXTURES, "basic_project"),
+      "/project",
+    );
+  }
+
+  test("generateStream yields entries before a terminal done event", async () => {
+    const bundle = await basicBundle();
+
+    const events: Array<{ kind: string; path?: string }> = [];
+    let bytesSeen = 0;
+    for await (const e of generateStream(bundle, {
+      greeting: "hi",
+      target: "stream",
+      filename: "notes",
+    })) {
+      if (e.kind === "file") {
+        events.push({ kind: e.kind, path: e.path });
+        bytesSeen += e.bytes.length;
+      } else if (e.kind === "dir") {
+        events.push({ kind: e.kind, path: e.path });
+      } else {
+        events.push({ kind: e.kind });
+      }
+    }
+    // Must terminate with `done`, not `error`.
+    expect(events[events.length - 1]).toEqual({ kind: "done" });
+
+    // README rendered through the stream — bytes flowed.
+    const readme = events.find((e) => e.kind === "file" && e.path === "README.md");
+    expect(readme).toBeDefined();
+    expect(bytesSeen).toBeGreaterThan(0);
+  });
+
+  test("generateStream emits parent dirs before any child file", async () => {
+    const bundle = await basicBundle();
+
+    let firstDocFile = -1;
+    let docDirIdx = -1;
+    let i = 0;
+    for await (const e of generateStream(bundle, {
+      greeting: "hi",
+      target: "stream",
+      filename: "notes",
+    })) {
+      if (e.kind === "dir" && e.path === "docs") docDirIdx = i;
+      if (e.kind === "file" && e.path.startsWith("docs/") && firstDocFile === -1) firstDocFile = i;
+      i++;
+    }
+    expect(docDirIdx).toBeGreaterThanOrEqual(0);
+    expect(firstDocFile).toBeGreaterThanOrEqual(0);
+    expect(docDirIdx).toBeLessThan(firstDocFile);
+  });
+
+  test("disk-streaming generate aborts when a host write throws (no rollback)", async () => {
+    // The disk-streaming `generate(...fs)` writes synchronously inside
+    // the wasm callback. If a write throws (e.g., disk full), the
+    // CallbackFs latches the error and Rust short-circuits the rest of
+    // the pipeline — the wasm export returns ok:false and any files
+    // already written stay on disk (no rollback). This test simulates
+    // a failure by wrapping DiskFs.writeEntry to throw on the 2nd call.
+    const ws = await workspace("basic_project");
+    try {
+      const fs = new DiskFs({ workspaceRoot: ws.root });
+      const realWriteEntry = fs.writeEntry.bind(fs);
+      let callCount = 0;
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
+      (fs as unknown as { writeEntry: typeof fs.writeEntry }).writeEntry = (outDir, entry) => {
+        callCount++;
+        if (callCount === 2) {
+          throw new Error("simulated disk failure");
+        }
+        realWriteEntry(outDir, entry);
+      };
+
+      const res = await generate(
+        ws.projectDir,
+        ws.outDir,
+        { greeting: "hi", target: "x", filename: "notes" },
+        fs,
+      );
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.error).toMatch(/simulated disk failure/);
+      }
+    } finally {
+      await rm(ws.root, { recursive: true, force: true });
+    }
+  });
+
+  test("generate does not create outDir on slot validation failure", async () => {
+    // Native parity: Project::generate validates config + slot data
+    // BEFORE copy::copy creates the destination. Our streaming wrapper
+    // must defer outDir creation until the first event so wasm-side
+    // validation failures don't leave an empty directory on disk.
+    const ws = await workspace("typed_slots");
+    try {
+      const fs = new DiskFs({ workspaceRoot: ws.root });
+      const res = await generate(
+        ws.projectDir,
+        ws.outDir,
+        // count is declared as Number — passing a non-numeric string
+        // is a slot validation failure, surfaced before any walk
+        // happens in Rust.
+        { name: "demo", count: "not-a-number", enabled: "true" },
+        fs,
+      );
+      expect(res.ok).toBe(false);
+      // existsSync is imported from node:fs at top of test file.
+      const { existsSync } = await import("node:fs");
+      expect(existsSync(ws.outDir)).toBe(false);
+    } finally {
+      await rm(ws.root, { recursive: true, force: true });
+    }
+  });
+
+  test("generate creates outDir on success even for empty projects", async () => {
+    // Native `copy::copy` unconditionally calls create_dir_all(dest),
+    // so even an empty project produces an empty outDir. Wasm streams
+    // skip the out_root event, so the disk wrapper must mkdir on
+    // success to preserve parity.
+    const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-empty-")));
+    try {
+      const projectDir = join(root, "project");
+      await import("node:fs/promises").then((m) => m.mkdir(projectDir, { recursive: true }));
+      // Minimal valid spackle.toml — no slots, no files to render.
+      await import("node:fs/promises").then((m) =>
+        m.writeFile(join(projectDir, "spackle.toml"), 'name = "empty"\n'),
+      );
+      const outDir = join(root, "output");
+      const fs = new DiskFs({ workspaceRoot: root });
+      const res = await generate(projectDir, outDir, {}, fs);
+      expect(res.ok).toBe(true);
+      const { existsSync } = await import("node:fs");
+      expect(existsSync(outDir)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("generateBundle dedupes overlapping copy + template paths (template wins)", async () => {
+    // Project::generate runs copy::copy first then template::fill.
+    // When both write to the same output path (e.g., a project with
+    // `foo` and `foo.j2` rendering to `foo`), the streaming events
+    // include two file entries for `foo`. The buffered generateBundle
+    // wrapper must collapse them — last-write wins, matching
+    // disk-streaming's writeFileSync overwrite semantics.
+    const bundle: Bundle = [
+      {
+        path: "/project/spackle.toml",
+        bytes: new TextEncoder().encode(
+          'name = "overlap"\n[[slots]]\nkey = "x"\ntype = "String"\n',
+        ),
+      },
+      {
+        path: "/project/foo",
+        bytes: new TextEncoder().encode("static-foo"),
+      },
+      {
+        path: "/project/foo.j2",
+        bytes: new TextEncoder().encode("rendered-{{ x }}"),
+      },
+    ];
+    const res = await generateBundle(bundle, { x: "value" });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const fooEntries = res.files.filter((f) => f.path === "foo");
+      expect(fooEntries.length).toBe(1);
+      // template's render runs second in core, so it wins.
+      expect(new TextDecoder().decode(fooEntries[0].bytes)).toBe("rendered-value");
+    }
+  });
+
+  test("generateBundle returns files and dirs sorted by path", async () => {
+    // Streaming order depends on HashMap iteration in MemoryFs's
+    // list_dir, which Rust does not guarantee to be stable. The old
+    // drain_subtree path explicitly sorted; the buffered wrapper must
+    // do the same so snapshots / downstream consumers see deterministic
+    // output.
+    const bundle = await bundleFromDisk(
+      ["spackle.toml", "README.md.j2", "docs/static.md", "src/{{ filename }}.txt.j2"],
+      join(FIXTURES, "basic_project"),
+      "/project",
+    );
+    const res = await generateBundle(bundle, {
+      greeting: "hi",
+      target: "sort",
+      filename: "notes",
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const filePaths = res.files.map((f) => f.path);
+      const sortedFiles = filePaths.toSorted();
+      expect(filePaths).toEqual(sortedFiles);
+
+      const sortedDirs = res.dirs.toSorted();
+      expect(res.dirs).toEqual(sortedDirs);
+    }
+  });
+
+  test("wasm.generate surfaces a thrown host callback as the response error", async () => {
+    // Direct wasm-level test: a callback that throws should latch
+    // wasm-side and come back as { ok: false, error }. Subsequent
+    // entries do not trigger the callback.
+    const bundle = await basicBundle();
+    const wasm = await loadSpackleWasm();
+    let calls = 0;
+    const result = wasm.generate(
+      bundle,
+      "/project",
+      "/output",
+      { greeting: "hi", target: "x", filename: "notes" },
+      () => {
+        calls++;
+        throw new Error("host boom");
+      },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatch(/host boom/);
+    }
+    expect(calls).toBe(1);
   });
 });

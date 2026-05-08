@@ -160,4 +160,93 @@ describe("DiskFs", () => {
     const fs = new DiskFs({ workspaceRoot: root });
     expect(() => fs.writeOutput("/etc/spackle-out", [])).toThrow();
   });
+
+  test("prepareOutDir creates the outDir and refuses pre-existing", async () => {
+    const fs = new DiskFs({ workspaceRoot: root });
+    const outDir = join(root, "out");
+    const abs = fs.prepareOutDir(outDir);
+    expect(existsSync(outDir)).toBe(true);
+    expect(abs).toBe(outDir);
+
+    expect(() => fs.prepareOutDir(outDir)).toThrow(/already exists/);
+  });
+
+  test("writeEntry writes file and dir entries under outDir", async () => {
+    const fs = new DiskFs({ workspaceRoot: root });
+    const outDir = join(root, "out");
+    fs.prepareOutDir(outDir);
+
+    fs.writeEntry(outDir, { kind: "dir", path: "sub" });
+    fs.writeEntry(outDir, {
+      kind: "file",
+      path: "sub/a.txt",
+      bytes: new TextEncoder().encode("A"),
+    });
+    expect(existsSync(join(outDir, "sub"))).toBe(true);
+    expect(await readFile(join(outDir, "sub", "a.txt"), "utf8")).toBe("A");
+  });
+
+  test("writeEntry creates missing parent dirs on file events defensively", async () => {
+    // Streaming events arrive parent-before-child so the parent dir
+    // typically already exists, but a templated path can introduce a
+    // dir that wasn't its own dir event. writeEntry mkdir's the parent
+    // recursively to be safe.
+    const fs = new DiskFs({ workspaceRoot: root });
+    const outDir = join(root, "out");
+    fs.prepareOutDir(outDir);
+
+    fs.writeEntry(outDir, {
+      kind: "file",
+      path: "deep/nested/x.txt",
+      bytes: new TextEncoder().encode("x"),
+    });
+    expect(await readFile(join(outDir, "deep", "nested", "x.txt"), "utf8")).toBe("x");
+  });
+
+  test("writeEntry rejects entry paths that escape outDir", () => {
+    const fs = new DiskFs({ workspaceRoot: root });
+    const outDir = join(root, "out");
+    fs.prepareOutDir(outDir);
+    expect(() =>
+      fs.writeEntry(outDir, {
+        kind: "file",
+        path: "../escape.txt",
+        bytes: new Uint8Array(),
+      }),
+    ).toThrow(/escapes outDir/);
+    expect(() => fs.writeEntry(outDir, { kind: "dir", path: "../escape" })).toThrow(
+      /escapes outDir/,
+    );
+  });
+
+  test("writeEntry rejects an outDir outside workspaceRoot", () => {
+    // Public API safety: a custom streaming consumer that calls
+    // writeEntry directly (bypassing prepareOutDir / generate()) must
+    // not be able to write outside the DiskFs's workspaceRoot. Older
+    // implementations only enforced entry-path containment relative to
+    // outDir; this regression test pins the per-call workspaceRoot
+    // check too.
+    const fs = new DiskFs({ workspaceRoot: root });
+    expect(() =>
+      fs.writeEntry("/etc/spackle-pwn", {
+        kind: "file",
+        path: "a.txt",
+        bytes: new TextEncoder().encode("x"),
+      }),
+    ).toThrow(/escapes workspaceRoot/);
+    expect(() => fs.writeEntry("/etc/spackle-pwn", { kind: "dir", path: "sub" })).toThrow(
+      /escapes workspaceRoot/,
+    );
+  });
+
+  test("assertOutDirAvailable returns canonical path without creating outDir", async () => {
+    const fs = new DiskFs({ workspaceRoot: root });
+    const outDir = join(root, "deferred");
+    const abs = fs.assertOutDirAvailable(outDir);
+    expect(abs).toBe(outDir);
+    expect(existsSync(outDir)).toBe(false);
+    // AlreadyExists check still fires even though it doesn't create.
+    await mkdir(outDir, { recursive: true });
+    expect(() => fs.assertOutDirAvailable(outDir)).toThrow(/already exists/);
+  });
 });

@@ -20,7 +20,10 @@ import { loadSpackleWasm } from "./wasm/index.ts";
 import type {
   Bundle,
   CheckResponse,
+  GenerateDiskResponse,
   GenerateResponse,
+  GenerateStreamEntry,
+  GenerateStreamEvent,
   PlanHooksResponse,
   SlotData,
   ValidationResponse,
@@ -99,9 +102,25 @@ export async function validateSlotDataBundle(
 }
 
 /**
- * Generate a filled project from disk → bundle → (wasm) → bundle → disk.
- * DiskFs handles both the read (projectDir → bundle) and write (output
- * bundle → outDir) legs.
+ * Generate a filled project, streaming each rendered file/dir to disk
+ * as Rust produces it.
+ *
+ * Reads the project bundle from `projectDir` (eagerly — the input read
+ * is the documented remaining ceiling), then drives the wasm streaming
+ * generate with a callback that synchronously writes each entry under
+ * `outDir`. Peak memory is bounded by one entry, not by the rendered
+ * output.
+ *
+ * Returns counts (`files`, `dirs`) on success — not a materialized
+ * bundle. Callers that want the rendered output in memory should call
+ * `generateBundle` instead.
+ *
+ * Failure semantics match native `Project::generate`: validation
+ * failures (bad config, slot data type mismatch, malformed bundle)
+ * fail BEFORE `outDir` is created on disk. Mid-stream failures (a
+ * template tera error after the first write, or a host-callback
+ * throw) leave whatever was already written — there's no rollback,
+ * matching native CLI behavior. Pick a fresh `outDir` per run.
  *
  * Hooks are a separate step — iterate `runHooksStream()` after
  * `generate()` if the project defines any. Mirrors the native CLI's
@@ -114,22 +133,60 @@ export async function generate(
   slotData: SlotData,
   fs: DiskFs,
   opts: GenerateOptions = {},
-): Promise<GenerateResponse> {
+): Promise<GenerateDiskResponse> {
   const virtualProject = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
   const virtualOut = opts.virtualOutDir ?? DEFAULT_VIRTUAL_OUTPUT;
+  const wasm = await loadSpackleWasm();
   const bundle = fs.readProject(projectDir, { virtualRoot: virtualProject });
-  const result = await generateBundle(bundle, slotData, {
-    virtualProjectDir: virtualProject,
-    virtualOutDir: virtualOut,
+
+  // Containment + AlreadyExists check WITHOUT creating outDir — defer
+  // creation until the first streamed entry. That way wasm-side
+  // validation failures (bad slot data, bad config, bad bundle) leave
+  // no empty outDir on disk, matching native `Project::generate` which
+  // only creates the destination as part of `copy::copy`.
+  const absOut = fs.assertOutDirAvailable(outDir);
+
+  let files = 0;
+  let dirs = 0;
+  const result = wasm.generate(bundle, virtualProject, virtualOut, slotData, (event) => {
+    fs.writeEntry(absOut, event);
+    if (event.kind === "file") files++;
+    else dirs++;
   });
-  if (result.ok) {
-    fs.writeOutput(outDir, { files: result.files, dirs: result.dirs });
+  if (!result.ok) {
+    return { ok: false, error: result.error };
   }
-  return result;
+
+  // Empty-project parity: native `copy::copy` unconditionally calls
+  // `create_dir_all(dest)` so a project with zero files still produces
+  // an empty outDir. Streaming generate skips the out_root event, so
+  // ensure outDir on success — mkdir recursive is idempotent so this
+  // is a no-op when writeEntry already created it.
+  fs.ensureOutDir(absOut);
+
+  return { ok: true, files, dirs };
 }
 
-/** Bundle-to-bundle variant of `generate` — for MemoryFs / preview
- * flows that never touch disk. */
+/**
+ * Bundle-to-bundle variant of `generate` — buffers the streamed entries
+ * into a `Bundle` and returns the legacy `{ ok, files, dirs }` shape.
+ * For preview / in-process consumers that want the rendered tree in
+ * memory; use `generateStream` for async-iter ergonomics or `generate`
+ * for true-streaming disk writes.
+ *
+ * Dedupes and sorts to preserve the **final-tree** semantics the old
+ * buffered path had (which drained an in-memory map): when both
+ * `copy::copy` and `template::fill` write to the same output path
+ * (e.g., a project with `foo` and `foo.j2` both rendering to `foo`),
+ * the second write wins — matching what lands on disk under streaming
+ * `generate(...)` because the second `writeFileSync` overwrites the
+ * first. Output is sorted by path so consumers can rely on stable
+ * order regardless of HashMap iteration in the underlying walk.
+ *
+ * NOTE: this internally buffers — peak memory is the same as the
+ * pre-streaming API. Streaming benefits the disk path; in-memory
+ * consumers always pay full output size.
+ */
 export async function generateBundle(
   projectBundle: Bundle,
   slotData: SlotData,
@@ -138,7 +195,66 @@ export async function generateBundle(
   const virtualProject = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
   const virtualOut = opts.virtualOutDir ?? DEFAULT_VIRTUAL_OUTPUT;
   const wasm = await loadSpackleWasm();
-  return wasm.generate(projectBundle, virtualProject, virtualOut, slotData);
+
+  // Dedupe via Map<path, BundleEntry>: later writes replace earlier
+  // ones, mirroring disk-write last-wins semantics. Set<string> for
+  // dirs is just dedup; create_dir_all events fire repeatedly for the
+  // same ancestor as different files traverse it.
+  const fileMap = new Map<string, GenerateStreamEntry & { kind: "file" }>();
+  const dirSet = new Set<string>();
+  const result = wasm.generate(projectBundle, virtualProject, virtualOut, slotData, (event) => {
+    if (event.kind === "file") {
+      fileMap.set(event.path, event);
+    } else {
+      dirSet.add(event.path);
+    }
+  });
+  if (!result.ok) {
+    return { ok: false, error: result.error };
+  }
+
+  const files: Bundle = Array.from(fileMap.values(), (e) => ({
+    path: e.path,
+    bytes: e.bytes,
+  })).toSorted((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const dirs = Array.from(dirSet).toSorted();
+  return { ok: true, files, dirs };
+}
+
+/**
+ * Streaming variant — yields each rendered entry as an async generator
+ * event, with terminal `done` / `error` events. Mirrors the
+ * `runHooksStream` shape.
+ *
+ * MEMORY NOTE: this does NOT reduce peak memory. The wasm call is
+ * synchronous, so the host callback runs to completion before this
+ * generator can `yield` — entries pile up in an internal queue, then
+ * stream out. The value of this API is ergonomics (preview, progress
+ * UI), not memory. For true-streaming disk writes that bound peak
+ * memory at one entry, call `generate(projectDir, outDir, ...)`.
+ */
+export async function* generateStream(
+  projectBundle: Bundle,
+  slotData: SlotData,
+  opts: GenerateOptions = {},
+): AsyncGenerator<GenerateStreamEvent> {
+  const virtualProject = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
+  const virtualOut = opts.virtualOutDir ?? DEFAULT_VIRTUAL_OUTPUT;
+  const wasm = await loadSpackleWasm();
+
+  const queue: GenerateStreamEntry[] = [];
+  const result = wasm.generate(projectBundle, virtualProject, virtualOut, slotData, (event) =>
+    queue.push(event),
+  );
+
+  for (const event of queue) {
+    yield event;
+  }
+  if (result.ok) {
+    yield { kind: "done" };
+  } else {
+    yield { kind: "error", error: result.error };
+  }
 }
 
 /**
@@ -261,7 +377,12 @@ export type {
   Bundle,
   BundleEntry,
   CheckResponse,
+  GenerateDiskResponse,
   GenerateResponse,
+  GenerateStreamDirEvent,
+  GenerateStreamEntry,
+  GenerateStreamEvent,
+  GenerateStreamFileEvent,
   Hook,
   HookPlanEntry,
   PlanHooksResponse,

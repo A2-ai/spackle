@@ -17,10 +17,13 @@
 //!     success: `{ "valid": true }`
 //!     failure: `{ "valid": false, "errors": ["..."] }`
 //!
-//!   generate(project_bundle, project_dir, out_dir, slot_data_json) -> JsValue:
-//!     success: `{ ok: true, files: Array<{path, bytes: Uint8Array}>, dirs: string[] }`
-//!       where `path` is relative to `out_dir`
-//!     failure: `{ ok: false, error: "..." }`
+//!   generate(project_bundle, project_dir, out_dir, slot_data_json, on_entry) -> JsValue:
+//!     streams each output entry through `on_entry(event)` as it's
+//!     produced — `{ kind: "file", path, bytes }` or `{ kind: "dir", path }`
+//!     where `path` is relative to `out_dir`. Returns a terminal envelope:
+//!       success: `{ ok: true }`
+//!       failure: `{ ok: false, error: "..." }` (host callback throws are
+//!       latched and surfaced here; they win over downstream Rust errors).
 //!
 //!   plan_hooks(project_bundle, project_dir, out_dir, data_json, hook_ran_json?) -> String (JSON):
 //!     `Vec<HookPlanEntry>` — templated commands + should_run + skip_reason + template_errors.
@@ -34,8 +37,10 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
+mod callback_fs;
 pub mod memory_fs;
 
+use callback_fs::{CallbackFs, JsCallbackSink};
 use memory_fs::{BundleEntry, MemoryFs};
 
 #[wasm_bindgen(start)]
@@ -61,12 +66,6 @@ struct ValidationErr {
 #[derive(Serialize)]
 struct GenerateOk {
     ok: bool,
-    files: Vec<BundleEntry>,
-    /// Directories under `out_dir` relative to it. Included separately
-    /// from `files` so empty dirs (created by the copy pass for
-    /// Directory entries that had no files pass the ignore filter)
-    /// survive the bundle round-trip — host must `mkdir -p` each.
-    dirs: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -168,9 +167,28 @@ pub fn validate_slot_data(
     }
 }
 
-/// Generate a filled project. Runs the full generate pipeline (copy +
-/// template fill) against an in-memory fs, returns the rendered subtree
-/// as a flat bundle with paths relative to `out_dir`.
+/// Generate a filled project, streaming each output entry through a
+/// host-supplied callback as it's produced.
+///
+/// `on_entry(event)` is called synchronously for every output file and
+/// directory, where `event` is one of:
+///   - `{ kind: "file", path: string, bytes: Uint8Array }` — `path` is
+///     relative to `out_dir`.
+///   - `{ kind: "dir", path: string }` — same path semantics.
+///
+/// Order: directories arrive root-to-leaf and before any file under
+/// them (parent-before-child), interleaved with file events as the
+/// copy/template walks produce them.
+///
+/// Return envelope:
+///   success: `{ ok: true }`
+///   failure: `{ ok: false, error: "..." }`
+///
+/// If `on_entry` throws, the error is latched and short-circuits any
+/// remaining Rust-side writes; the latched message is returned as the
+/// envelope's `error`. The host callback wins over downstream
+/// `GenerateError`s — those are typically just downstream effects of
+/// the latched abort.
 ///
 /// Hooks are a separate step — mirror the native CLI's two-call shape
 /// (`project.generate(...)` then `project.run_hooks_stream(...)`). Call
@@ -182,14 +200,17 @@ pub fn generate(
     project_dir: &str,
     out_dir: &str,
     slot_data_json: &str,
+    on_entry: js_sys::Function,
 ) -> JsValue {
     let entries = match decode_bundle(project_bundle) {
         Ok(e) => e,
         Err(msg) => return generate_err_value(msg),
     };
-    let fs = MemoryFs::from_bundle(entries);
     let project_path = PathBuf::from(project_dir);
     let out_path = PathBuf::from(out_dir);
+
+    let source = MemoryFs::from_bundle(entries);
+    let fs = CallbackFs::new(source, out_path.clone(), JsCallbackSink::new(on_entry));
 
     let project = match spackle::load_project(&fs, &project_path) {
         Ok(p) => p,
@@ -205,18 +226,23 @@ pub fn generate(
         return generate_err_value(format!("slot data invalid: {}", e));
     }
 
-    if let Err(e) = project.generate(&fs, &project_path, &out_path, &slot_data) {
+    let generate_result = project.generate(&fs, &project_path, &out_path, &slot_data);
+
+    // Host callback errors latch in CallbackFs and turn subsequent
+    // writes into io::Error — those propagate up as
+    // `GenerateError::FileError`. The latched message is the original
+    // cause; surface it preferentially.
+    if let Some(msg) = fs.take_callback_error() {
+        return generate_err_value(msg);
+    }
+
+    if let Err(e) = generate_result {
         return generate_err_value(e.to_string());
     }
 
-    let (files, dirs) = fs.drain_subtree(&out_path);
-    GenerateOk {
-        ok: true,
-        files,
-        dirs,
-    }
-    .serialize(&serializer())
-    .unwrap_or(JsValue::NULL)
+    GenerateOk { ok: true }
+        .serialize(&serializer())
+        .unwrap_or(JsValue::NULL)
 }
 
 /// Evaluate a hook plan for the project. Pure — no subprocess spawning,
@@ -258,7 +284,13 @@ pub fn plan_hooks(
         Ok(e) => e,
         Err(msg) => return plan_hooks_err(msg),
     };
-    plan_hooks_from_entries(entries, project_dir, out_dir, data_json, hook_ran_json.as_deref())
+    plan_hooks_from_entries(
+        entries,
+        project_dir,
+        out_dir,
+        data_json,
+        hook_ran_json.as_deref(),
+    )
 }
 
 /// Pure-Rust implementation of `plan_hooks`. Split out so native tests
@@ -302,8 +334,7 @@ fn plan_hooks_from_entries(
     // the items set (so dependent hooks' `needs` resolution still
     // finds them). Skipping iteration prevents the planner from
     // overwriting our hook_ran_<key> seed on its success branch.
-    let mut executed_keys: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut executed_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let Some(raw) = hook_ran_json {
         let hook_ran: HashMap<String, bool> = match serde_json::from_str(raw) {
             Ok(d) => d,
@@ -332,7 +363,10 @@ fn plan_hooks_from_entries(
         .filter(|e| !executed_keys.contains(&e.key))
         .collect();
 
-    json_or_panic(&PlanHooksOk { ok: true, plan: &plan })
+    json_or_panic(&PlanHooksOk {
+        ok: true,
+        plan: &plan,
+    })
 }
 
 /// Planner with native `run_hooks_stream` ordering: is_enabled →
@@ -499,9 +533,8 @@ mod plan_hooks_tests {
     use super::*;
     use serde_json::Value;
 
-    const FIXTURE_TOML: &[u8] = include_bytes!(
-        "../../../tests/fixtures/hooks_fixture/spackle.toml"
-    );
+    const FIXTURE_TOML: &[u8] =
+        include_bytes!("../../../tests/fixtures/hooks_fixture/spackle.toml");
 
     fn fixture_bundle() -> Vec<BundleEntry> {
         vec![BundleEntry {
@@ -578,13 +611,7 @@ mod plan_hooks_tests {
 
     #[test]
     fn invalid_data_json_returns_err_shape() {
-        let raw = plan_hooks_from_entries(
-            fixture_bundle(),
-            "/project",
-            "/tmp/o",
-            "not json",
-            None,
-        );
+        let raw = plan_hooks_from_entries(fixture_bundle(), "/project", "/tmp/o", "not json", None);
         let v: Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(v["ok"], false);
         assert!(
@@ -643,11 +670,7 @@ default = true
         // remaining plan must still mark hook_c as satisfied — dropping
         // hook_a from the items set would wrongly demote hook_c to
         // unsatisfied_needs.
-        let plan = call_with_bundle(
-            needs_fixture_bundle(),
-            "{}",
-            Some(r#"{"hook_a": true}"#),
-        );
+        let plan = call_with_bundle(needs_fixture_bundle(), "{}", Some(r#"{"hook_a": true}"#));
         let hook_c = plan
             .as_array()
             .unwrap()
@@ -661,7 +684,10 @@ default = true
         );
         // hook_a was executed — should be stripped from the returned plan.
         assert!(
-            plan.as_array().unwrap().iter().all(|e| e["key"] != "hook_a"),
+            plan.as_array()
+                .unwrap()
+                .iter()
+                .all(|e| e["key"] != "hook_a"),
             "hook_a should not appear in the remaining plan: {}",
             plan
         );

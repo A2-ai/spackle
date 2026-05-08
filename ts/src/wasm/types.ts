@@ -59,19 +59,48 @@ export type CheckResponse =
 /** Response from `validateSlotData()`. */
 export type ValidationResponse = { valid: true } | { valid: false; errors: string[] };
 
-/** Response from `generate()`.
- *
- * `files` carries the rendered output subtree with paths **relative to
- * outDir**. `dirs` carries the directory subtree (also relative) so
- * empty dirs survive the bundle round-trip — the native `copy` pass
- * `create_dir_all`s every directory entry it walks, and we match that
- * behavior host-side by mkdir'ing each dir even if no files live under
- * it.
- *
- * Hooks are a separate step — call `planHooks` / `runHooksStream`
- * after `generate` (mirrors the native CLI's two-call shape). */
+/** Single output entry streamed from wasm during generate. Paths are
+ * **relative to outDir**. Files carry their bytes; dirs are markers so
+ * empty dirs (created by the Rust copy pass for directory entries that
+ * had no files pass the ignore filter) survive the round-trip. */
+export type GenerateStreamFileEvent = {
+  kind: "file";
+  path: string;
+  bytes: Uint8Array;
+};
+export type GenerateStreamDirEvent = { kind: "dir"; path: string };
+export type GenerateStreamEntry = GenerateStreamFileEvent | GenerateStreamDirEvent;
+
+/** Public event union surfaced by the `generateStream` async generator.
+ * Adds terminal `done` / `error` events to the streamed entries. */
+export type GenerateStreamEvent =
+  | GenerateStreamFileEvent
+  | GenerateStreamDirEvent
+  | { kind: "error"; error: string }
+  | { kind: "done" };
+
+/** Terminal envelope returned from a single `wasm.generate(...)` call.
+ * Streamed file/dir entries arrive separately through the host callback —
+ * this is just the success/error signal. Host-callback throws are
+ * latched wasm-side and surfaced here with the original message. */
+export type GenerateResult = { ok: true } | { ok: false; error: string };
+
+/** Response from the buffered `generateBundle()` wrapper. Same shape
+ * as the legacy bundle-output API: a flat list of files plus the
+ * directory subtree (so empty dirs survive). Hosts that want to keep
+ * the rendered output in memory (preview, in-process consumers) call
+ * `generateBundle`. Hosts that want to write to disk call the
+ * `generate(projectDir, outDir, ...)` wrapper, which uses
+ * `DiskFs.writeEntry` per event and never materializes a `Bundle`. */
 export type GenerateResponse =
   | { ok: true; files: Bundle; dirs: string[] }
+  | { ok: false; error: string };
+
+/** Response from the disk-streaming `generate()` wrapper. Returns
+ * counts instead of a materialized bundle — that's the whole point of
+ * streaming: bytes never accumulate host-side. */
+export type GenerateDiskResponse =
+  | { ok: true; files: number; dirs: number }
   | { ok: false; error: string };
 
 /** One entry in a hook plan. Snake_case fields mirror Rust's
