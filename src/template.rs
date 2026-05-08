@@ -53,8 +53,7 @@ pub fn validate_in_memory(
     context.insert("_output_name".to_string(), "");
 
     let errors: Vec<(String, tera::Error)> = tera
-        .templates
-        .keys()
+        .get_template_names()
         .filter_map(|name| match tera.render(name, &context) {
             Ok(_) => None,
             Err(e) => Some((name.to_string(), e)),
@@ -83,8 +82,8 @@ pub fn render_in_memory(
     }
     let context = Context::from_serialize(data)?;
 
-    let template_names: Vec<String> = tera.templates.keys().cloned().collect();
-    let rendered = template_names.iter().map(|template_name| {
+    let template_names = tera.get_template_names();
+    let rendered = template_names.into_iter().map(|template_name| {
         // std::time::Instant is not available on wasm32-unknown-unknown
         // (no OS clock). Use Duration::ZERO as a placeholder there.
         #[cfg(not(target_arch = "wasm32"))]
