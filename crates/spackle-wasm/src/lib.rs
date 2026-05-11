@@ -1,32 +1,11 @@
 //! wasm-bindgen exports for spackle, bundle-in / bundle-out.
 //!
-//! Four exports plus `init`. Each takes a project bundle — a JS
-//! `Array<{path, bytes: Uint8Array}>` — deserializes it into an in-process
-//! [`MemoryFs`], runs the requested operation against that, and returns
-//! a serialized result. Rust never touches the host's filesystem; the
-//! host side (TS) does all disk I/O and subprocess execution before and
-//! after the call.
+//! Each export takes a project bundle — a JS `Array<{path, bytes: Uint8Array}>`
+//! — hydrates it into a [`MemoryFs`], runs the requested operation, and
+//! returns a serialized result. Rust never touches the host's filesystem;
+//! the TS host does all disk I/O and subprocess execution.
 //!
-//! Shapes:
-//!
-//!   check(project_bundle, project_dir) -> String (JSON):
-//!     success: `{ "valid": true, "config": {...}, "errors": [] }`
-//!     failure: `{ "valid": false, "errors": ["..."] }`
-//!
-//!   validate_slot_data(project_bundle, project_dir, slot_data_json) -> String (JSON):
-//!     success: `{ "valid": true }`
-//!     failure: `{ "valid": false, "errors": ["..."] }`
-//!
-//!   generate(project_bundle, project_dir, out_dir, slot_data_json) -> JsValue:
-//!     success: `{ ok: true, files: Array<{path, bytes: Uint8Array}>, dirs: string[] }`
-//!       where `path` is relative to `out_dir`
-//!     failure: `{ ok: false, error: "..." }`
-//!
-//!   plan_hooks(project_bundle, project_dir, out_dir, data_json, hook_ran_json?) -> String (JSON):
-//!     `Vec<HookPlanEntry>` — templated commands + should_run + skip_reason + template_errors.
-//!     Hook execution is host-side; this is the planning half of the native
-//!     CLI's two-step (generate then run_hooks_stream). See `ts/src/host/hooks.ts`
-//!     for the TS-side runner.
+//! Per-export shapes and contracts live on the function `///` docs below.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -45,13 +24,31 @@ pub fn init() {
 
 // --- response shapes ---
 
+/// Structured response from `check`. Always returns this shape — no
+/// `valid: true/false` discriminant. Empty `diagnostics` ⇒ clean check.
+/// `config` is `None` when the TOML couldn't be parsed (the diagnostics
+/// list will contain a `config`-source entry explaining why).
 #[derive(Serialize)]
-struct CheckOk<'a> {
-    valid: bool,
-    config: &'a spackle::config::Config,
-    errors: Vec<String>,
+struct CheckResponse<'a> {
+    config: Option<&'a spackle::config::Config>,
+    diagnostics: &'a Vec<spackle::Diagnostic>,
 }
 
+/// Structured response from `render`. Always returns this shape. Partial
+/// preview semantics: `files` contains every template that rendered
+/// successfully; `diagnostics` enumerates every failure across all stages
+/// (config / slot / hook / copy / render). `hook_plan` is `null` only
+/// when the config failed to load.
+#[derive(Serialize)]
+struct RenderResponse<'a> {
+    files: Vec<BundleEntry>,
+    dirs: Vec<String>,
+    diagnostics: &'a Vec<spackle::Diagnostic>,
+    #[serde(rename = "hookPlan")]
+    hook_plan: Option<&'a Vec<spackle::hook::HookPlanEntry>>,
+}
+
+/// Legacy `validate_slot_data` response. Kept for granular use.
 #[derive(Serialize)]
 struct ValidationErr {
     valid: bool,
@@ -117,28 +114,33 @@ fn decode_bundle(project_bundle: JsValue) -> Result<Vec<BundleEntry>, String> {
 
 // --- exports ---
 
-/// Validate a project bundle: loads spackle.toml, checks slot config,
-/// validates template references against slot keys.
+/// Run every static project check against `project_bundle`. Always
+/// returns a structured `CheckResponse` (never throws / never returns
+/// `valid: false`). Diagnostics are accumulated across all stages —
+/// callers see every problem in one call.
 #[wasm_bindgen]
 pub fn check(project_bundle: JsValue, project_dir: &str) -> String {
     let entries = match decode_bundle(project_bundle) {
         Ok(e) => e,
-        Err(msg) => return invalid(vec![msg]),
+        Err(msg) => {
+            let diags = vec![spackle::Diagnostic::new(
+                spackle::Severity::Error,
+                spackle::DiagnosticSource::Config,
+                msg,
+            )];
+            return json_or_panic(&CheckResponse {
+                config: None,
+                diagnostics: &diags,
+            });
+        }
     };
     let fs = MemoryFs::from_bundle(entries);
     let path = PathBuf::from(project_dir);
-    let project = match spackle::load_project(&fs, &path) {
-        Ok(p) => p,
-        Err(e) => return invalid(vec![e.to_string()]),
-    };
-    match project.check(&fs) {
-        Ok(()) => json_or_panic(&CheckOk {
-            valid: true,
-            config: &project.config,
-            errors: vec![],
-        }),
-        Err(e) => invalid(vec![e.to_string()]),
-    }
+    let report = spackle::check_project(&fs, &path);
+    json_or_panic(&CheckResponse {
+        config: report.config.as_ref(),
+        diagnostics: &report.diagnostics,
+    })
 }
 
 /// Validate slot data against the config loaded from the project bundle.
@@ -219,6 +221,73 @@ pub fn generate(
     .unwrap_or(JsValue::NULL)
 }
 
+/// Diagnostics-first render: never throws, never returns `ok: false`.
+/// Empty `diagnostics` ⇒ clean render. Use this for live UI feedback;
+/// `generate` keeps fail-fast semantics for write-to-disk workflows.
+#[wasm_bindgen]
+pub fn render(
+    project_bundle: JsValue,
+    project_dir: &str,
+    out_dir: &str,
+    slot_data_json: &str,
+) -> JsValue {
+    let entries = match decode_bundle(project_bundle) {
+        Ok(e) => e,
+        Err(msg) => {
+            let diags = vec![spackle::Diagnostic::new(
+                spackle::Severity::Error,
+                spackle::DiagnosticSource::Config,
+                msg,
+            )];
+            return RenderResponse {
+                files: Vec::new(),
+                dirs: Vec::new(),
+                diagnostics: &diags,
+                hook_plan: None,
+            }
+            .serialize(&serializer())
+            .unwrap_or(JsValue::NULL);
+        }
+    };
+    let fs = MemoryFs::from_bundle(entries);
+    let project_path = PathBuf::from(project_dir);
+    let out_path = PathBuf::from(out_dir);
+
+    let slot_data: HashMap<String, String> = match serde_json::from_str(slot_data_json) {
+        Ok(d) => d,
+        Err(e) => {
+            let diags = vec![spackle::Diagnostic::new(
+                spackle::Severity::Error,
+                spackle::DiagnosticSource::SlotData,
+                format!("invalid slot_data_json: {}", e),
+            )];
+            return RenderResponse {
+                files: Vec::new(),
+                dirs: Vec::new(),
+                diagnostics: &diags,
+                hook_plan: None,
+            }
+            .serialize(&serializer())
+            .unwrap_or(JsValue::NULL);
+        }
+    };
+
+    let report = spackle::render(&fs, &project_path, &out_path, &slot_data);
+
+    // Harvest the rendered output subtree from the MemoryFs (paths
+    // relative to out_dir). Mirrors what `generate` does.
+    let (files, dirs) = fs.drain_subtree(&out_path);
+
+    RenderResponse {
+        files,
+        dirs,
+        diagnostics: &report.diagnostics,
+        hook_plan: report.hook_plan.as_ref(),
+    }
+    .serialize(&serializer())
+    .unwrap_or(JsValue::NULL)
+}
+
 /// Evaluate a hook plan for the project. Pure — no subprocess spawning,
 /// no fs writes. Returns the ordered list of hooks with their templated
 /// commands, should-run flag, and skip/template-error diagnostics.
@@ -258,7 +327,13 @@ pub fn plan_hooks(
         Ok(e) => e,
         Err(msg) => return plan_hooks_err(msg),
     };
-    plan_hooks_from_entries(entries, project_dir, out_dir, data_json, hook_ran_json.as_deref())
+    plan_hooks_from_entries(
+        entries,
+        project_dir,
+        out_dir,
+        data_json,
+        hook_ran_json.as_deref(),
+    )
 }
 
 /// Pure-Rust implementation of `plan_hooks`. Split out so native tests
@@ -302,8 +377,7 @@ fn plan_hooks_from_entries(
     // the items set (so dependent hooks' `needs` resolution still
     // finds them). Skipping iteration prevents the planner from
     // overwriting our hook_ran_<key> seed on its success branch.
-    let mut executed_keys: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut executed_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let Some(raw) = hook_ran_json {
         let hook_ran: HashMap<String, bool> = match serde_json::from_str(raw) {
             Ok(d) => d,
@@ -332,7 +406,10 @@ fn plan_hooks_from_entries(
         .filter(|e| !executed_keys.contains(&e.key))
         .collect();
 
-    json_or_panic(&PlanHooksOk { ok: true, plan: &plan })
+    json_or_panic(&PlanHooksOk {
+        ok: true,
+        plan: &plan,
+    })
 }
 
 /// Planner with native `run_hooks_stream` ordering: is_enabled →
@@ -499,9 +576,8 @@ mod plan_hooks_tests {
     use super::*;
     use serde_json::Value;
 
-    const FIXTURE_TOML: &[u8] = include_bytes!(
-        "../../../tests/fixtures/hooks_fixture/spackle.toml"
-    );
+    const FIXTURE_TOML: &[u8] =
+        include_bytes!("../../../tests/fixtures/hooks_fixture/spackle.toml");
 
     fn fixture_bundle() -> Vec<BundleEntry> {
         vec![BundleEntry {
@@ -578,13 +654,7 @@ mod plan_hooks_tests {
 
     #[test]
     fn invalid_data_json_returns_err_shape() {
-        let raw = plan_hooks_from_entries(
-            fixture_bundle(),
-            "/project",
-            "/tmp/o",
-            "not json",
-            None,
-        );
+        let raw = plan_hooks_from_entries(fixture_bundle(), "/project", "/tmp/o", "not json", None);
         let v: Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(v["ok"], false);
         assert!(
@@ -643,11 +713,7 @@ default = true
         // remaining plan must still mark hook_c as satisfied — dropping
         // hook_a from the items set would wrongly demote hook_c to
         // unsatisfied_needs.
-        let plan = call_with_bundle(
-            needs_fixture_bundle(),
-            "{}",
-            Some(r#"{"hook_a": true}"#),
-        );
+        let plan = call_with_bundle(needs_fixture_bundle(), "{}", Some(r#"{"hook_a": true}"#));
         let hook_c = plan
             .as_array()
             .unwrap()
@@ -661,7 +727,10 @@ default = true
         );
         // hook_a was executed — should be stripped from the returned plan.
         assert!(
-            plan.as_array().unwrap().iter().all(|e| e["key"] != "hook_a"),
+            plan.as_array()
+                .unwrap()
+                .iter()
+                .all(|e| e["key"] != "hook_a"),
             "hook_a should not appear in the remaining plan: {}",
             plan
         );

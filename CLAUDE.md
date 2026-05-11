@@ -7,10 +7,10 @@ Project templating tool. Rust core + native CLI + WebAssembly surface for JS hos
 ```
 spackle/
 ├── src/                  # spackle core (rlib). Generic over `F: FileSystem`.
-├── cli/                  # spackle-cli (uses StdFs). Installed binary.
 ├── crates/
+│   ├── spackle-cli/      # spackle-cli (uses StdFs). Installed binary.
 │   └── spackle-wasm/     # cdylib, wasm-bindgen exports + Rust MemoryFs.
-│                         # Depends on `spackle` via path.
+│                         # Both crates depend on `spackle` via path.
 ├── scripts/
 │   └── build-wasm.sh     # cargo build (wasm32) → wasm-bindgen --target web → wasm-opt.
 │                         # Single source of truth; called by `just build-wasm` and CI.
@@ -38,7 +38,7 @@ just setup                      # git hooks + cargo check + bun install + setup-
 just setup-wasm                 # wasm toolchain alone (wasm32 + wasm-bindgen-cli + wasm-opt)
 
 # Native (Rust)
-cargo test --workspace          # ~98 tests across spackle / cli / spackle-wasm
+cargo test --workspace          # ~98 tests across spackle / spackle-cli / spackle-wasm
 
 # Build (all / per-component)
 just build                      # CLI binary + wasm + TS dist
@@ -67,7 +67,7 @@ CI: `.github/workflows/ci.yaml` runs cargo tests + bun tests. `.github/workflows
 
 ## Distribution
 
-**Not published to npm.** The wasm TS package ships as a tarball attached to each GitHub release (`a2-ai-spackle-<version>.tgz`, from `bun pm pack` in the release workflow). `bun add git+ssh:...` does **not** work because `package.json` is at `ts/`, not the repo root, and no JS package manager supports subpath specifiers on git URLs. For dev iteration use `bun link` or a local tarball; for shared pre-releases use the GitHub release asset URL. See `ts/README.md` for the full install menu.
+**Not published to npm.** The wasm TS package ships as a tarball attached to each GitHub release (`a2-ai-spackle-<version>.tgz`, from `bun pm pack` in the release workflow). `bun add git+ssh:...` does **not** work because `package.json` is at `ts/`, not the repo root, and no JS package manager supports subpath specifiers on git URLs. For dev iteration use `bun link` or a local tarball; for shared pre-releases use the GitHub release asset URL.
 
 ## Non-obvious invariants (don't accidentally break)
 
@@ -78,23 +78,20 @@ CI: `.github/workflows/ci.yaml` runs cargo tests + bun tests. `.github/workflows
 - **`DiskFs.writeOutput` refuses a pre-existing `outDir`.** Matches native `GenerateError::AlreadyExists`. Don't weaken this without matching native too.
 - **Path containment uses `path.resolve` + prefix check, not `split("/")` blocklists.** Handles platform-specific separators transparently.
 - **`slugify` appears in `pkg/spackle_wasm.d.ts`.** Incidental tera export. Ignore.
-- **Web target requires `await init()` before exports work.** `ts/src/wasm/index.ts` calls it lazily inside `loadSpackleWasm()` and caches the promise; consumers of the TS wrapper see an async API and never touch init themselves.
-- **`wasm-bindgen-cli` version must match the `wasm-bindgen` crate version exactly.** `scripts/build-wasm.sh` reads it from `Cargo.lock` and refuses to run on mismatch; `just setup-wasm` installs the right one.
 
 ## Hooks
 
-**Planned in wasm, executed host-side.** `plan_hooks` in `crates/spackle-wasm/src/lib.rs` delegates to a local `plan_hooks_native_parity` function — a reimplementation of `hook::evaluate_hook_plan`'s inner loop that reorders the checks to match `run_hooks_stream` semantics exactly: is_enabled → is_satisfied → **template before conditional** (so broken templates in hooks with false `if`s still hard-abort, matching native `Error::ErrorRenderingTemplate`), and returns `Failed` for conditional-eval errors instead of `Skipped`. It also injects `_project_name` + `_output_name` and honors caller-supplied `hook_ran` overrides (executed hooks skipped from iteration but kept in the `items` set for needs resolution). The TS package ships `NodeHooks` (child_process) and `BunHooks` (Bun.spawn); `defaultHooks()` auto-selects per runtime. Top-level `runHooksStream(projectDir, outDir, data, fs)` is an async generator that iterates the plan, yielding `HookEvent`s (`run_start` → per-hook `hook_start` / `hook_end` with timing → optional `replan` → terminal `template_errors` / `plan_error`), and re-plans internally after any non-zero exit so chained conditionals see actual state. Mirrors native `run_hooks_stream` failure semantics (continue on non-zero exit; template errors are a hard abort before any execution). Consumers driving an SSE bridge `for await` the generator and relay each event. See `ts/src/host/hooks.ts` and `docs/ts/hooks.md`.
+**Planned in wasm, executed host-side.** `plan_hooks` returns a resolved hook plan (templated commands, should-run flags, skip reasons); the TS host executes subprocesses and feeds results back via `runHooksStream()`, re-planning after any non-zero exit so chained conditionals see actual state. Implementation detail: `plan_hooks_native_parity` reimplements the inner loop with `run_hooks_stream` ordering (template before conditional) to match native failure semantics exactly — see `docs/design/wasm.md`.
 
-**Session API deferred.** Each `runHooksStream()` iteration re-parses the bundle — sub-millisecond, dwarfed by subprocess time. A stateful `open_session(bundle, project_dir)` + `plan_hooks_session(...)` API would amortize parse across the plan-execute loop; not warranted until profiles show per-call parse dominating.
+**Session API consciously deferred.** Per-call bundle re-parse is sub-millisecond; not worth the stateful API complexity until profiles show otherwise.
 
-**Not exposed in the wasm path:** `run_as_user` / polyjuice (hosts can wrap in their `SpackleHooks.execute` if needed); hooks in `generateBundle` (bundle-only mode has no real cwd).
+**Not exposed in the wasm path:** `run_as_user` / polyjuice; hooks in `generateBundle` (bundle-only mode has no real cwd).
 
 ## Development practices
 
 ### Rust
 
-- **Table-driven tests where appropriate.** When a function has multiple input/output cases that share shape, collect them into a single `Vec<(input, expected)>` (or struct-per-case) and assert in a loop. Keeps related cases visible together and keeps failure messages identifying the case. One-off edge cases stay as individual `#[test]` fns — don't force everything into tables.
-- **`cargo fmt` before committing.** The workspace uses default rustfmt config.
+- **Table-driven tests where appropriate.** Collect multi-case functions into a `Vec<(input, expected)>` and assert in a loop; one-off edge cases stay as individual `#[test]` fns.
 
 ### TypeScript (`ts/`)
 
@@ -105,7 +102,7 @@ CI: `.github/workflows/ci.yaml` runs cargo tests + bun tests. `.github/workflows
 
 ### Don't adopt external crates for core abstractions casually
 
-The `FileSystem` trait is hand-rolled, not borrowed from `vfs` or similar. Adopting a widely-used abstraction is defensible — but only when it fits the usage pattern better than what we have. For whole-file reads/writes we prefer byte-buffer shapes (`read_file → Vec<u8>`) over stream shapes (`Box<dyn SeekAndRead>`).
+The `FileSystem` trait is hand-rolled, not borrowed from `vfs` or similar — fits our whole-file byte-buffer shape better than stream-oriented alternatives.
 
 ## Before editing
 

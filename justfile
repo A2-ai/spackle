@@ -5,7 +5,7 @@ alias init := setup
 setup: setup-wasm
     lefthook install
     cargo check --workspace
-    cd ts && bun install
+    cd ts && bun install && bun link
 
 # Wasm toolchain (wasm32 target + wasm-bindgen-cli pinned to Cargo.lock
 # + wasm-opt). Split out so re-runs don't trigger the full bootstrap.
@@ -26,7 +26,7 @@ test:
     cargo test --workspace
 
 install:
-    cargo install --path=cli
+    cargo install --path=crates/spackle-cli
 
 # --- Build ---
 #
@@ -64,7 +64,3 @@ demo-ts: build-wasm
 # Run the TS package's bun test suite. Builds wasm first.
 test-ts: build-wasm
     cd ts && bun install && bun test
-
-# Legacy wasip2/component-model detour has been archived to
-# `archive/wasip2-detour/` — not built, not tested. See SUMMARY.md for
-# the retirement rationale.

@@ -48,11 +48,18 @@ for (const fixture of ["basic_project", "bad_template"]) {
     const fs = new DiskFs({ workspaceRoot: ws.root });
     // oxlint-disable-next-line eslint/no-await-in-loop
     const result = await check(ws.projectDir, fs);
-    console.log(
-      `  valid=${result.valid}`,
-      !result.valid ? `errors=${JSON.stringify(result.errors)}` : "",
-    );
-    if (result.valid) {
+    console.log(`  diagnostics=${result.diagnostics.length}`);
+    for (const d of result.diagnostics) {
+      const loc = d.path
+        ? d.span
+          ? `${d.path}:${d.span.line}:${d.span.column}`
+          : d.path
+        : d.ref
+          ? `ref ${d.ref}`
+          : "";
+      console.log(`    [${d.source}] ${loc} — ${d.message}`);
+    }
+    if (result.config) {
       console.log(
         `  name=${result.config.name ?? "(unnamed)"}`,
         `slots=${result.config.slots.length}`,

@@ -16,13 +16,20 @@ use tokio_stream::Stream;
 #[cfg(not(target_arch = "wasm32"))]
 use users::User;
 
+pub mod check;
 pub mod config;
 pub mod copy;
+pub mod diagnostic;
 pub mod fs;
 pub mod hook;
 pub mod needs;
+pub mod render;
 pub mod slot;
 pub mod template;
+
+pub use check::{check as check_project, CheckReport};
+pub use diagnostic::{Diagnostic, DiagnosticSource, Severity, Span};
+pub use render::{render, RenderReport};
 
 #[derive(Error, Debug)]
 pub enum LoadError {

@@ -22,6 +22,7 @@ import type {
   CheckResponse,
   GenerateResponse,
   PlanHooksResponse,
+  RenderResponse,
   SlotData,
   ValidationResponse,
 } from "./wasm/types.ts";
@@ -139,6 +140,51 @@ export async function generateBundle(
   const virtualOut = opts.virtualOutDir ?? DEFAULT_VIRTUAL_OUTPUT;
   const wasm = await loadSpackleWasm();
   return wasm.generate(projectBundle, virtualProject, virtualOut, slotData);
+}
+
+/**
+ * Render a project with diagnostics-first semantics. Unlike `generate`,
+ * `render` **never throws / never returns `ok: false`** — it always
+ * returns a `RenderResponse` carrying a (possibly partial) bundle plus
+ * the full `diagnostics` array spanning config / slot / hook / copy /
+ * render stages. Empty `diagnostics` ⇒ clean render.
+ *
+ * Use `render` for live UI previews where the user wants to see every
+ * problem at once; use `generate` for write-to-disk workflows that
+ * should abort on the first error.
+ */
+export async function render(
+  projectDir: string,
+  outDir: string,
+  slotData: SlotData,
+  fs: DiskFs,
+  opts: GenerateOptions = {},
+): Promise<RenderResponse> {
+  const virtualProject = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
+  const virtualOut = opts.virtualOutDir ?? DEFAULT_VIRTUAL_OUTPUT;
+  const bundle = fs.readProject(projectDir, { virtualRoot: virtualProject });
+  const result = await renderBundle(bundle, slotData, {
+    virtualProjectDir: virtualProject,
+    virtualOutDir: virtualOut,
+  });
+  // No `result.ok` discriminant — write whatever rendered, regardless of
+  // diagnostics. Caller decides what to do with the diagnostics array.
+  if (result.files.length > 0 || result.dirs.length > 0) {
+    fs.writeOutput(outDir, { files: result.files, dirs: result.dirs });
+  }
+  return result;
+}
+
+/** Bundle-to-bundle variant of `render` — for MemoryFs / preview flows. */
+export async function renderBundle(
+  projectBundle: Bundle,
+  slotData: SlotData,
+  opts: GenerateOptions = {},
+): Promise<RenderResponse> {
+  const virtualProject = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
+  const virtualOut = opts.virtualOutDir ?? DEFAULT_VIRTUAL_OUTPUT;
+  const wasm = await loadSpackleWasm();
+  return wasm.render(projectBundle, virtualProject, virtualOut, slotData);
 }
 
 /**
@@ -261,10 +307,15 @@ export type {
   Bundle,
   BundleEntry,
   CheckResponse,
+  Diagnostic,
+  DiagnosticSeverity,
+  DiagnosticSource,
+  DiagnosticSpan,
   GenerateResponse,
   Hook,
   HookPlanEntry,
   PlanHooksResponse,
+  RenderResponse,
   Slot,
   SlotData,
   SlotType,

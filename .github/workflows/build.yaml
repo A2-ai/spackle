@@ -202,7 +202,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ vars.ORG_HOMEBREW_TAP_APP_ID }}
+          client-id: ${{ vars.ORG_HOMEBREW_TAP_APP_ID }}
           private-key: ${{ secrets.ORG_HOMEBREW_TAP_APP_KEY }}
           owner: a2-ai
           repositories: homebrew-tap

@@ -7,6 +7,7 @@ import type {
   CheckResponse,
   GenerateResponse,
   PlanHooksResponse,
+  RenderResponse,
   SlotData,
   ValidationResponse,
 } from "./types.ts";
@@ -35,6 +36,7 @@ export interface RawWasmExports {
     outDir: string,
     slotDataJson: string,
   ): unknown;
+  render(projectBundle: unknown, projectDir: string, outDir: string, slotDataJson: string): unknown;
   planHooks(
     projectBundle: unknown,
     projectDir: string,
@@ -59,6 +61,14 @@ export interface SpackleWasm {
     outDir: string,
     slotData: SlotData,
   ): GenerateResponse;
+  /** Dynamic render-with-data, diagnostics-first. Never throws / never
+   * returns `ok: false`. Empty `diagnostics` ⇒ clean render. */
+  render(
+    projectBundle: Bundle,
+    projectDir: string,
+    outDir: string,
+    slotData: SlotData,
+  ): RenderResponse;
   planHooks(
     projectBundle: Bundle,
     projectDir: string,
@@ -132,6 +142,16 @@ async function initialize(
         outDir,
         JSON.stringify(slotData),
       ) as GenerateResponse;
+    },
+    render(projectBundle, projectDir, outDir, slotData) {
+      // render returns a JsValue (object), not a JSON string.
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
+      return raw.render(
+        projectBundle,
+        projectDir,
+        outDir,
+        JSON.stringify(slotData),
+      ) as RenderResponse;
     },
     planHooks(projectBundle, projectDir, outDir, data, hookRan) {
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
