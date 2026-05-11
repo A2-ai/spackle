@@ -26,7 +26,7 @@ test:
     cargo test --workspace
 
 install:
-    cargo install --path=cli
+    cargo install --path=crates/spackle-cli
 
 # --- Build ---
 #

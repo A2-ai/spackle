@@ -54,7 +54,7 @@ For the running implementation log, see [`SUMMARY.md`](SUMMARY.md).
 └───────────────────────────────────────────────────────┘
 ```
 
-Native CLI (`cli/`) threads `spackle::fs::StdFs` through the same core. The only difference between the CLI and wasm paths is which `FileSystem` impl is plumbed in. The CLI's `spackle check` command consumes the same `Diagnostic[]` produced by the wasm `check` export.
+Native CLI (`crates/spackle-cli/`) threads `spackle::fs::StdFs` through the same core. The only difference between the CLI and wasm paths is which `FileSystem` impl is plumbed in. The CLI's `spackle check` command consumes the same `Diagnostic[]` produced by the wasm `check` export.
 
 ## Diagnostic surface — `check` vs `render` vs `generate`
 
@@ -87,8 +87,8 @@ Each diagnostic optionally carries `span: { line, column }` (best-effort, extrac
 ```
 spackle/
 ├── src/                     # spackle core (rlib only — no wasm deps)
-├── cli/                     # spackle-cli (uses StdFs)
 ├── crates/
+│   ├── spackle-cli/         # spackle-cli (uses StdFs)
 │   └── spackle-wasm/        # cdylib, wasm-bindgen exports + MemoryFs
 │       ├── src/lib.rs       # three #[wasm_bindgen] exports + init
 │       └── src/memory_fs.rs # MemoryFs impls spackle::fs::FileSystem

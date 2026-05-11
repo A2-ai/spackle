@@ -7,10 +7,10 @@ Project templating tool. Rust core + native CLI + WebAssembly surface for JS hos
 ```
 spackle/
 ├── src/                  # spackle core (rlib). Generic over `F: FileSystem`.
-├── cli/                  # spackle-cli (uses StdFs). Installed binary.
 ├── crates/
+│   ├── spackle-cli/      # spackle-cli (uses StdFs). Installed binary.
 │   └── spackle-wasm/     # cdylib, wasm-bindgen exports + Rust MemoryFs.
-│                         # Depends on `spackle` via path.
+│                         # Both crates depend on `spackle` via path.
 ├── scripts/
 │   └── build-wasm.sh     # cargo build (wasm32) → wasm-bindgen --target web → wasm-opt.
 │                         # Single source of truth; called by `just build-wasm` and CI.

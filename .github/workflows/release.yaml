@@ -20,7 +20,7 @@ jobs:
         run: |
           TAG_VERSION="${{ github.ref_name }}"
           ROOT_VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
-          CLI_VERSION=$(grep '^version = ' cli/Cargo.toml | head -1 | cut -d'"' -f2)
+          CLI_VERSION=$(grep '^version = ' crates/spackle-cli/Cargo.toml | head -1 | cut -d'"' -f2)
           WASM_VERSION=$(grep '^version = ' crates/spackle-wasm/Cargo.toml | head -1 | cut -d'"' -f2)
           TS_VERSION=$(grep '"version":' ts/package.json | head -1 | cut -d'"' -f4)
           if [ "$TAG_VERSION" != "v$ROOT_VERSION" ]; then
@@ -28,7 +28,7 @@ jobs:
             exit 1
           fi
           if [ "$ROOT_VERSION" != "$CLI_VERSION" ]; then
-            echo "Version mismatch: Cargo.toml=$ROOT_VERSION, cli/Cargo.toml=$CLI_VERSION"
+            echo "Version mismatch: Cargo.toml=$ROOT_VERSION, crates/spackle-cli/Cargo.toml=$CLI_VERSION"
             exit 1
           fi
           if [ "$ROOT_VERSION" != "$WASM_VERSION" ]; then

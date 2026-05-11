@@ -9,7 +9,7 @@ description = "A frictionless project templating tool."
 crate-type = ["rlib"]
 
 [workspace]
-members = ["cli", "crates/spackle-wasm"]
+members = ["crates/spackle-cli", "crates/spackle-wasm"]
 
 [dependencies]
 colored = "3.1.1"
