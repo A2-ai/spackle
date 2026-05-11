@@ -1,67 +1,56 @@
-use std::{error::Error, process::exit, time::Instant};
+use std::{path::Path, process::exit, time::Instant};
 
 use colored::Colorize;
-use spackle::{
-    fs::StdFs,
-    slot,
-    template::{self, ValidateError},
-    Project,
-};
+use spackle::{fs::StdFs, Severity};
 
-pub fn run(project: &Project) {
+use crate::diagnostic;
+
+pub fn run(project_path: &Path) {
     println!("🔍 Validating project configuration\n");
 
     let start_time = Instant::now();
+    let report = spackle::check_project(&StdFs::new(), project_path);
 
-    let fs = StdFs::new();
-    match template::validate(&fs, &project.path, &project.config.slots) {
-        Ok(()) => {
-            println!("  {}", "👌 Template files are valid".dimmed());
-        }
-        Err(e) => {
-            match e {
-                ValidateError::TeraError(e) => {
-                    eprintln!(
-                        "{}\n{}\n",
-                        "❌ Error validating template files".bright_red(),
-                        e.to_string().red()
-                    );
-                }
-                ValidateError::RenderError(e) => {
-                    for (templ, e) in e {
-                        eprintln!(
-                            "{}\n{}\n",
-                            format!("❌ Template {} has errors", templ.bright_red().bold())
-                                .bright_red(),
-                            e.source().map(|e| e.to_string()).unwrap_or_default().red()
-                        )
-                    }
-                }
-            }
-
-            print_elapsed_time(start_time);
-            exit(1);
-        }
+    if report.diagnostics.is_empty() {
+        println!("  {}", "👌 No diagnostics — project looks good".dimmed());
+        print_elapsed(start_time);
+        return;
     }
 
-    match slot::validate(&project.config.slots) {
-        Ok(()) => {
-            println!("  {}\n", "👌 Slot data is valid".dimmed());
-        }
-        Err(e) => {
-            eprintln!(
-                "{}\n{}\n",
-                "❌ Error validating slot configuration".bright_red(),
-                e.to_string().red()
-            );
-            exit(1);
-        }
+    let error_count = report
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, Severity::Error))
+        .count();
+    let warning_count = report.diagnostics.len() - error_count;
+
+    for d in &report.diagnostics {
+        diagnostic::print(d);
     }
 
-    print_elapsed_time(start_time);
+    let summary = format!(
+        "Found {} error{}{}",
+        error_count,
+        if error_count == 1 { "" } else { "s" },
+        if warning_count > 0 {
+            format!(
+                ", {} warning{}",
+                warning_count,
+                if warning_count == 1 { "" } else { "s" }
+            )
+        } else {
+            String::new()
+        }
+    );
+    eprintln!("{}", summary.bright_red().bold());
+    print_elapsed(start_time);
+
+    if error_count > 0 {
+        exit(1);
+    }
 }
 
-fn print_elapsed_time(start_time: Instant) {
+fn print_elapsed(start_time: Instant) {
     println!(
         "  ✅ done {}",
         format!("in {:?}", start_time.elapsed()).dimmed()

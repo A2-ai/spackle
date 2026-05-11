@@ -8,7 +8,7 @@ For the running implementation log, see [`SUMMARY.md`](SUMMARY.md).
 
 ## One-paragraph architecture
 
-`crates/spackle-wasm/` is a `cdylib` crate that depends on `spackle` via path. It exposes four `#[wasm_bindgen]` functions — `check`, `validate_slot_data`, `generate`, `plan_hooks` — that take a **project bundle** (`Array<{path, bytes: Uint8Array}>`), hydrate an in-process `MemoryFs` from it, run the requested operation against that fs through the generic `spackle::fs::FileSystem` trait, and return a serialized result. `generate` additionally returns an output bundle; `plan_hooks` returns a resolved hook plan (templated commands + should-run + skip reasons) that the host executes. Rust never touches the host filesystem; the TS host (`ts/`) reads projects into bundles, writes output bundles back to disk, and spawns hook subprocesses on its side. Fundamentally: Rust is a pure compute step.
+`crates/spackle-wasm/` is a `cdylib` crate that depends on `spackle` via path. It exposes five `#[wasm_bindgen]` functions — `check`, `render`, `validate_slot_data`, `generate`, `plan_hooks` — that take a **project bundle** (`Array<{path, bytes: Uint8Array}>`), hydrate an in-process `MemoryFs` from it, run the requested operation against that fs through the generic `spackle::fs::FileSystem` trait, and return a serialized result. `check` and `render` return structured `Diagnostic[]` arrays for live UI feedback; `generate` returns an output bundle on success or a single-error shape on first failure; `plan_hooks` returns a resolved hook plan (templated commands + should-run + skip reasons) that the host executes. Rust never touches the host filesystem; the TS host (`ts/`) reads projects into bundles, writes output bundles back to disk, and spawns hook subprocesses on its side. Fundamentally: Rust is a pure compute step.
 
 ```
 ┌───────────────────────────────────────────────────────┐
@@ -25,6 +25,10 @@ For the running implementation log, see [`SUMMARY.md`](SUMMARY.md).
 │  wasm-bindgen layer  (crates/spackle-wasm/src/lib.rs) │
 │                                                       │
 │  pub fn check(bundle, project_dir) -> String          │
+│    → { config, diagnostics[] }                        │
+│  pub fn render(bundle, project_dir, out_dir,          │
+│                slot_data_json) -> JsValue             │
+│    → { files, dirs, diagnostics[], hookPlan }         │
 │  pub fn validate_slot_data(bundle, project_dir,       │
 │                             slot_data_json) -> String │
 │  pub fn generate(bundle, project_dir, out_dir,        │
@@ -38,15 +42,43 @@ For the running implementation log, see [`SUMMARY.md`](SUMMARY.md).
 ┌─────────────────────▼─────────────────────────────────┐
 │  spackle core  (src/)                                 │
 │                                                       │
-│  Project::{check, generate}                           │
+│  spackle::{check, render}     ← top-level free fns    │
+│    → CheckReport / RenderReport with Diagnostic[]     │
+│  diagnostic::{Diagnostic, ...} ← structured shape     │
+│  Project::{check, generate}    ← legacy entrypoints   │
 │  template::fill<F: FileSystem>                        │
-│  copy::copy<F: FileSystem>                            │
+│  copy::{copy, copy_collect}<F: FileSystem>            │
 │  config::load_dir<F: FileSystem>                      │
 │  slot::validate                                       │
+│  hook::{validate_config, evaluate_hook_plan}          │
 └───────────────────────────────────────────────────────┘
 ```
 
-Native CLI (`cli/`) threads `spackle::fs::StdFs` through the same core. The only difference between the CLI and wasm paths is which `FileSystem` impl is plumbed in.
+Native CLI (`cli/`) threads `spackle::fs::StdFs` through the same core. The only difference between the CLI and wasm paths is which `FileSystem` impl is plumbed in. The CLI's `spackle check` command consumes the same `Diagnostic[]` produced by the wasm `check` export.
+
+## Diagnostic surface — `check` vs `render` vs `generate`
+
+| | `check` | `render` | `generate` |
+| --- | --- | --- | --- |
+| Needs slot data? | no | yes | yes |
+| Fail-fast? | no — collects all | no — collects all | yes — first error aborts |
+| Return shape | `{ config, diagnostics[] }` | `{ files, dirs, diagnostics[], hookPlan }` | `{ ok: true, files, dirs } \| { ok: false, error }` |
+| Severity discriminant? | none | none | `ok: true/false` |
+| Use case | live editor diagnostics, CLI `spackle check` | live preview pane as the publisher fills slot values | write-to-disk workflows that should abort on any failure |
+
+`check` and `render` share the same `Diagnostic` type — UIs have one rendering path for both. `generate` is unchanged from its prior contract; existing callers don't need migration.
+
+### Diagnostic sources (the taxonomy)
+
+- `config` — `spackle.toml` parse / structural error. `path = "spackle.toml"`.
+- `slot_config` — bad slot default value type, etc. `ref` = slot key.
+- `hook_config` — unknown `needs` reference, broken command/conditional template, command render failure. `ref` = hook key.
+- `slot_data` — user-supplied slot data missing / wrong type. No `path`. `ref` = slot key.
+- `copy` — fs read / write / mkdir failure in the copy stage. Reserved for true I/O failures; Tera-sourced failures (path templating) are classified as `render_name` instead so the source matches the user mental model.
+- `render_body` — template body render fail.
+- `render_name` — filename / path template parse or render fail. Fires for `.j2` filename templating AND non-`.j2` path templating — anywhere Tera is applied to a file path.
+
+Each diagnostic optionally carries `span: { line, column }` (best-effort, extracted from Tera's rendered error format) and a stable `code` (e.g. `"hook::unknown_needs"`).
 
 ---
 

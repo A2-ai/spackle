@@ -50,13 +50,77 @@ export interface BundleEntry {
  * and returns as output (generate's rendered subtree). */
 export type Bundle = BundleEntry[];
 
-/** Response from `check()`. On success, includes the parsed config so
- * callers can render forms without re-parsing TOML. */
-export type CheckResponse =
-  | { valid: true; config: SpackleConfig; errors: [] }
-  | { valid: false; errors: string[] };
+/** Diagnostic severity. Only `error` is currently emitted; `warning` is
+ * reserved for future use (deprecated patterns, dead slots, etc.). */
+export type DiagnosticSeverity = "error" | "warning";
 
-/** Response from `validateSlotData()`. */
+/** Which pipeline stage produced the diagnostic. */
+export type DiagnosticSource =
+  /** `spackle.toml` parse / structural error. */
+  | "config"
+  /** Slot config error (bad default value type, etc.). */
+  | "slot_config"
+  /** Hook config error (unknown `needs`, broken command/conditional template). */
+  | "hook_config"
+  /** User-supplied slot data error (missing required, wrong type, unknown key). */
+  | "slot_data"
+  /** Copy-stage filesystem failure (read / write / mkdir). Path-template
+   * failures are classified as `render_name` instead, regardless of file
+   * extension. */
+  | "copy"
+  /** Template body render failure. */
+  | "render_body"
+  /** Filename / path template parse or render failure. Fires for `.j2`
+   * filename templating AND non-`.j2` path templating — anywhere Tera
+   * is applied to a file path. */
+  | "render_name";
+
+/** One-based line and column into a source file. */
+export interface DiagnosticSpan {
+  line: number;
+  column: number;
+}
+
+/** A single diagnostic surfaced by `check()` or `render()`. */
+export interface Diagnostic {
+  severity: DiagnosticSeverity;
+  source: DiagnosticSource;
+  message: string;
+  /** Bundle-virtual path of the offending file, or `"spackle.toml"` for
+   * config-level diagnostics. Absent when no file makes sense (slot data). */
+  path?: string;
+  /** Slot or hook key when the diagnostic targets a config item rather
+   * than a file. */
+  ref?: string;
+  /** Best-effort line/column. Absent when Tera's error format didn't
+   * carry position info. */
+  span?: DiagnosticSpan;
+  /** Stable identifier so UIs can group/filter without parsing messages. */
+  code?: string;
+}
+
+/** Response from `check()`. Always carries a `diagnostics` array — empty
+ * means the project is structurally sound. `config` is `null` only when
+ * the TOML couldn't be parsed (a `config`-source diagnostic explains why). */
+export interface CheckResponse {
+  config: SpackleConfig | null;
+  diagnostics: Diagnostic[];
+}
+
+/** Response from `render()`. Always returns this shape — `files` carries
+ * every template that rendered successfully (partial preview), and
+ * `diagnostics` enumerates every problem across stages. Empty
+ * `diagnostics` ⇒ clean render. `hookPlan` is `null` only when the
+ * config failed to load. */
+export interface RenderResponse {
+  files: Bundle;
+  dirs: string[];
+  diagnostics: Diagnostic[];
+  hookPlan: HookPlanEntry[] | null;
+}
+
+/** Response from `validateSlotData()`. Legacy shape — superseded by
+ * `render`'s `slot_data` diagnostics. Kept for granular standalone use. */
 export type ValidationResponse = { valid: true } | { valid: false; errors: string[] };
 
 /** Response from `generate()`.

@@ -3,6 +3,7 @@ use colored::Colorize;
 use spackle::Project;
 use std::{path::PathBuf, process::exit};
 mod check;
+mod diagnostic;
 mod fill;
 mod info;
 mod util;
@@ -50,6 +51,14 @@ fn main() {
 
     let cli = Cli::parse();
 
+    // `Check` is independent of `load_project` — it surfaces config
+    // parse errors as structured diagnostics rather than crashing the
+    // CLI before the diagnostic system even runs.
+    if matches!(cli.command, Commands::Check) {
+        check::run(&cli.project_path);
+        return;
+    }
+
     let fs = spackle::fs::StdFs::new();
     let project = match spackle::load_project(&fs, &cli.project_path) {
         Ok(p) => p,
@@ -66,7 +75,8 @@ fn main() {
     print_project_info(&project);
 
     match &cli.command {
-        Commands::Check => check::run(&project),
+        // Handled above.
+        Commands::Check => unreachable!(),
         Commands::Info => info::run(&project.config),
         Commands::Fill {
             data,

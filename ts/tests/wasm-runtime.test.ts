@@ -21,10 +21,10 @@ function mockRaw(): MockRaw {
       initWasmCalls.push(arg);
       return Promise.resolve(undefined);
     },
-    check: () =>
-      `{"valid":true,"config":{"name":null,"ignore":[],"slots":[],"hooks":[]},"errors":[]}`,
+    check: () => `{"config":{"name":null,"ignore":[],"slots":[],"hooks":[]},"diagnostics":[]}`,
     validateSlotData: () => `{"valid":true}`,
     generate: () => ({ ok: true, files: [], dirs: [] }),
+    render: () => ({ files: [], dirs: [], diagnostics: [], hookPlan: null }),
     planHooks: () => `{"ok":true,"plan":[]}`,
   };
 }

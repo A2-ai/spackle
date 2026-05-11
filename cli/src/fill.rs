@@ -147,7 +147,7 @@ pub fn run(
     cli: &Cli,
 ) {
     // First, run spackle check
-    check::run(project);
+    check::run(&project.path);
 
     println!("");
 

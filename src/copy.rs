@@ -7,6 +7,7 @@ use std::{
 use tera::{Context, Tera};
 
 use crate::fs::{self as fsmod, FileSystem, FileType};
+use crate::slot::Slot;
 use crate::{config::CONFIG_FILE, template::has_template_ext};
 
 #[derive(Debug)]
@@ -32,6 +33,88 @@ pub struct CopyResult {
     pub skipped_count: usize,
 }
 
+/// Validate path templating for non-template files **without copying or
+/// writing anything**. Walks `src` the same way `copy_collect` does,
+/// runs `Tera::one_off` on each non-template entry's relative path
+/// against an empty-context (slot keys → empty strings + `_project_name`
+/// / `_output_name`), and returns one [`Error`] per failure.
+///
+/// This is the static-check companion to `copy_collect`: catches
+/// path-template parse errors (e.g. `{{ unclosed`) and undefined-slot
+/// references in filenames/directories without needing real slot data.
+/// Mirrors what `template::validate_in_memory` does for body templates.
+pub fn validate_paths<F: FileSystem>(
+    fs: &F,
+    src: &Path,
+    skip: &Vec<String>,
+    slots: &[Slot],
+) -> Result<Vec<Error>, Error> {
+    let mut context_data: HashMap<String, String> = slots
+        .iter()
+        .map(|s| (s.key.clone(), String::new()))
+        .collect();
+    context_data.insert("_project_name".to_string(), String::new());
+    context_data.insert("_output_name".to_string(), String::new());
+    let context = Context::from_serialize(&context_data).map_err(|e| Error {
+        source: e.into(),
+        path: src.to_path_buf(),
+    })?;
+
+    let entries = fsmod::walk(fs, src).map_err(|e| Error {
+        source: Box::new(e),
+        path: src.to_path_buf(),
+    })?;
+
+    let mut errors: Vec<Error> = Vec::new();
+    let mut skipped_ancestors: Vec<PathBuf> = Vec::new();
+
+    for (rel_path, _stat) in entries {
+        if skipped_ancestors.iter().any(|a| rel_path.starts_with(a)) {
+            continue;
+        }
+        let name = rel_path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if skip.iter().any(|s| s == &name) {
+            skipped_ancestors.push(rel_path.clone());
+            continue;
+        }
+        if name == CONFIG_FILE {
+            skipped_ancestors.push(rel_path.clone());
+            continue;
+        }
+        // `.j2`/`.tera` files are handled by `template::validate_in_memory`
+        // (filename + body). Skip them here to avoid double-reporting.
+        if has_template_ext(&name) {
+            continue;
+        }
+
+        let path_str = rel_path.to_string_lossy();
+        if let Err(e) = Tera::one_off(&path_str, &context, false) {
+            errors.push(Error {
+                source: e.into(),
+                path: rel_path.clone(),
+            });
+        }
+    }
+
+    Ok(errors)
+}
+
+/// Collect-mode result: like [`CopyResult`] but with a per-entry error
+/// list instead of bailing on the first failure. Used by the structured
+/// `render` pipeline; legacy `copy` retains fail-fast semantics via
+/// [`copy`] (which delegates here and surfaces the first error).
+pub struct CopyReport {
+    pub copied_count: usize,
+    pub skipped_count: usize,
+    pub errors: Vec<Error>,
+}
+
+/// Fail-fast copy. Preserved as the existing entrypoint for
+/// `Project::generate` and `Project::copy_files`; new code that wants
+/// every per-entry error should call [`copy_collect`] instead.
 pub fn copy<F: FileSystem>(
     fs: &F,
     src: &Path,
@@ -39,8 +122,30 @@ pub fn copy<F: FileSystem>(
     skip: &Vec<String>,
     data: &HashMap<String, String>,
 ) -> Result<CopyResult, Error> {
+    let report = copy_collect(fs, src, dest, skip, data)?;
+    if let Some(first) = report.errors.into_iter().next() {
+        return Err(first);
+    }
+    Ok(CopyResult {
+        copied_count: report.copied_count,
+        skipped_count: report.skipped_count,
+    })
+}
+
+/// Collect-don't-abort variant of `copy`. Returns every per-entry error
+/// in [`CopyReport::errors`] instead of bailing. Reserves the outer
+/// `Result::Err` for fatal preconditions (destination root unwritable,
+/// source root unreadable) that genuinely can't recover.
+pub fn copy_collect<F: FileSystem>(
+    fs: &F,
+    src: &Path,
+    dest: &Path,
+    skip: &Vec<String>,
+    data: &HashMap<String, String>,
+) -> Result<CopyReport, Error> {
     let mut copied_count = 0;
     let mut skipped_count = 0;
+    let mut errors: Vec<Error> = Vec::new();
 
     // Ensure the destination root exists. The old walkdir-based flow
     // yielded the source root as its first entry, which resulted in a
@@ -96,40 +201,54 @@ pub fn copy<F: FileSystem>(
         let src_path = src.join(&rel_path);
         let dst_path_maybe_template = dest.join(&rel_path);
 
-        let context = Context::from_serialize(data).map_err(|e| Error {
-            source: e.into(),
-            path: src_path.clone(),
-        })?;
+        let context = match Context::from_serialize(data) {
+            Ok(c) => c,
+            Err(e) => {
+                errors.push(Error {
+                    source: e.into(),
+                    path: src_path.clone(),
+                });
+                continue;
+            }
+        };
         let dst_path: PathBuf =
             match Tera::one_off(&dst_path_maybe_template.to_string_lossy(), &context, false) {
                 Ok(path) => path.into(),
                 Err(e) => {
-                    return Err(Error {
+                    errors.push(Error {
                         source: e.into(),
                         path: dst_path_maybe_template.clone(),
                     });
+                    continue;
                 }
             };
 
         match stat.file_type {
             FileType::Directory => {
-                fs.create_dir_all(&dst_path).map_err(|e| Error {
-                    source: Box::new(e),
-                    path: dst_path.clone(),
-                })?;
+                if let Err(e) = fs.create_dir_all(&dst_path) {
+                    errors.push(Error {
+                        source: Box::new(e),
+                        path: dst_path.clone(),
+                    });
+                }
             }
             FileType::File => {
                 if let Some(parent) = dst_path.parent() {
-                    fs.create_dir_all(parent).map_err(|e| Error {
-                        source: Box::new(e),
-                        path: parent.to_path_buf(),
-                    })?;
+                    if let Err(e) = fs.create_dir_all(parent) {
+                        errors.push(Error {
+                            source: Box::new(e),
+                            path: parent.to_path_buf(),
+                        });
+                        continue;
+                    }
                 }
-                fs.copy_file(&src_path, &dst_path).map_err(|e| Error {
-                    source: Box::new(e),
-                    path: dst_path.clone(),
-                })?;
-                copied_count += 1;
+                match fs.copy_file(&src_path, &dst_path) {
+                    Ok(()) => copied_count += 1,
+                    Err(e) => errors.push(Error {
+                        source: Box::new(e),
+                        path: dst_path.clone(),
+                    }),
+                }
             }
             FileType::Symlink | FileType::Other => {
                 // Symlinks and other special entries are not copied —
@@ -139,9 +258,10 @@ pub fn copy<F: FileSystem>(
         }
     }
 
-    Ok(CopyResult {
+    Ok(CopyReport {
         copied_count,
         skipped_count,
+        errors,
     })
 }
 

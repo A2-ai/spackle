@@ -1,6 +1,16 @@
 # API reference
 
-`@a2-ai/spackle` exposes five primary operations — `check`, `validateSlotData`, `generate`, `planHooks`, `runHooksStream` — plus `…Bundle` variants that skip disk I/O for the first three. Two host helpers (`DiskFs`, `MemoryFs`) handle moving data in and out; a `SpackleHooks` interface (with shipped `NodeHooks` / `BunHooks` impls + `defaultHooks()` auto-selector) handles subprocess execution for hooks.
+`@a2-ai/spackle` exposes six primary operations — `check`, `validateSlotData`, `generate`, `render`, `planHooks`, `runHooksStream` — plus `…Bundle` variants that skip disk I/O for the first four. Two host helpers (`DiskFs`, `MemoryFs`) handle moving data in and out; a `SpackleHooks` interface (with shipped `NodeHooks` / `BunHooks` impls + `defaultHooks()` auto-selector) handles subprocess execution for hooks.
+
+## `check` vs `render` vs `generate` — when to use what
+
+| Function | Slot data required? | Fail-fast? | Returns | Use case |
+| --- | --- | --- | --- | --- |
+| `check` | No | No (collects all) | `{ config, diagnostics[] }` | Live diagnostics while the publisher edits files; CLI `spackle check`. |
+| `render` | Yes | No (collects all, partial preview) | `{ files, dirs, diagnostics[], hookPlan }` | Live preview as the publisher fills slot values; never throws. |
+| `generate` | Yes | Yes (aborts on first error) | `{ ok: true, ... } \| { ok: false, error }` | Production write-to-disk workflows that should abort on any failure. |
+
+`check` and `render` share the same `Diagnostic` type — one UI rendering path covers both surfaces.
 
 ## Core types
 
@@ -24,9 +34,34 @@ interface SpackleConfig {
 
 See `src/wasm/types.ts` in the package for the full shape (including `Slot`, `Hook`, error/response unions).
 
+## `Diagnostic`
+
+`check` and `render` return structured diagnostics with the same shape:
+
+```ts
+interface Diagnostic {
+    severity: "error" | "warning";
+    source:
+        | "config"        // spackle.toml parse / structural error
+        | "slot_config"   // slot config issue (duplicate key, bad default type, …)
+        | "hook_config"   // hook config issue (unknown `needs`, bad command/if template)
+        | "slot_data"     // user-supplied slot data is missing / wrong type
+        | "copy"          // copy stage failure
+        | "render_body"   // template body render failure
+        | "render_name";  // template filename render failure
+    message: string;
+    path?: string;        // bundle-virtual path of offending file, or "spackle.toml"
+    ref?: string;         // slot/hook key when the diagnostic targets a config item
+    span?: { line: number; column: number };
+    code?: string;        // stable id (e.g. "hook::unknown_needs")
+}
+```
+
+Severity is `error` for everything in v1; `warning` is reserved for future use (deprecated patterns, dead slots).
+
 ## `check(projectDir, fs, opts?)`
 
-Validate a project: load its `spackle.toml`, check slot structure, verify template references match declared slots.
+Run every static project check — `spackle.toml` parse + structural validation, slot config, hook config (including `needs` reference resolution and command-template parsing), template syntax + slot reference resolution. **Does NOT need slot data** — call it continuously as the publisher edits files.
 
 ```ts
 function check(
@@ -35,12 +70,45 @@ function check(
     opts?: { virtualProjectDir?: string },
 ): Promise<CheckResponse>;
 
-type CheckResponse =
-    | { valid: true; config: SpackleConfig; errors: [] }
-    | { valid: false; errors: string[] };
+interface CheckResponse {
+    config: SpackleConfig | null;
+    diagnostics: Diagnostic[];
+}
 ```
 
-`fs.readProject(projectDir)` runs; the resulting bundle goes to wasm's `check`. On success you get the parsed config back so UIs can render slot forms without re-parsing TOML.
+`check` **never throws / never returns `valid: false`** — it always returns the response. Empty `diagnostics` ⇒ the project is structurally sound. `config` is `null` only when `spackle.toml` failed to parse (a `config`-source diagnostic explains why).
+
+`bundleCheck(bundle, virtualProjectDir?)` is the bundle-only equivalent.
+
+## `render(projectDir, outDir, slotData, fs, opts?)`
+
+Dynamic render — runs the full pipeline (`check` → slot data validation → copy → template fill → hook plan) in-memory under `fs` and produces a (possibly partial) bundle plus an exhaustive `diagnostics` array. **Never throws / never returns `ok: false`**.
+
+```ts
+function render(
+    projectDir: string,
+    outDir: string,
+    slotData: SlotData,
+    fs: DiskFs,
+    opts?: {
+        virtualProjectDir?: string;
+        virtualOutDir?: string;
+    },
+): Promise<RenderResponse>;
+
+interface RenderResponse {
+    files: Bundle;
+    dirs: string[];
+    diagnostics: Diagnostic[];
+    hookPlan: HookPlanEntry[] | null;
+}
+```
+
+Partial preview semantics: `files` contains every template that rendered successfully even when other files failed. The UI shows the preview pane and the diagnostics chip side-by-side without branching on success/failure. `hookPlan` is `null` only when the config didn't load.
+
+Use `render` for live UI previews; use `generate` (below) when you want fail-fast behavior for writing to disk.
+
+`renderBundle(bundle, slotData, opts?)` is the bundle-only equivalent.
 
 ## `validateSlotData(projectDir, slotData, fs, opts?)`
 

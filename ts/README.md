@@ -10,7 +10,7 @@ Not published to npm. Pick the route that matches how you're iterating, from fas
 
 ### 1. Local dev-loop — `bun link`
 
-In this repo, after a build:
+`just setup` (or `just init`) already registers `@a2-ai/spackle` for linking. If you need to redo it manually:
 
 ```bash
 cd ts && bun link

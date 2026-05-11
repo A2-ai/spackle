@@ -28,18 +28,30 @@ pub fn strip_template_ext(name: &str) -> Option<&str> {
     TEMPLATE_EXTS.iter().find_map(|ext| name.strip_suffix(ext))
 }
 
-/// Validate templates in memory: check that all variable references in the
-/// templates resolve to known slot keys (or the special _project_name /
-/// _output_name vars). Mirrors what `validate()` does against disk, but
-/// from pre-loaded content.
+/// Validate templates in memory: check that bodies AND filename templates
+/// parse cleanly and that all variable references resolve to known slot
+/// keys (or the special `_project_name` / `_output_name` vars). Mirrors
+/// what `validate()` does against disk, from pre-loaded content. Each
+/// error carries a [`ValidateFileErrorKind`] so callers can distinguish
+/// body vs filename failures and tag diagnostics with the right source.
 pub fn validate_in_memory(
     templates: &HashMap<String, String>,
     slots: &[super::slot::Slot],
 ) -> Result<(), ValidateError> {
     let mut tera = Tera::default();
+    let mut errors: Vec<ValidateFileError> = Vec::new();
+    // Collect parse failures per-file. Skipping the failed templates
+    // lets the rest still validate, and keeps the offending file's
+    // identity on the per-template error rather than buried in a
+    // wrapped global `tera::Error` message.
     for (path, content) in templates {
-        tera.add_raw_template(path, content)
-            .map_err(|e| ValidateError::TeraError(e))?;
+        if let Err(e) = tera.add_raw_template(path, content) {
+            errors.push(ValidateFileError {
+                file: path.clone(),
+                kind: ValidateFileErrorKind::Body,
+                error: e,
+            });
+        }
     }
 
     let mut context = Context::from_serialize(
@@ -52,13 +64,31 @@ pub fn validate_in_memory(
     context.insert("_project_name".to_string(), "");
     context.insert("_output_name".to_string(), "");
 
-    let errors: Vec<(String, tera::Error)> = tera
-        .get_template_names()
-        .filter_map(|name| match tera.render(name, &context) {
-            Ok(_) => None,
-            Err(e) => Some((name.to_string(), e)),
-        })
-        .collect();
+    // Body render against the empty context — catches undefined slot refs.
+    let template_names: Vec<String> = tera.get_template_names().map(|s| s.to_string()).collect();
+    for name in &template_names {
+        if let Err(e) = tera.render(name, &context) {
+            errors.push(ValidateFileError {
+                file: name.clone(),
+                kind: ValidateFileErrorKind::Body,
+                error: e,
+            });
+        }
+    }
+
+    // Filename templating — `render_in_memory` runs `tera.render_str` on
+    // every `.j2`/`.tera` filename; mirror that here so the static check
+    // surfaces filename parse errors and undefined-var refs (e.g.
+    // `{{ unknown }}.txt.j2`) without needing slot data.
+    for path in templates.keys() {
+        if let Err(e) = Tera::one_off(path, &context, false) {
+            errors.push(ValidateFileError {
+                file: path.clone(),
+                kind: ValidateFileErrorKind::Filename,
+                error: e,
+            });
+        }
+    }
 
     if !errors.is_empty() {
         return Err(ValidateError::RenderError(errors));
@@ -76,9 +106,18 @@ pub fn render_in_memory(
     data: &HashMap<String, String>,
 ) -> Result<Vec<Result<RenderedFile, FileError>>, tera::Error> {
     let mut tera = Tera::default();
+    // Collect parse failures per-file so the offending file's identity
+    // survives as `FileError.file` rather than being buried in a wrapped
+    // global `tera::Error` message. Skipping the failed templates lets
+    // the rest render normally.
+    let mut parse_failures: Vec<FileError> = Vec::new();
     for (path, content) in templates {
-        tera.add_raw_template(path, content)
-            .map_err(|e| tera::Error::message(format!("failed to add template {}: {}", path, e)))?;
+        if let Err(e) = tera.add_raw_template(path, content) {
+            parse_failures.push(FileError {
+                kind: FileErrorKind::ErrorParsingTemplate(e),
+                file: path.clone(),
+            });
+        }
     }
     let context = Context::from_serialize(data)?;
 
@@ -137,7 +176,10 @@ pub fn render_in_memory(
         })
     });
 
-    Ok(rendered.collect())
+    let mut out: Vec<Result<RenderedFile, FileError>> =
+        parse_failures.into_iter().map(Err).collect();
+    out.extend(rendered);
+    Ok(out)
 }
 
 #[derive(Error, Debug)]
@@ -154,6 +196,8 @@ impl Display for FileError {
 
 #[derive(Error, Debug)]
 pub enum FileErrorKind {
+    #[error("Template parse error: {0}")]
+    ErrorParsingTemplate(tera::Error),
     #[error("Error rendering contents: {0}")]
     ErrorRenderingContents(tera::Error),
     #[error("Error rendering name: {0}")]
@@ -249,10 +293,26 @@ pub fn fill<F: FileSystem>(
 #[derive(Debug)]
 pub enum ValidateError {
     TeraError(tera::Error),
-    RenderError(Vec<(String, tera::Error)>),
+    RenderError(Vec<ValidateFileError>),
 }
 
-// Add Display implementation for ValidateError
+#[derive(Debug)]
+pub struct ValidateFileError {
+    pub file: String,
+    pub kind: ValidateFileErrorKind,
+    pub error: tera::Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidateFileErrorKind {
+    /// Template body — content failed to parse or referenced an undefined slot.
+    Body,
+    /// Filename template — the `.j2`/`.tera` file's name (e.g.
+    /// `{{ slot }}.txt.j2`) failed to parse or referenced an undefined
+    /// slot. Mirrors `render_in_memory`'s filename-render site.
+    Filename,
+}
+
 impl Display for ValidateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -265,8 +325,8 @@ impl Display for ValidateError {
                 // (unlike tera 1, where the detail lived on the chained
                 // source). Just format the error directly.
                 writeln!(f, "Error rendering one or more templates:")?;
-                for (template, error) in errors {
-                    writeln!(f, "  {}: {}", template, error)?;
+                for err in errors {
+                    writeln!(f, "  {} ({:?}): {}", err.file, err.kind, err.error)?;
                 }
                 Ok(())
             }

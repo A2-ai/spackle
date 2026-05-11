@@ -15,6 +15,7 @@ import {
   configureSpackleWasm,
   generate,
   generateBundle,
+  renderBundle,
   validateSlotData,
 } from "../src/spackle.ts";
 
@@ -51,14 +52,15 @@ describe("spackle (DiskFs)", () => {
     await Promise.all(cleanup.map((p) => rm(p, { recursive: true, force: true })));
   });
 
-  test("check: happy path returns parsed config", async () => {
+  test("check: happy path returns parsed config and no diagnostics", async () => {
     const ws = await workspace("basic_project");
     cleanup.push(ws.root);
     const fs = new DiskFs({ workspaceRoot: ws.root });
     const res = await check(ws.projectDir, fs);
 
-    expect(res.valid).toBe(true);
-    if (res.valid) {
+    expect(res.diagnostics).toEqual([]);
+    expect(res.config).not.toBeNull();
+    if (res.config) {
       const keys = res.config.slots.map((s) => s.key);
       expect(keys).toContain("greeting");
       expect(keys).toContain("target");
@@ -66,16 +68,19 @@ describe("spackle (DiskFs)", () => {
     }
   });
 
-  test("check: bad_template surfaces template errors", async () => {
+  test("check: bad_template surfaces template diagnostic with path", async () => {
     const ws = await workspace("bad_template");
     cleanup.push(ws.root);
     const fs = new DiskFs({ workspaceRoot: ws.root });
     const res = await check(ws.projectDir, fs);
 
-    expect(res.valid).toBe(false);
-    if (!res.valid) {
-      expect(res.errors.join(" ")).toContain("invalid_slot");
-    }
+    expect(res.diagnostics.length).toBeGreaterThan(0);
+    const renderDiag = res.diagnostics.find((d) => d.source === "render_body");
+    expect(renderDiag).toBeDefined();
+    expect(renderDiag?.message).toContain("invalid_slot");
+    expect(renderDiag?.path).toBe("bad.j2");
+    // Config still parsed — slot/hook lists are inspectable.
+    expect(res.config).not.toBeNull();
   });
 
   test("validateSlotData: accepts good data, rejects wrong type", async () => {
@@ -156,6 +161,59 @@ describe("spackle (DiskFs)", () => {
   });
 });
 
+describe("spackle render (diagnostics-first)", () => {
+  test("renderBundle clean project: empty diagnostics, files present", async () => {
+    const bundle = await bundleFromDisk(
+      ["spackle.toml", "README.md.j2", "docs/static.md", "src/{{ filename }}.txt.j2"],
+      join(FIXTURES, "basic_project"),
+      "/project",
+    );
+    const res = await renderBundle(
+      bundle,
+      { greeting: "hi", target: "world", filename: "notes" },
+      { virtualProjectDir: "/project", virtualOutDir: "/output" },
+    );
+    expect(res.diagnostics).toEqual([]);
+    expect(res.files.length).toBeGreaterThan(0);
+    expect(res.hookPlan).not.toBeNull();
+  });
+
+  test("renderBundle bad_template: surfaces per-file diagnostic with path", async () => {
+    const bundle = await bundleFromDisk(
+      ["spackle.toml", "bad.j2"],
+      join(FIXTURES, "bad_template"),
+      "/project",
+    );
+    const res = await renderBundle(
+      bundle,
+      { defined_slot: "value" },
+      { virtualProjectDir: "/project", virtualOutDir: "/output" },
+    );
+    const renderDiag = res.diagnostics.find((d) => d.source === "render_body");
+    expect(renderDiag).toBeDefined();
+    expect(renderDiag?.message).toContain("invalid_slot");
+    expect(renderDiag?.path).toBeDefined();
+    // hook plan still computed (no hooks defined, but plan should be []).
+    expect(res.hookPlan).toEqual([]);
+  });
+
+  test("renderBundle missing slot data: surfaces slot_data diagnostic", async () => {
+    const bundle = await bundleFromDisk(
+      ["spackle.toml", "README.md.j2", "docs/static.md", "src/{{ filename }}.txt.j2"],
+      join(FIXTURES, "basic_project"),
+      "/project",
+    );
+    const res = await renderBundle(
+      bundle,
+      // missing `target` and `filename`
+      { greeting: "hi" },
+      { virtualProjectDir: "/project", virtualOutDir: "/output" },
+    );
+    const slotDataDiag = res.diagnostics.find((d) => d.source === "slot_data");
+    expect(slotDataDiag).toBeDefined();
+  });
+});
+
 describe("spackle (bundle-only / MemoryFs)", () => {
   test("checkBundle + generateBundle end-to-end without touching disk", async () => {
     const bundle = await bundleFromDisk(
@@ -165,7 +223,7 @@ describe("spackle (bundle-only / MemoryFs)", () => {
     );
 
     const checkRes = await checkBundle(bundle, "/project");
-    expect(checkRes.valid).toBe(true);
+    expect(checkRes.diagnostics).toEqual([]);
 
     const genRes = await generateBundle(
       bundle,

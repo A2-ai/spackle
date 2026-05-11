@@ -577,6 +577,90 @@ pub fn run_hooks(
     Ok(results)
 }
 
+/// Config-level hook error reported by [`validate_config`]. Distinct
+/// from [`ValidateError`] (which is about runtime hook *data* — user
+/// toggles) and from [`Error`] (which is about hook execution).
+///
+/// `hook_key` always identifies the offending hook. `span` is optional —
+/// command-template parse errors carry a best-effort line/col from Tera;
+/// reference errors don't have one.
+#[derive(Debug, Clone)]
+pub struct ConfigError {
+    pub hook_key: String,
+    pub message: String,
+    pub span: Option<crate::diagnostic::Span>,
+    pub code: Option<&'static str>,
+}
+
+impl Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "hook '{}': {}", self.hook_key, self.message)
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
+/// Validate hook configuration *statically* — no slot data needed. Catches:
+///
+///   - `needs` references that don't resolve to a known slot or hook key
+///   - `if` conditional templates that fail to parse (unclosed brackets,
+///     bad syntax)
+///   - `command` arg templates that fail to parse
+///
+/// Returns every problem found, not just the first. The companion to
+/// `slot::validate`, used by the top-level `check` to produce structured
+/// hook-config diagnostics.
+pub fn validate_config(hooks: &[Hook], slots: &[Slot]) -> Vec<ConfigError> {
+    let mut errors = Vec::new();
+    let known_keys: std::collections::HashSet<&str> = slots
+        .iter()
+        .map(|s| s.key.as_str())
+        .chain(hooks.iter().map(|h| h.key.as_str()))
+        .collect();
+
+    for hook in hooks {
+        for needed in &hook.needs {
+            if !known_keys.contains(needed.as_str()) {
+                errors.push(ConfigError {
+                    hook_key: hook.key.clone(),
+                    message: format!("depends on unknown key '{}' (no such slot or hook)", needed),
+                    span: None,
+                    code: Some("hook::unknown_needs"),
+                });
+            }
+        }
+
+        // Parse the conditional template (parse-only — no values needed).
+        if let Some(cond) = &hook.r#if {
+            if let Err(e) = tera::Tera::default().add_raw_template("__hook_if__", cond) {
+                let span = crate::diagnostic::extract_tera_span(&e);
+                errors.push(ConfigError {
+                    hook_key: hook.key.clone(),
+                    message: format!("invalid `if` template: {}", e),
+                    span,
+                    code: Some("hook::if_template_parse"),
+                });
+            }
+        }
+
+        // Parse each command arg's template. Parse-only catches unclosed
+        // brackets / bad filter syntax without needing slot values.
+        for (i, arg) in hook.command.iter().enumerate() {
+            if let Err(e) = tera::Tera::default().add_raw_template("__hook_cmd__", arg) {
+                let span = crate::diagnostic::extract_tera_span(&e);
+                errors.push(ConfigError {
+                    hook_key: hook.key.clone(),
+                    message: format!("invalid command arg[{}] template: {}", i, e),
+                    span,
+                    code: Some("hook::command_template_parse"),
+                });
+            }
+        }
+    }
+
+    errors
+}
+
 #[derive(Serialize, Debug)]
 pub enum ValidateError {
     UnknownKey(String),
