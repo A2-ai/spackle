@@ -100,12 +100,10 @@ function readProjectFromGit(repo: string, ref: string, subtree: string): Bundle 
 
 ## Virtual path conventions
 
-Bundle paths are virtual — they only need to be absolute and consistent within one `check` / `generate` call. The conventions used by `DiskFs`:
+Bundle paths are virtual but no longer host-configurable: every entry must live under the wasm-side project anchor exported as `BUNDLE_PROJECT_ROOT` (currently `/project`). The conventions:
 
-- Input project: `/project/<relative>` (configurable via `opts.virtualRoot`).
-- Output bundle: paths relative to `outDir` (fixed by Rust; can't be changed).
-
-You can use any prefix you like in a custom reader — just pass the same string as `virtualProjectDir` when you call `checkBundle` / `generateBundle`.
+- Input project: `${BUNDLE_PROJECT_ROOT}/<relative>` — a custom reader has to root entries here too. The wasm side rejects bundles that drift off this anchor with a clear `config` diagnostic.
+- Output bundle: paths relative to the internal virtual out dir (fixed by Rust; the host just prepends its real disk root when writing out).
 
 ## Containment
 

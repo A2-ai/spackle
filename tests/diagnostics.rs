@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use spackle::fs::StdFs;
-use spackle::{DiagnosticSource, Severity};
+use spackle::{DiagnosticSource, NameOverrides, Severity};
 
 mod common;
 use common::{out_dir, scaffold};
@@ -147,6 +147,7 @@ type = "String"
         &project.path(),
         &dst,
         &data(&[("name", "Ada")]),
+        NameOverrides::NONE,
     );
 
     assert!(
@@ -184,6 +185,7 @@ type = "String"
         &project.path(),
         &dst,
         &data(&[("name", "Ada")]),
+        NameOverrides::NONE,
     );
 
     // Per-file diagnostics for both bad templates, plus check-stage
@@ -225,7 +227,13 @@ type = "String"
     let dst = out.path().join("out");
 
     // Provide NOTHING — `name` is missing.
-    let report = spackle::render(&StdFs::new(), &project.path(), &dst, &HashMap::new());
+    let report = spackle::render(
+        &StdFs::new(),
+        &project.path(),
+        &dst,
+        &HashMap::new(),
+        NameOverrides::NONE,
+    );
 
     let slot_data_diag = report
         .diagnostics
@@ -332,6 +340,7 @@ type = "String"
         &project.path(),
         &dst,
         &data(&[("name", "Ada")]),
+        NameOverrides::NONE,
     );
 
     let parse_diag = report
@@ -362,7 +371,13 @@ fn render_severity_is_error_for_all_v1_diagnostics() {
     let project = scaffold(&[("spackle.toml", ""), ("bad.j2", "{{ undefined }}")]);
     let out = out_dir();
     let dst = out.path().join("out");
-    let report = spackle::render(&StdFs::new(), &project.path(), &dst, &HashMap::new());
+    let report = spackle::render(
+        &StdFs::new(),
+        &project.path(),
+        &dst,
+        &HashMap::new(),
+        NameOverrides::NONE,
+    );
     for d in &report.diagnostics {
         assert!(
             matches!(d.severity, Severity::Error),

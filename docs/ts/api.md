@@ -59,16 +59,12 @@ interface Diagnostic {
 
 Severity is `error` for everything in v1; `warning` is reserved for future use (deprecated patterns, dead slots).
 
-## `check(projectDir, fs, opts?)`
+## `check(projectDir, fs)`
 
 Run every static project check — `spackle.toml` parse + structural validation, slot config, hook config (including `needs` reference resolution and command-template parsing), template syntax + slot reference resolution. **Does NOT need slot data** — call it continuously as the publisher edits files.
 
 ```ts
-function check(
-    projectDir: string,
-    fs: DiskFs,
-    opts?: { virtualProjectDir?: string },
-): Promise<CheckResponse>;
+function check(projectDir: string, fs: DiskFs): Promise<CheckResponse>;
 
 interface CheckResponse {
     config: SpackleConfig | null;
@@ -78,7 +74,7 @@ interface CheckResponse {
 
 `check` **never throws / never returns `valid: false`** — it always returns the response. Empty `diagnostics` ⇒ the project is structurally sound. `config` is `null` only when `spackle.toml` failed to parse (a `config`-source diagnostic explains why).
 
-`bundleCheck(bundle, virtualProjectDir?)` is the bundle-only equivalent.
+`checkBundle(bundle)` is the bundle-only equivalent.
 
 ## `render(projectDir, outDir, slotData, fs, opts?)`
 
@@ -91,8 +87,8 @@ function render(
     slotData: SlotData,
     fs: DiskFs,
     opts?: {
-        virtualProjectDir?: string;
-        virtualOutDir?: string;
+        projectName?: string;   // overrides _project_name (default: config.name from spackle.toml)
+        outputName?: string;    // overrides _output_name  (default: basename(outDir))
     },
 ): Promise<RenderResponse>;
 
@@ -119,7 +115,6 @@ function validateSlotData(
     projectDir: string,
     slotData: SlotData,
     fs: DiskFs,
-    opts?: { virtualProjectDir?: string },
 ): Promise<ValidationResponse>;
 
 type ValidationResponse =
@@ -140,8 +135,8 @@ function generate(
     slotData: SlotData,
     fs: DiskFs,
     opts?: {
-        virtualProjectDir?: string;
-        virtualOutDir?: string;
+        projectName?: string;   // overrides _project_name (default: config.name from spackle.toml)
+        outputName?: string;    // overrides _output_name  (default: basename(outDir))
     },
 ): Promise<GenerateResponse>;
 
@@ -165,8 +160,9 @@ function planHooks(
     data: Record<string, string>,
     fs: DiskFs,
     opts?: {
-        virtualProjectDir?: string;
         hookRan?: Record<string, boolean>;
+        projectName?: string;   // mirrors generate/render — feed the same value if you used one there
+        outputName?: string;    // defaults to basename(outDir)
     },
 ): Promise<PlanHooksResponse>;
 
@@ -185,7 +181,7 @@ interface HookPlanEntry {
 }
 ```
 
-`data` matches native's `Project::run_hooks_stream` input: slot values PLUS hook toggles keyed by the hook's own `key` (so `data["format_code"] = "false"` disables that hook). `_project_name` / `_output_name` are injected wasm-side — don't pre-inject.
+`data` matches native's `Project::run_hooks_stream` input: slot values PLUS hook toggles keyed by the hook's own `key` (so `data["format_code"] = "false"` disables that hook). `_project_name` / `_output_name` are injected wasm-side — don't pre-inject. Use the `projectName` / `outputName` opts above when you need to override the defaults (the disk-backed wrappers forward `basename(outDir)` as `outputName` automatically).
 
 `hookRan` (optional): map of `{ hookKey: actualRanOutcome }`. Hooks present in this map are filtered from the returned plan (host already has their results) while `hook_ran_<key>` is pre-seeded so chained conditionals in downstream hooks evaluate against the real state.
 
@@ -200,10 +196,11 @@ function runHooksStream(
     data: Record<string, string>,
     fs: DiskFs,
     opts?: {
-        virtualProjectDir?: string;
         hooks?: SpackleHooks;     // defaults to defaultHooks()
         cwd?: string;              // defaults to outDir
         env?: Record<string, string>;
+        projectName?: string;     // mirrors generate/render — feed the same value if you used one there
+        outputName?: string;      // defaults to basename(outDir)
     },
 ): AsyncGenerator<HookEvent>;
 
@@ -281,21 +278,34 @@ function formatArgv(argv: readonly string[]): string;
 For preview flows with no disk I/O, skip `DiskFs` entirely and drive wasm directly:
 
 ```ts
-function checkBundle(bundle: Bundle, virtualProjectDir?: string): Promise<CheckResponse>;
-function validateSlotDataBundle(bundle: Bundle, slotData: SlotData, virtualProjectDir?: string): Promise<ValidationResponse>;
+function checkBundle(bundle: Bundle): Promise<CheckResponse>;
+function validateSlotDataBundle(bundle: Bundle, slotData: SlotData): Promise<ValidationResponse>;
 function generateBundle(
     bundle: Bundle,
     slotData: SlotData,
-    opts?: { virtualProjectDir?: string; virtualOutDir?: string },
+    opts?: { projectName?: string; outputName?: string },
 ): Promise<GenerateResponse>;
+function renderBundle(
+    bundle: Bundle,
+    slotData: SlotData,
+    opts?: { projectName?: string; outputName?: string },
+): Promise<RenderResponse>;
 function planHooksBundle(
-    projectBundle: Bundle,
-    virtualProjectDir: string,
-    outDir: string,
+    bundle: Bundle,
     data: Record<string, string>,
     hookRan?: Record<string, boolean>,
+    names?: { projectName?: string; outputName?: string },
 ): Promise<PlanHooksResponse>;
 ```
+
+### Name overrides
+
+`_project_name` and `_output_name` are the two Tera vars the renderer injects into filenames and `.j2` bodies.
+
+- For **disk-backed** entry points (`generate` / `render` / `planHooks` / `runHooksStream`): defaults are `config.name` (from `spackle.toml`, falling back to the wasm-side project-dir basename if unset) and `basename(outDir)` — i.e. the same values today's callers see.
+- For **bundle-only** entry points (`generateBundle` / `renderBundle` / `planHooksBundle`): there's no real `outDir`, so `_output_name` falls back to the basename of the internal virtual out dir constant (currently `"output"`). Pass `outputName` explicitly if you want something meaningful in the rendered files.
+
+Bundle root: every entry's `path` must equal the internal virtual project constant or be a descendant of it. `DiskFs.readProject` and the in-memory helpers already root bundles correctly; only a hand-built bundle with a wrong prefix can hit the rejection (you'll see a `config` diagnostic from `renderBundle` or `ok: false` from `generateBundle` with a clear message naming the expected anchor). The constant is also exported as `BUNDLE_PROJECT_ROOT` for callers building bundles by hand.
 
 `generateBundle` has no streaming-hooks counterpart — bundle-only mode doesn't have a real `cwd` for subprocess execution. Use the disk-backed `runHooksStream()` above when you need hooks.
 
@@ -308,7 +318,7 @@ Pair with `MemoryFs.toBundle()` / `MemoryFs.fromBundle()` to inspect results in-
 ```ts
 class DiskFs {
     constructor(opts: { workspaceRoot: string });
-    readProject(projectDir: string, opts?: { virtualRoot?: string }): Bundle;
+    readProject(projectDir: string): Bundle;
     writeOutput(
         outDir: string,
         input: Bundle | { files: Bundle; dirs?: string[] },

@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use spackle::NameOverrides;
 use wasm_bindgen::prelude::*;
 
 pub mod memory_fs;
@@ -112,6 +113,52 @@ fn decode_bundle(project_bundle: JsValue) -> Result<Vec<BundleEntry>, String> {
     serde_wasm_bindgen::from_value(project_bundle).map_err(|e| format!("invalid bundle: {}", e))
 }
 
+/// Fixed virtual-fs anchors. Pinned in the crate (not exposed to the
+/// host) because their values are pure implementation detail of the
+/// in-memory pipeline: they're the keys files live under inside the
+/// MemoryFs, the prefix `drain_subtree` extracts from, and the base for
+/// the relative paths in the returned output bundle. The host's TS
+/// wrapper is responsible for producing bundles rooted here (see
+/// `DiskFs.readProject`) and for prepending its own real disk path
+/// onto the relative output entries on the way back out.
+pub(crate) const PROJECT_DIR: &str = "/project";
+pub(crate) const OUT_DIR: &str = "/output";
+
+/// Verify every entry's `path` lives under [`PROJECT_DIR`]. Catches
+/// hosts that hand in a malformed bundle (paths rooted at the wrong
+/// prefix); historically that surfaced deep in the renderer as a
+/// confusing "no such file" error. Allows the entry path to equal
+/// the constant (single-file project) or to be a descendant.
+fn check_bundle_root(entries: &[BundleEntry]) -> Result<(), String> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let prefix_slash = format!("{}/", PROJECT_DIR);
+    for entry in entries {
+        let path = entry.path.as_str();
+        if path == PROJECT_DIR || path.starts_with(&prefix_slash) {
+            continue;
+        }
+        return Err(format!(
+            "bundle entry '{}' is not under '{}'; every bundle path must \
+             equal '{}' or be a descendant of it (DiskFs.readProject and the \
+             memory-fs helpers root entries here automatically)",
+            entry.path, PROJECT_DIR, PROJECT_DIR
+        ));
+    }
+    Ok(())
+}
+
+fn name_overrides<'a>(
+    project_name: Option<&'a str>,
+    output_name: Option<&'a str>,
+) -> NameOverrides<'a> {
+    NameOverrides {
+        project_name,
+        output_name,
+    }
+}
+
 // --- exports ---
 
 /// Run every static project check against `project_bundle`. Always
@@ -119,7 +166,7 @@ fn decode_bundle(project_bundle: JsValue) -> Result<Vec<BundleEntry>, String> {
 /// `valid: false`). Diagnostics are accumulated across all stages —
 /// callers see every problem in one call.
 #[wasm_bindgen]
-pub fn check(project_bundle: JsValue, project_dir: &str) -> String {
+pub fn check(project_bundle: JsValue) -> String {
     let entries = match decode_bundle(project_bundle) {
         Ok(e) => e,
         Err(msg) => {
@@ -134,8 +181,19 @@ pub fn check(project_bundle: JsValue, project_dir: &str) -> String {
             });
         }
     };
+    if let Err(msg) = check_bundle_root(&entries) {
+        let diags = vec![spackle::Diagnostic::new(
+            spackle::Severity::Error,
+            spackle::DiagnosticSource::Config,
+            msg,
+        )];
+        return json_or_panic(&CheckResponse {
+            config: None,
+            diagnostics: &diags,
+        });
+    }
     let fs = MemoryFs::from_bundle(entries);
-    let path = PathBuf::from(project_dir);
+    let path = PathBuf::from(PROJECT_DIR);
     let report = spackle::check_project(&fs, &path);
     json_or_panic(&CheckResponse {
         config: report.config.as_ref(),
@@ -145,17 +203,16 @@ pub fn check(project_bundle: JsValue, project_dir: &str) -> String {
 
 /// Validate slot data against the config loaded from the project bundle.
 #[wasm_bindgen]
-pub fn validate_slot_data(
-    project_bundle: JsValue,
-    project_dir: &str,
-    slot_data_json: &str,
-) -> String {
+pub fn validate_slot_data(project_bundle: JsValue, slot_data_json: &str) -> String {
     let entries = match decode_bundle(project_bundle) {
         Ok(e) => e,
         Err(msg) => return invalid(vec![msg]),
     };
+    if let Err(msg) = check_bundle_root(&entries) {
+        return invalid(vec![msg]);
+    }
     let fs = MemoryFs::from_bundle(entries);
-    let path = PathBuf::from(project_dir);
+    let path = PathBuf::from(PROJECT_DIR);
     let project = match spackle::load_project(&fs, &path) {
         Ok(p) => p,
         Err(e) => return invalid(vec![e.to_string()]),
@@ -172,7 +229,14 @@ pub fn validate_slot_data(
 
 /// Generate a filled project. Runs the full generate pipeline (copy +
 /// template fill) against an in-memory fs, returns the rendered subtree
-/// as a flat bundle with paths relative to `out_dir`.
+/// as a flat bundle with paths relative to the fixed virtual out dir.
+///
+/// `project_name` / `output_name` set the `_project_name` /
+/// `_output_name` Tera vars. Pass `None` to fall back to the default
+/// (`config.name` → basename of the fixed virtual project dir for the
+/// former; basename of the fixed virtual out dir for the latter); the
+/// TS wrapper forwards `basename(realOutDir)` for disk-backed callers so
+/// they see the same defaults they always did.
 ///
 /// Hooks are a separate step — mirror the native CLI's two-call shape
 /// (`project.generate(...)` then `project.run_hooks_stream(...)`). Call
@@ -181,17 +245,20 @@ pub fn validate_slot_data(
 #[wasm_bindgen]
 pub fn generate(
     project_bundle: JsValue,
-    project_dir: &str,
-    out_dir: &str,
     slot_data_json: &str,
+    project_name: Option<String>,
+    output_name: Option<String>,
 ) -> JsValue {
     let entries = match decode_bundle(project_bundle) {
         Ok(e) => e,
         Err(msg) => return generate_err_value(msg),
     };
+    if let Err(msg) = check_bundle_root(&entries) {
+        return generate_err_value(msg);
+    }
     let fs = MemoryFs::from_bundle(entries);
-    let project_path = PathBuf::from(project_dir);
-    let out_path = PathBuf::from(out_dir);
+    let project_path = PathBuf::from(PROJECT_DIR);
+    let out_path = PathBuf::from(OUT_DIR);
 
     let project = match spackle::load_project(&fs, &project_path) {
         Ok(p) => p,
@@ -207,7 +274,8 @@ pub fn generate(
         return generate_err_value(format!("slot data invalid: {}", e));
     }
 
-    if let Err(e) = project.generate(&fs, &project_path, &out_path, &slot_data) {
+    let names = name_overrides(project_name.as_deref(), output_name.as_deref());
+    if let Err(e) = project.generate(&fs, &project_path, &out_path, &slot_data, names) {
         return generate_err_value(e.to_string());
     }
 
@@ -224,12 +292,14 @@ pub fn generate(
 /// Diagnostics-first render: never throws, never returns `ok: false`.
 /// Empty `diagnostics` ⇒ clean render. Use this for live UI feedback;
 /// `generate` keeps fail-fast semantics for write-to-disk workflows.
+///
+/// `project_name` / `output_name` work the same way as in [`generate`].
 #[wasm_bindgen]
 pub fn render(
     project_bundle: JsValue,
-    project_dir: &str,
-    out_dir: &str,
     slot_data_json: &str,
+    project_name: Option<String>,
+    output_name: Option<String>,
 ) -> JsValue {
     let entries = match decode_bundle(project_bundle) {
         Ok(e) => e,
@@ -249,9 +319,24 @@ pub fn render(
             .unwrap_or(JsValue::NULL);
         }
     };
+    if let Err(msg) = check_bundle_root(&entries) {
+        let diags = vec![spackle::Diagnostic::new(
+            spackle::Severity::Error,
+            spackle::DiagnosticSource::Config,
+            msg,
+        )];
+        return RenderResponse {
+            files: Vec::new(),
+            dirs: Vec::new(),
+            diagnostics: &diags,
+            hook_plan: None,
+        }
+        .serialize(&serializer())
+        .unwrap_or(JsValue::NULL);
+    }
     let fs = MemoryFs::from_bundle(entries);
-    let project_path = PathBuf::from(project_dir);
-    let out_path = PathBuf::from(out_dir);
+    let project_path = PathBuf::from(PROJECT_DIR);
+    let out_path = PathBuf::from(OUT_DIR);
 
     let slot_data: HashMap<String, String> = match serde_json::from_str(slot_data_json) {
         Ok(d) => d,
@@ -272,7 +357,8 @@ pub fn render(
         }
     };
 
-    let report = spackle::render(&fs, &project_path, &out_path, &slot_data);
+    let names = name_overrides(project_name.as_deref(), output_name.as_deref());
+    let report = spackle::render(&fs, &project_path, &out_path, &slot_data, names);
 
     // Harvest the rendered output subtree from the MemoryFs (paths
     // relative to out_dir). Mirrors what `generate` does.
@@ -298,6 +384,16 @@ pub fn render(
 /// it). `_project_name` and `_output_name` are injected here to match
 /// native — the caller does NOT pre-inject them.
 ///
+/// `project_name` / `output_name` mirror the equivalents on
+/// [`generate`] / [`render`]: if set, they win over the basenames of
+/// the fixed virtual dirs. Hosts running hooks during a
+/// preview-to-temp flow should pass the same values they used for
+/// `generate`/`render` so templated hook commands see the same
+/// `_output_name` the rendered files did. Disk-backed callers will
+/// usually pass `basename(realOutDir)` for `output_name` via the TS
+/// wrapper so the templated `{{ _output_name }}` matches the real
+/// write target.
+///
 /// `hook_ran_json` (optional): JSON of `HashMap<String, bool>` where
 /// keys are hook keys and values are actual execution results. The host
 /// passes this back on re-plan after a hook succeeds/fails so chained
@@ -311,28 +407,31 @@ pub fn render(
 /// scale — parse is sub-millisecond, dwarfed by subprocess spawn time.
 /// If profiles ever show per-call parse dominating, or if interactive
 /// multi-generation hosts land, pivot to a stateful `Session` handle:
-///   open_session(bundle, project_dir) -> SessionId
+///   open_session(bundle) -> SessionId
 ///   plan_hooks_session(session_id, data, hook_ran) -> HookPlan
 ///   close_session(session_id)
 /// That amortizes parse across the plan-execute loop. Deferred.
 #[wasm_bindgen]
 pub fn plan_hooks(
     project_bundle: JsValue,
-    project_dir: &str,
-    out_dir: &str,
     data_json: &str,
     hook_ran_json: Option<String>,
+    project_name: Option<String>,
+    output_name: Option<String>,
 ) -> String {
     let entries = match decode_bundle(project_bundle) {
         Ok(e) => e,
         Err(msg) => return plan_hooks_err(msg),
     };
+    if let Err(msg) = check_bundle_root(&entries) {
+        return plan_hooks_err(msg);
+    }
     plan_hooks_from_entries(
         entries,
-        project_dir,
-        out_dir,
         data_json,
         hook_ran_json.as_deref(),
+        project_name.as_deref(),
+        output_name.as_deref(),
     )
 }
 
@@ -340,13 +439,13 @@ pub fn plan_hooks(
 /// can exercise the logic without going through `JsValue`.
 fn plan_hooks_from_entries(
     entries: Vec<BundleEntry>,
-    project_dir: &str,
-    out_dir: &str,
     data_json: &str,
     hook_ran_json: Option<&str>,
+    project_name: Option<&str>,
+    output_name: Option<&str>,
 ) -> String {
     let fs = MemoryFs::from_bundle(entries);
-    let project_path = PathBuf::from(project_dir);
+    let project_path = PathBuf::from(PROJECT_DIR);
     let project = match spackle::load_project(&fs, &project_path) {
         Ok(p) => p,
         Err(e) => return plan_hooks_err(e.to_string()),
@@ -359,11 +458,18 @@ fn plan_hooks_from_entries(
 
     // Parity with Project::run_hooks_stream at src/lib.rs:253-254:
     // inject the resolved `_project_name` + `_output_name` so hooks
-    // templated with `{{ _output_name }}` render correctly.
-    data.insert("_project_name".to_string(), project.get_name());
+    // templated with `{{ _output_name }}` render correctly. Honor the
+    // override knobs the caller passed in; otherwise fall back to the
+    // basename of the fixed virtual out dir constant.
+    data.insert(
+        "_project_name".to_string(),
+        project.resolved_project_name(project_name),
+    );
     data.insert(
         "_output_name".to_string(),
-        spackle::get_output_name(Path::new(out_dir)),
+        output_name
+            .map(str::to_owned)
+            .unwrap_or_else(|| spackle::get_output_name(Path::new(OUT_DIR))),
     );
 
     // Merge caller-supplied hook_ran_* overrides. Keys in hook_ran_json
@@ -591,12 +697,16 @@ mod plan_hooks_tests {
     /// Deserialize (it's Serialize-only in core); parsing via Value
     /// keeps the test self-contained without touching core.
     fn call(data_json: &str, hook_ran: Option<&str>) -> Value {
+        // Disk-backed CLI/TS callers would normally feed
+        // basename(realOutDir) here; for these planner-level tests we
+        // pass an explicit output_name so the templated _output_name
+        // matches the historical "my_output" expectation.
         let raw = plan_hooks_from_entries(
             fixture_bundle(),
-            "/project",
-            "/tmp/my_output",
             data_json,
             hook_ran,
+            None,
+            Some("my_output"),
         );
         let v: Value = serde_json::from_str(&raw).expect("plan_hooks returned invalid JSON");
         assert_eq!(v["ok"], true, "unexpected err response: {}", raw);
@@ -654,7 +764,7 @@ mod plan_hooks_tests {
 
     #[test]
     fn invalid_data_json_returns_err_shape() {
-        let raw = plan_hooks_from_entries(fixture_bundle(), "/project", "/tmp/o", "not json", None);
+        let raw = plan_hooks_from_entries(fixture_bundle(), "not json", None, None, None);
         let v: Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(v["ok"], false);
         assert!(
@@ -701,7 +811,7 @@ default = true
         data_json: &str,
         hook_ran: Option<&str>,
     ) -> serde_json::Value {
-        let raw = plan_hooks_from_entries(entries, "/project", "/tmp/o", data_json, hook_ran);
+        let raw = plan_hooks_from_entries(entries, data_json, hook_ran, None, None);
         let v: serde_json::Value = serde_json::from_str(&raw).expect("invalid JSON");
         assert_eq!(v["ok"], true, "unexpected err response: {}", raw);
         v["plan"].clone()
@@ -804,5 +914,112 @@ default = true
             "template_errors array missing: {}",
             masked
         );
+    }
+
+    #[test]
+    fn name_overrides_flow_into_hook_templating() {
+        // hook_names templates {{ _project_name }}/{{ _output_name }}.
+        // Override both — neither the config `name` ("hooks-demo") nor
+        // the fallback "output" (basename of the virtual out dir
+        // constant) should show up in the rendered command.
+        let raw = plan_hooks_from_entries(
+            fixture_bundle(),
+            "{}",
+            None,
+            Some("custom-proj"),
+            Some("custom-out"),
+        );
+        let v: Value = serde_json::from_str(&raw).expect("invalid JSON");
+        assert_eq!(v["ok"], true, "got: {}", raw);
+        let names = v["plan"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["key"] == "hook_names")
+            .unwrap();
+        let body = names["command"][2].as_str().unwrap();
+        assert!(body.contains("custom-proj"), "got: {}", body);
+        assert!(body.contains("custom-out"), "got: {}", body);
+        assert!(!body.contains("hooks-demo"), "default leaked: {}", body);
+        assert!(!body.contains("output"), "default leaked: {}", body);
+    }
+
+    #[test]
+    fn output_name_falls_back_to_virtual_dir_basename() {
+        // No output_name override → planner uses basename(OUT_DIR)
+        // which is "output". Hosts that want a meaningful name pass
+        // basename(realOutDir) via the TS wrapper.
+        let raw = plan_hooks_from_entries(fixture_bundle(), "{}", None, None, None);
+        let v: Value = serde_json::from_str(&raw).expect("invalid JSON");
+        let names = v["plan"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["key"] == "hook_names")
+            .unwrap();
+        let body = names["command"][2].as_str().unwrap();
+        // Project name still falls back to config.name = "hooks-demo".
+        assert!(body.contains("hooks-demo"), "got: {}", body);
+        // Output name fell back to the constant basename.
+        assert!(body.contains("output"), "got: {}", body);
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod bundle_root_tests {
+    use super::*;
+
+    #[test]
+    fn drift_off_project_constant_is_rejected() {
+        let entries = vec![BundleEntry {
+            path: "/elsewhere/spackle.toml".to_string(),
+            bytes: b"".to_vec(),
+        }];
+        let err = check_bundle_root(&entries).unwrap_err();
+        assert!(err.contains(PROJECT_DIR), "unexpected error: {}", err);
+    }
+
+    #[test]
+    fn entry_equal_to_project_constant_allowed_for_single_file_project() {
+        // Single-file template projects come in as one entry whose path
+        // is exactly PROJECT_DIR (no extension on the virtual side —
+        // the host strips that before bundling).
+        let entries = vec![BundleEntry {
+            path: PROJECT_DIR.to_string(),
+            bytes: b"".to_vec(),
+        }];
+        check_bundle_root(&entries).expect("single-file path allowed");
+    }
+
+    #[test]
+    fn descendant_paths_allowed() {
+        let entries = vec![
+            BundleEntry {
+                path: format!("{}/spackle.toml", PROJECT_DIR),
+                bytes: b"".to_vec(),
+            },
+            BundleEntry {
+                path: format!("{}/src/a.txt", PROJECT_DIR),
+                bytes: b"".to_vec(),
+            },
+        ];
+        check_bundle_root(&entries).expect("descendants allowed");
+    }
+
+    #[test]
+    fn empty_bundle_passes_root_check() {
+        // No entries → nothing to validate.
+        check_bundle_root(&[]).expect("empty bundle passes");
+    }
+
+    #[test]
+    fn sibling_prefix_collision_is_rejected() {
+        // `/project_other/...` should not be treated as living under
+        // `/project` just because of the literal-prefix match.
+        let entries = vec![BundleEntry {
+            path: "/project_other/spackle.toml".to_string(),
+            bytes: b"".to_vec(),
+        }];
+        check_bundle_root(&entries).expect_err("must reject sibling-prefix path");
     }
 }

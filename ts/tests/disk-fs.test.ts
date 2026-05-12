@@ -37,11 +37,13 @@ describe("DiskFs", () => {
     expect(new TextDecoder().decode(bundle[0].bytes)).toBe("A");
   });
 
-  test("readProject honors a custom virtualRoot", async () => {
+  test("readProject roots all entries under the fixed /project anchor", async () => {
+    // Entries are always emitted at the wasm-side constant; the host
+    // no longer picks a virtual prefix.
     await writeFile(join(root, "x.txt"), "X");
     const fs = new DiskFs({ workspaceRoot: root });
-    const bundle = fs.readProject(root, { virtualRoot: "/proj" });
-    expect(bundle[0].path).toBe("/proj/x.txt");
+    const bundle = fs.readProject(root);
+    expect(bundle[0].path).toBe("/project/x.txt");
   });
 
   test("readProject skips symlinks (doesn't follow or emit)", async () => {

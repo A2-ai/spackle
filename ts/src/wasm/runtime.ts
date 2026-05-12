@@ -28,53 +28,60 @@ export interface ConfigureSpackleWasmOptions {
 
 export interface RawWasmExports {
   initWasm: InitWasm;
-  check(projectBundle: unknown, projectDir: string): string;
-  validateSlotData(projectBundle: unknown, projectDir: string, slotDataJson: string): string;
+  check(projectBundle: unknown): string;
+  validateSlotData(projectBundle: unknown, slotDataJson: string): string;
   generate(
     projectBundle: unknown,
-    projectDir: string,
-    outDir: string,
     slotDataJson: string,
+    projectName?: string | null,
+    outputName?: string | null,
   ): unknown;
-  render(projectBundle: unknown, projectDir: string, outDir: string, slotDataJson: string): unknown;
+  render(
+    projectBundle: unknown,
+    slotDataJson: string,
+    projectName?: string | null,
+    outputName?: string | null,
+  ): unknown;
   planHooks(
     projectBundle: unknown,
-    projectDir: string,
-    outDir: string,
     dataJson: string,
     hookRanJson?: string | null,
+    projectName?: string | null,
+    outputName?: string | null,
   ): string;
+}
+
+/**
+ * Override the `_project_name` / `_output_name` Tera vars the renderer
+ * injects. The bundle layout itself is a private invariant of the wasm
+ * crate (entries always live under a fixed prefix); these are the
+ * caller's only knobs on what shows up in rendered output.
+ *
+ * Each field is independently optional: unset means the default from
+ * the wasm side (project: `config.name` or the basename of the fixed
+ * virtual project dir; output: basename of the fixed virtual out dir,
+ * or whatever the higher-level disk-backed wrappers in `spackle.ts`
+ * decide to forward — typically `basename(realOutDir)`).
+ */
+export interface NameOverrides {
+  projectName?: string;
+  outputName?: string;
 }
 
 /** Typed wrapper over the raw WASM exports. All methods are synchronous
  * against the wasm instance; the only async step is `loadSpackleWasm()`. */
 export interface SpackleWasm {
-  check(projectBundle: Bundle, projectDir: string): CheckResponse;
-  validateSlotData(
-    projectBundle: Bundle,
-    projectDir: string,
-    slotData: SlotData,
-  ): ValidationResponse;
-  generate(
-    projectBundle: Bundle,
-    projectDir: string,
-    outDir: string,
-    slotData: SlotData,
-  ): GenerateResponse;
+  check(projectBundle: Bundle): CheckResponse;
+  validateSlotData(projectBundle: Bundle, slotData: SlotData): ValidationResponse;
+  generate(projectBundle: Bundle, slotData: SlotData, names?: NameOverrides): GenerateResponse;
   /** Dynamic render-with-data, diagnostics-first. Never throws / never
    * returns `ok: false`. Empty `diagnostics` ⇒ clean render. */
-  render(
-    projectBundle: Bundle,
-    projectDir: string,
-    outDir: string,
-    slotData: SlotData,
-  ): RenderResponse;
+  render(projectBundle: Bundle, slotData: SlotData, names?: NameOverrides): RenderResponse;
   planHooks(
     projectBundle: Bundle,
-    projectDir: string,
-    outDir: string,
     data: Record<string, string>,
     hookRan?: Record<string, boolean>,
+    names?: NameOverrides,
   ): PlanHooksResponse;
 }
 
@@ -123,45 +130,45 @@ async function initialize(
   // to type this boundary: the shapes are guaranteed by the Rust side
   // (`crates/spackle-wasm/src/lib.rs`), which is the source of truth.
   return {
-    check(projectBundle, projectDir) {
+    check(projectBundle) {
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
-      return JSON.parse(raw.check(projectBundle, projectDir)) as CheckResponse;
+      return JSON.parse(raw.check(projectBundle)) as CheckResponse;
     },
-    validateSlotData(projectBundle, projectDir, slotData) {
+    validateSlotData(projectBundle, slotData) {
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
       return JSON.parse(
-        raw.validateSlotData(projectBundle, projectDir, JSON.stringify(slotData)),
+        raw.validateSlotData(projectBundle, JSON.stringify(slotData)),
       ) as ValidationResponse;
     },
-    generate(projectBundle, projectDir, outDir, slotData) {
+    generate(projectBundle, slotData, names) {
       // generate returns a JsValue (object), not a JSON string.
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
       return raw.generate(
         projectBundle,
-        projectDir,
-        outDir,
         JSON.stringify(slotData),
+        names?.projectName ?? undefined,
+        names?.outputName ?? undefined,
       ) as GenerateResponse;
     },
-    render(projectBundle, projectDir, outDir, slotData) {
+    render(projectBundle, slotData, names) {
       // render returns a JsValue (object), not a JSON string.
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
       return raw.render(
         projectBundle,
-        projectDir,
-        outDir,
         JSON.stringify(slotData),
+        names?.projectName ?? undefined,
+        names?.outputName ?? undefined,
       ) as RenderResponse;
     },
-    planHooks(projectBundle, projectDir, outDir, data, hookRan) {
+    planHooks(projectBundle, data, hookRan, names) {
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
       return JSON.parse(
         raw.planHooks(
           projectBundle,
-          projectDir,
-          outDir,
           JSON.stringify(data),
           hookRan === undefined ? undefined : JSON.stringify(hookRan),
+          names?.projectName ?? undefined,
+          names?.outputName ?? undefined,
         ),
       ) as PlanHooksResponse;
     },

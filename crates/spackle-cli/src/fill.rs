@@ -5,7 +5,7 @@ use inquire::{validator::Validation, Confirm, CustomType, Text};
 use spackle::{
     hook::{self, Hook, HookError, HookResult, HookResultKind, HookStreamResult},
     slot::{self, Slot, SlotType},
-    Project,
+    NameOverrides, Project,
 };
 use std::{collections::HashMap, fs, path::PathBuf, process::exit, time::Instant};
 use tokio::pin;
@@ -292,7 +292,7 @@ pub fn run_multi(data: &HashMap<String, String>, out_dir: &PathBuf, cli: &Cli, p
     println!("🖨️  Writing output {}\n", out_dir.to_string_lossy().bold());
 
     let fs = spackle::fs::StdFs::new();
-    match project.copy_files(&fs, out_dir, &data) {
+    match project.copy_files(&fs, out_dir, &data, NameOverrides::NONE) {
         Ok(r) => {
             println!(
                 "  Copied {} {} {}",
@@ -335,7 +335,7 @@ pub fn run_multi(data: &HashMap<String, String>, out_dir: &PathBuf, cli: &Cli, p
 
     let start_time = Instant::now();
 
-    match project.render_templates(&fs, &PathBuf::from(out_dir), &data) {
+    match project.render_templates(&fs, &PathBuf::from(out_dir), &data, NameOverrides::NONE) {
         Ok(r) => {
             println!(
                 "\n  Rendered {} {} {} {}\n",
@@ -413,7 +413,7 @@ pub fn run_multi(data: &HashMap<String, String>, out_dir: &PathBuf, cli: &Cli, p
     };
 
     runtime.block_on(async {
-        let stream = match project.run_hooks_stream(out_dir, &data, None) {
+        let stream = match project.run_hooks_stream(out_dir, &data, None, NameOverrides::NONE) {
             Ok(stream) => stream,
             Err(e) => {
                 let _ = fs::remove_dir_all(out_dir);

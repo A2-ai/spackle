@@ -513,7 +513,13 @@ type = "String"
 
         let data = HashMap::from([("name".to_string(), "world".to_string())]);
         project
-            .generate(&fs, &project_dir, &out_dir, &data)
+            .generate(
+                &fs,
+                &project_dir,
+                &out_dir,
+                &data,
+                spackle::NameOverrides::NONE,
+            )
             .expect("generate succeeds");
 
         let (files, _dirs) = fs.drain_subtree(&out_dir);

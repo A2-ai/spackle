@@ -87,6 +87,23 @@ pub fn get_output_name(out_dir: &Path) -> String {
         .to_string()
 }
 
+/// The `_project_name` / `_output_name` Tera vars default to
+/// `basename(project_dir)` / `basename(out_dir)`, but hosts that want to
+/// decouple bundle layout from rendered output names can override one
+/// or both directly. Defaults preserve the historical behavior.
+#[derive(Debug, Default, Clone)]
+pub struct NameOverrides<'a> {
+    pub project_name: Option<&'a str>,
+    pub output_name: Option<&'a str>,
+}
+
+impl<'a> NameOverrides<'a> {
+    pub const NONE: Self = NameOverrides {
+        project_name: None,
+        output_name: None,
+    };
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub enum RunHooksError {
@@ -142,6 +159,14 @@ impl Project {
             .into_owned()
     }
 
+    /// `_project_name` for templating: caller override (if any) wins
+    /// over the `get_name()` default. Lets hosts decouple bundle layout
+    /// (`virtualProjectDir`) from the human-readable name baked into
+    /// rendered output.
+    pub fn resolved_project_name(&self, override_: Option<&str>) -> String {
+        override_.map(str::to_owned).unwrap_or_else(|| self.get_name())
+    }
+
     pub fn check<F: fs::FileSystem>(&self, fs: &F) -> Result<(), CheckError> {
         if let Err(e) = template::validate(fs, &self.path, &self.config.slots) {
             return Err(CheckError::TemplateError(e));
@@ -156,13 +181,18 @@ impl Project {
 
     /// Generates a filled directory from the specified spackle project.
     ///
-    /// out_dir is the path to what will become the filled directory
+    /// out_dir is the path to what will become the filled directory.
+    /// `names` lets callers override the `_project_name` / `_output_name`
+    /// Tera vars independently of the bundle layout; pass
+    /// [`NameOverrides::NONE`] for the historical
+    /// `basename(project_dir)` / `basename(out_dir)` defaults.
     pub fn generate<F: fs::FileSystem>(
         &self,
         fs: &F,
         project_dir: &PathBuf,
         out_dir: &PathBuf,
         slot_data: &HashMap<String, String>,
+        names: NameOverrides<'_>,
     ) -> Result<Vec<RenderedFile>, GenerateError> {
         if fs.exists(out_dir) {
             return Err(GenerateError::AlreadyExists(out_dir.clone()));
@@ -171,8 +201,17 @@ impl Project {
         let config = config::load_dir(fs, project_dir).map_err(GenerateError::BadConfig)?;
 
         let mut slot_data = slot_data.clone();
-        slot_data.insert("_project_name".to_string(), self.get_name());
-        slot_data.insert("_output_name".to_string(), get_output_name(out_dir));
+        slot_data.insert(
+            "_project_name".to_string(),
+            self.resolved_project_name(names.project_name),
+        );
+        slot_data.insert(
+            "_output_name".to_string(),
+            names
+                .output_name
+                .map(str::to_owned)
+                .unwrap_or_else(|| get_output_name(out_dir)),
+        );
 
         // Copy all non-template files to the output directory
         copy::copy(fs, project_dir, &out_dir, &config.ignore, &slot_data)
@@ -200,10 +239,20 @@ impl Project {
         fs: &F,
         out_dir: &Path,
         data: &HashMap<String, String>,
+        names: NameOverrides<'_>,
     ) -> Result<copy::CopyResult, copy::Error> {
         let mut data = data.clone();
-        data.insert("_project_name".to_string(), self.get_name());
-        data.insert("_output_name".to_string(), get_output_name(out_dir));
+        data.insert(
+            "_project_name".to_string(),
+            self.resolved_project_name(names.project_name),
+        );
+        data.insert(
+            "_output_name".to_string(),
+            names
+                .output_name
+                .map(str::to_owned)
+                .unwrap_or_else(|| get_output_name(out_dir)),
+        );
 
         copy::copy(fs, &self.path, out_dir, &self.config.ignore, &data)
     }
@@ -213,10 +262,20 @@ impl Project {
         fs: &F,
         out_dir: &Path,
         data: &HashMap<String, String>,
+        names: NameOverrides<'_>,
     ) -> Result<Vec<Result<template::RenderedFile, template::FileError>>, tera::Error> {
         let mut data = data.clone();
-        data.insert("_project_name".to_string(), self.get_name());
-        data.insert("_output_name".to_string(), get_output_name(out_dir));
+        data.insert(
+            "_project_name".to_string(),
+            self.resolved_project_name(names.project_name),
+        );
+        data.insert(
+            "_output_name".to_string(),
+            names
+                .output_name
+                .map(str::to_owned)
+                .unwrap_or_else(|| get_output_name(out_dir)),
+        );
 
         template::fill(fs, &self.path, out_dir, &data)
     }
@@ -255,10 +314,20 @@ impl Project {
         out_dir: &Path,
         data: &HashMap<String, String>,
         run_as_user: Option<User>,
+        names: NameOverrides<'_>,
     ) -> Result<impl Stream<Item = hook::HookStreamResult>, RunHooksError> {
         let mut data = data.clone();
-        data.insert("_project_name".to_string(), self.get_name());
-        data.insert("_output_name".to_string(), get_output_name(out_dir));
+        data.insert(
+            "_project_name".to_string(),
+            self.resolved_project_name(names.project_name),
+        );
+        data.insert(
+            "_output_name".to_string(),
+            names
+                .output_name
+                .map(str::to_owned)
+                .unwrap_or_else(|| get_output_name(out_dir)),
+        );
 
         let result = hook::run_hooks_stream(
             out_dir.to_owned(),
@@ -278,10 +347,20 @@ impl Project {
         out_dir: &Path,
         data: &HashMap<String, String>,
         run_as_user: Option<User>,
+        names: NameOverrides<'_>,
     ) -> Result<Vec<hook::HookResult>, hook::Error> {
         let mut data = data.clone();
-        data.insert("_project_name".to_string(), self.get_name());
-        data.insert("_output_name".to_string(), get_output_name(out_dir));
+        data.insert(
+            "_project_name".to_string(),
+            self.resolved_project_name(names.project_name),
+        );
+        data.insert(
+            "_output_name".to_string(),
+            names
+                .output_name
+                .map(str::to_owned)
+                .unwrap_or_else(|| get_output_name(out_dir)),
+        );
 
         let result = hook::run_hooks(
             &self.config.hooks,
