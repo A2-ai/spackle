@@ -24,7 +24,7 @@ console_error_panic_hook = "0.1"
 # version/features exactly so wasm-side templating and native hook
 # templating behave identically; declaring explicitly keeps the intent
 # load-bearing even though the transitive spackle dep would pull it in.
-tera = { version = "2.0.0-alpha.4", features = ["glob_fs"] }
+tera = { version = "2.0.0-alpha.5", features = ["glob_fs"] }
 
 # wasm32 toolchain bits: tera → rand transitively needs a random source;
 # on the `unknown` target only the JS shim works.
