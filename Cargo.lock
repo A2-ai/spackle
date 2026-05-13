@@ -1265,9 +1265,9 @@ dependencies = [
 
 [[package]]
 name = "tera"
-version = "2.0.0-alpha.4"
+version = "2.0.0-alpha.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ae7398335fd17a23ce1a1039101ffc3120608e6771aee0f8df3bb705861fb57"
+checksum = "d68cfe23058353d881366f64a60cae4965644ca46c6d1703b5af931d6346772c"
 dependencies = [
  "globset",
  "serde",
