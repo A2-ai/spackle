@@ -44,15 +44,17 @@ export interface DiskFsOptions {
   workspaceRoot: string;
 }
 
-export interface ReadProjectOptions {
-  /**
-   * Virtual path prefix the bundle will use. Defaults to `/project`.
-   * Every file read from `projectDir` is emitted as `{virtualRoot}/...`
-   * in the bundle, relative to `projectDir`. Pass the same string as
-   * `projectDir` in subsequent wasm calls (`check`, `generate`).
-   */
-  virtualRoot?: string;
-}
+// `readProject` no longer takes options — the bundle root is a fixed
+// constant pinned inside the wasm crate, so callers never coordinate
+// path strings with downstream wasm calls. The `ReadProjectOptions`
+// type previously held a `virtualRoot` knob; that's gone.
+export type ReadProjectOptions = Record<never, never>;
+
+/** The virtual prefix `readProject` emits and the wasm side expects.
+ * Exported so callers building bundles by hand (custom file sources,
+ * tests, etc.) can root their entries here without typo-ing the
+ * string. Kept in sync with `PROJECT_DIR` in `crates/spackle-wasm/src/lib.rs`. */
+export const BUNDLE_PROJECT_ROOT = "/project";
 
 export class DiskFs {
   private readonly root: string;
@@ -77,8 +79,8 @@ export class DiskFs {
    * symlinks during the walk are skipped (not followed, not emitted) to
    * prevent escape via planted links.
    */
-  readProject(projectDir: string, opts: ReadProjectOptions = {}): Bundle {
-    const virtualRoot = opts.virtualRoot ?? "/project";
+  readProject(projectDir: string): Bundle {
+    const virtualRoot = BUNDLE_PROJECT_ROOT;
     const absRoot = this.containDisk(projectDir);
 
     const out: Bundle = [];

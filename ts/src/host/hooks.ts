@@ -98,9 +98,10 @@ export type HookEvent =
 
 export interface RunHookPlanOptions {
   bundle: Bundle;
-  projectDir: string;
-  /** Used for `_output_name` injection during re-plans, AND as the
-   * default `cwd` for spawned processes. */
+  /** The real disk path where rendered files were written. Used as
+   * the default `cwd` for spawned processes. `_output_name` injection
+   * is handled by the caller before binding the planner — see
+   * `spackle.ts`. */
   outDir: string;
   /** Full data map: slot values + hook toggles (keyed by raw hook key,
    * e.g. `data["format_code"] = "false"`). Matches native shape. */
@@ -409,10 +410,11 @@ export function defaultHooks(env: HooksEnv = detectHooksEnv()): SpackleHooks {
 
 // Wrapper that can be dependency-injected in tests / bundle-only flows.
 // Kept private to this module so the public API stays the same.
+// Name overrides (project/output) are bound by the caller into the
+// closure that supplies this `Planner` — see `runHooksStream` in
+// `spackle.ts`.
 type Planner = (
   bundle: Bundle,
-  projectDir: string,
-  outDir: string,
   data: Record<string, string>,
   hookRan: Record<string, boolean> | undefined,
 ) => PlanHooksResponse;
@@ -461,7 +463,7 @@ export async function* runHookPlanStream(
     };
   };
 
-  const initial = planner(opts.bundle, opts.projectDir, opts.outDir, opts.data, undefined);
+  const initial = planner(opts.bundle, opts.data, undefined);
   if (!initial.ok) {
     yield { type: "plan_error", error: initial.error };
     return;
@@ -590,7 +592,7 @@ export async function* runHookPlanStream(
     // conditionals (`if = "{{ hook_ran_X }}"`) evaluate against reality.
     // Our plan_hooks filters out hooks already in hookRan, so the
     // returned plan is strictly the still-unexecuted tail.
-    const replan = planner(opts.bundle, opts.projectDir, opts.outDir, opts.data, hookRan);
+    const replan = planner(opts.bundle, opts.data, hookRan);
     if (!replan.ok) {
       // Re-plan error mid-run: surface as a terminal event, not an
       // exception. Consumers that care about partial results have

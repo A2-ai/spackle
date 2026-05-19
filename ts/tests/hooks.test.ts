@@ -277,7 +277,7 @@ describe("argv helpers", () => {
 });
 
 async function fixtureBundle(ws: { projectDir: string }, fs: DiskFs) {
-  return fs.readProject(ws.projectDir, { virtualRoot: "/project" });
+  return fs.readProject(ws.projectDir);
 }
 
 describe("runHookPlanStream — injected mock executor (native parity cases)", () => {
@@ -304,9 +304,8 @@ describe("runHookPlanStream — injected mock executor (native parity cases)", (
     const { loadSpackleWasm } = await import("../src/wasm/index.ts");
     const wasm = await loadSpackleWasm();
     const events = await drain(
-      runHookPlanStream((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
+      runHookPlanStream((b, d, hr) => wasm.planHooks(b, d, hr), {
         bundle,
-        projectDir: "/project",
         outDir: ws.outDir,
         data: {},
         hooks: mock,
@@ -349,9 +348,8 @@ describe("runHookPlanStream — injected mock executor (native parity cases)", (
     const { loadSpackleWasm } = await import("../src/wasm/index.ts");
     const wasm = await loadSpackleWasm();
     await drain(
-      runHookPlanStream((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
+      runHookPlanStream((b, d, hr) => wasm.planHooks(b, d, hr), {
         bundle,
-        projectDir: "/project",
         outDir: ws.outDir,
         data: {},
         hooks: mock,
@@ -381,13 +379,11 @@ describe("runHookPlanStream — injected mock executor (native parity cases)", (
     let plannerCalls = 0;
     const planner = (
       b: Parameters<typeof wasm.planHooks>[0],
-      pdir: string,
-      odir: string,
       d: Record<string, string>,
       hr: Record<string, boolean> | undefined,
     ): PlanHooksResponse => {
       plannerCalls += 1;
-      if (plannerCalls === 1) return wasm.planHooks(b, pdir, odir, d, hr);
+      if (plannerCalls === 1) return wasm.planHooks(b, d, hr);
       return { ok: false, error: "synthetic re-plan failure" };
     };
 
@@ -399,7 +395,6 @@ describe("runHookPlanStream — injected mock executor (native parity cases)", (
     const events = await drain(
       runHookPlanStream(planner, {
         bundle,
-        projectDir: "/project",
         outDir: ws.outDir,
         data: {},
         hooks: mock,
@@ -447,9 +442,8 @@ default = true
     const { loadSpackleWasm } = await import("../src/wasm/index.ts");
     const wasm = await loadSpackleWasm();
     const events = await drain(
-      runHookPlanStream((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
+      runHookPlanStream((b, d, hr) => wasm.planHooks(b, d, hr), {
         bundle,
-        projectDir: "/project",
         outDir: "/tmp",
         data: {},
         hooks: mock,
@@ -488,9 +482,8 @@ default = true
     const { loadSpackleWasm } = await import("../src/wasm/index.ts");
     const wasm = await loadSpackleWasm();
     const events = await drain(
-      runHookPlanStream((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
+      runHookPlanStream((b, d, hr) => wasm.planHooks(b, d, hr), {
         bundle,
-        projectDir: "/project",
         outDir: "/tmp",
         data: {},
         hooks: mock,
@@ -528,9 +521,8 @@ default = true
     const { loadSpackleWasm } = await import("../src/wasm/index.ts");
     const wasm = await loadSpackleWasm();
     const events = await drain(
-      runHookPlanStream((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
+      runHookPlanStream((b, d, hr) => wasm.planHooks(b, d, hr), {
         bundle,
-        projectDir: "/project",
         outDir: "/tmp",
         data: {},
         hooks: mock,
@@ -567,17 +559,13 @@ default = true
     const { loadSpackleWasm } = await import("../src/wasm/index.ts");
     const wasm = await loadSpackleWasm();
 
-    for await (const event of runHookPlanStream(
-      (b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr),
-      {
-        bundle,
-        projectDir: "/project",
-        outDir: ws.outDir,
-        data: {},
-        hooks: mock,
-        cwd: ws.root,
-      },
-    )) {
+    for await (const event of runHookPlanStream((b, d, hr) => wasm.planHooks(b, d, hr), {
+      bundle,
+      outDir: ws.outDir,
+      data: {},
+      hooks: mock,
+      cwd: ws.root,
+    })) {
       if (event.type === "run_start") {
         // Try to derail iteration: truncate the plan, and corrupt each
         // surviving entry's command.
@@ -615,9 +603,8 @@ default = true
     const { loadSpackleWasm } = await import("../src/wasm/index.ts");
     const wasm = await loadSpackleWasm();
     const events = await drain(
-      runHookPlanStream((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
+      runHookPlanStream((b, d, hr) => wasm.planHooks(b, d, hr), {
         bundle,
-        projectDir: "/project",
         outDir: "/tmp",
         data: {},
         hooks: mock,

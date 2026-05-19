@@ -168,11 +168,7 @@ describe("spackle render (diagnostics-first)", () => {
       join(FIXTURES, "basic_project"),
       "/project",
     );
-    const res = await renderBundle(
-      bundle,
-      { greeting: "hi", target: "world", filename: "notes" },
-      { virtualProjectDir: "/project", virtualOutDir: "/output" },
-    );
+    const res = await renderBundle(bundle, { greeting: "hi", target: "world", filename: "notes" });
     expect(res.diagnostics).toEqual([]);
     expect(res.files.length).toBeGreaterThan(0);
     expect(res.hookPlan).not.toBeNull();
@@ -184,11 +180,7 @@ describe("spackle render (diagnostics-first)", () => {
       join(FIXTURES, "bad_template"),
       "/project",
     );
-    const res = await renderBundle(
-      bundle,
-      { defined_slot: "value" },
-      { virtualProjectDir: "/project", virtualOutDir: "/output" },
-    );
+    const res = await renderBundle(bundle, { defined_slot: "value" });
     const renderDiag = res.diagnostics.find((d) => d.source === "render_body");
     expect(renderDiag).toBeDefined();
     expect(renderDiag?.message).toContain("invalid_slot");
@@ -207,10 +199,112 @@ describe("spackle render (diagnostics-first)", () => {
       bundle,
       // missing `target` and `filename`
       { greeting: "hi" },
-      { virtualProjectDir: "/project", virtualOutDir: "/output" },
     );
     const slotDataDiag = res.diagnostics.find((d) => d.source === "slot_data");
     expect(slotDataDiag).toBeDefined();
+  });
+});
+
+describe("spackle name overrides", () => {
+  test("generateBundle: projectName/outputName override the default basenames", async () => {
+    const bundle = await bundleFromDisk(
+      ["spackle.toml", "README.md.j2", "docs/static.md", "src/{{ filename }}.txt.j2"],
+      join(FIXTURES, "basic_project"),
+      "/project",
+    );
+    const res = await generateBundle(
+      bundle,
+      { greeting: "hi", target: "world", filename: "notes" },
+      { projectName: "override-proj", outputName: "override-out" },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const readme = res.files.find((f) => f.path === "README.md");
+    expect(readme).toBeDefined();
+    const body = new TextDecoder().decode(readme!.bytes);
+    // Defaults: config.name = "basic-project" / virtual out basename = "output".
+    // Both should be absent — overrides win.
+    expect(body).toContain("# override-proj");
+    expect(body).toContain("Output name: override-out");
+    expect(body).not.toContain("basic-project");
+    expect(body).not.toContain("Output name: output");
+  });
+
+  test("renderBundle: projectName/outputName overrides flow through", async () => {
+    const bundle = await bundleFromDisk(
+      ["spackle.toml", "README.md.j2", "docs/static.md", "src/{{ filename }}.txt.j2"],
+      join(FIXTURES, "basic_project"),
+      "/project",
+    );
+    const res = await renderBundle(
+      bundle,
+      { greeting: "hi", target: "world", filename: "notes" },
+      { projectName: "rendered-proj", outputName: "rendered-out" },
+    );
+    expect(res.diagnostics).toEqual([]);
+    const readme = res.files.find((f) => f.path === "README.md");
+    expect(readme).toBeDefined();
+    const body = new TextDecoder().decode(readme!.bytes);
+    expect(body).toContain("# rendered-proj");
+    expect(body).toContain("Output name: rendered-out");
+  });
+
+  test("generateBundle: omitting overrides preserves historical defaults", async () => {
+    const bundle = await bundleFromDisk(
+      ["spackle.toml", "README.md.j2", "docs/static.md", "src/{{ filename }}.txt.j2"],
+      join(FIXTURES, "basic_project"),
+      "/project",
+    );
+    const res = await generateBundle(bundle, {
+      greeting: "hi",
+      target: "world",
+      filename: "notes",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const readme = res.files.find((f) => f.path === "README.md");
+    const body = new TextDecoder().decode(readme!.bytes);
+    // Backwards-compat: config.name wins for _project_name; basename(/output) = "output".
+    expect(body).toContain("# basic-project");
+    expect(body).toContain("Output name: output");
+  });
+});
+
+describe("spackle bundle-root enforcement", () => {
+  test("generateBundle: rejects bundle entries rooted off the fixed /project anchor", async () => {
+    // Custom bundle (e.g. from a non-DiskFs source) rooted at the
+    // wrong prefix. Historically this surfaced as a confusing "no
+    // such file" deep in the renderer; the constraint surfaces it as
+    // a fast `ok: false`.
+    const bundle = await bundleFromDisk(
+      ["spackle.toml", "README.md.j2", "docs/static.md", "src/{{ filename }}.txt.j2"],
+      join(FIXTURES, "basic_project"),
+      "/elsewhere",
+    );
+    const res = await generateBundle(bundle, {
+      greeting: "hi",
+      target: "world",
+      filename: "notes",
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toMatch(/not under '\/project'/);
+  });
+
+  test("renderBundle: emits Config diagnostic when bundle root drifts", async () => {
+    const bundle = await bundleFromDisk(
+      ["spackle.toml", "README.md.j2", "docs/static.md", "src/{{ filename }}.txt.j2"],
+      join(FIXTURES, "basic_project"),
+      "/elsewhere",
+    );
+    const res = await renderBundle(bundle, {
+      greeting: "hi",
+      target: "world",
+      filename: "notes",
+    });
+    const configDiag = res.diagnostics.find((d) => d.source === "config");
+    expect(configDiag).toBeDefined();
+    expect(configDiag?.message).toMatch(/not under '\/project'/);
   });
 });
 
@@ -222,14 +316,14 @@ describe("spackle (bundle-only / MemoryFs)", () => {
       "/project",
     );
 
-    const checkRes = await checkBundle(bundle, "/project");
+    const checkRes = await checkBundle(bundle);
     expect(checkRes.diagnostics).toEqual([]);
 
-    const genRes = await generateBundle(
-      bundle,
-      { greeting: "hey", target: "mem", filename: "notes" },
-      { virtualProjectDir: "/project", virtualOutDir: "/output" },
-    );
+    const genRes = await generateBundle(bundle, {
+      greeting: "hey",
+      target: "mem",
+      filename: "notes",
+    });
     expect(genRes.ok).toBe(true);
     if (genRes.ok) {
       // Output bundle paths are RELATIVE to out_dir.

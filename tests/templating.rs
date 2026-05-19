@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use spackle::fs::StdFs;
 use spackle::template::{self, FileErrorKind, ValidateError};
-use spackle::{load_project, CheckError, GenerateError, LoadError};
+use spackle::{load_project, CheckError, GenerateError, LoadError, NameOverrides};
 
 mod common;
 use common::{list_files, out_dir, scaffold};
@@ -95,7 +95,7 @@ fn renders_special_project_name() {
     let dst = out.path().join("generated");
 
     let files = proj
-        .generate(&StdFs::new(), &project.path(), &dst, &HashMap::new())
+        .generate(&StdFs::new(), &project.path(), &dst, &HashMap::new(), NameOverrides::NONE)
         .unwrap();
 
     let readme = files.iter().find(|f| f.path.ends_with("readme")).unwrap();
@@ -113,7 +113,7 @@ fn renders_special_output_name() {
     let dst = out.path().join("chosen-output");
 
     let files = proj
-        .generate(&StdFs::new(), &project.path(), &dst, &HashMap::new())
+        .generate(&StdFs::new(), &project.path(), &dst, &HashMap::new(), NameOverrides::NONE)
         .unwrap();
     let where_file = files.iter().find(|f| f.path.ends_with("where")).unwrap();
     insta::assert_snapshot!(where_file.contents, @"output: chosen-output");
@@ -309,8 +309,14 @@ fn copy_templates_directory_name() {
     let out = out_dir();
     let dst = out.path().join("out");
 
-    proj.generate(&StdFs::new(), &project.path(), &dst, &data(&[("var", "x")]))
-        .unwrap();
+    proj.generate(
+        &StdFs::new(),
+        &project.path(),
+        &dst,
+        &data(&[("var", "x")]),
+        NameOverrides::NONE,
+    )
+    .unwrap();
 
     let files = list_files(&dst);
     assert_eq!(files, vec!["pinned-proj/readme.txt".to_string()]);
@@ -333,7 +339,7 @@ fn copy_skips_template_extensions() {
         let out = out_dir();
         let dst = out.path().join("out");
 
-        proj.generate(&StdFs::new(), &project.path(), &dst, &HashMap::new())
+        proj.generate(&StdFs::new(), &project.path(), &dst, &HashMap::new(), NameOverrides::NONE)
             .unwrap();
 
         let files = list_files(&dst);
@@ -356,7 +362,7 @@ fn copy_respects_ignore_patterns() {
     let out = out_dir();
     let dst = out.path().join("out");
 
-    proj.generate(&StdFs::new(), &project.path(), &dst, &HashMap::new())
+    proj.generate(&StdFs::new(), &project.path(), &dst, &HashMap::new(), NameOverrides::NONE)
         .unwrap();
 
     let files = list_files(&dst);
@@ -505,7 +511,8 @@ fn generate_basic_project_fixture() {
         ("filename", "dynamic"),
     ]);
 
-    proj.generate(&fs, &fixture, &dst, &data).unwrap();
+    proj.generate(&fs, &fixture, &dst, &data, NameOverrides::NONE)
+        .unwrap();
 
     // Structural snapshot — what files exist, relative to out dir.
     let tree = list_files(&dst);
@@ -530,7 +537,7 @@ fn generate_fails_when_out_dir_exists() {
     std::fs::create_dir_all(&dst).unwrap();
 
     let err = proj
-        .generate(&StdFs::new(), &project.path(), &dst, &HashMap::new())
+        .generate(&StdFs::new(), &project.path(), &dst, &HashMap::new(), NameOverrides::NONE)
         .unwrap_err();
     assert!(matches!(err, GenerateError::AlreadyExists(_)));
 }

@@ -7,16 +7,23 @@
 // destination) however it wants.
 //
 // Convenience APIs:
-//   - `check(projectDir, fs)` / `checkBundle(bundle, virtualDir)`
+//   - `check(projectDir, fs)` / `checkBundle(bundle)`
 //   - `validateSlotData(...)` / `validateSlotDataBundle(...)`
 //   - `generate(projectDir, outDir, slotData, fs, opts)` — reads from
 //     disk via DiskFs, calls wasm, writes output bundle back to disk.
-//   - `generateBundle(projectBundle, projectDir, outDir, slotData, opts)`
-//     — pure bundle-to-bundle; for memory-fs / preview flows.
+//   - `generateBundle(projectBundle, slotData, opts)` — pure
+//     bundle-to-bundle; for memory-fs / preview flows.
+//
+// Virtual-fs anchors are pinned inside the wasm crate; callers never
+// supply them. `_project_name` / `_output_name` are still
+// caller-controllable via the `projectName` / `outputName` options on
+// the relevant entry points.
+
+import { basename } from "node:path";
 
 import { DiskFs } from "./host/disk-fs.ts";
 import { type HookEvent, runHookPlanStream, type SpackleHooks } from "./host/hooks.ts";
-import { loadSpackleWasm } from "./wasm/index.ts";
+import { loadSpackleWasm, type NameOverrides } from "./wasm/index.ts";
 import type {
   Bundle,
   CheckResponse,
@@ -27,28 +34,62 @@ import type {
   ValidationResponse,
 } from "./wasm/types.ts";
 
-const DEFAULT_VIRTUAL_PROJECT = "/project";
-const DEFAULT_VIRTUAL_OUTPUT = "/output";
-
 export interface CheckOptions {
-  /** Virtual path the project bundle is rooted at. Defaults to
-   * `/project`; rarely needs overriding. */
-  virtualProjectDir?: string;
+  // Intentionally empty. Kept as a stable extension point and so the
+  // function signatures stay `(..., opts?)` if we need to add knobs
+  // later without a breaking change.
 }
 
-export interface GenerateOptions extends CheckOptions {
-  /** Virtual path used for the generate output root. Defaults to
-   * `/output`. */
-  virtualOutDir?: string;
+export interface GenerateOptions {
+  /** Override `_project_name`. Defaults to `config.name` from
+   * `spackle.toml` (and ultimately the basename of the fixed virtual
+   * project dir for projects with no `name`). */
+  projectName?: string;
+  /** Override `_output_name`. For disk-backed `generate` / `render`
+   * the default is `basename(outDir)`; for `generateBundle` /
+   * `renderBundle` the default falls back to the basename of the
+   * fixed virtual out dir constant. */
+  outputName?: string;
 }
 
-export interface RunHooksOptions extends CheckOptions {
+export interface RunHooksOptions {
   /** Injected executor. Defaults to `defaultHooks()` (auto-selects
    * `BunHooks` / `NodeHooks`; throws in browser-like hosts). */
   hooks?: SpackleHooks;
   /** Working dir for spawned processes. Defaults to `outDir`. */
   cwd?: string;
   env?: Record<string, string>;
+  /** Override `_project_name` for hook command templating. */
+  projectName?: string;
+  /** Override `_output_name` for hook command templating. Defaults
+   * to `basename(outDir)` so templated `{{ _output_name }}` matches
+   * the real write target. */
+  outputName?: string;
+}
+
+interface DiskNameOpts {
+  projectName?: string;
+  outputName?: string;
+}
+
+/** For disk-backed entry points: preserve the historical default of
+ * `_output_name = basename(realOutDir)` unless the caller overrides. */
+function diskNames(outDir: string, opts: DiskNameOpts): NameOverrides {
+  return {
+    projectName: opts.projectName,
+    outputName: opts.outputName ?? basename(outDir),
+  };
+}
+
+/** For bundle-only entry points: no real outDir, so we just pass
+ * whatever the caller supplied. Unset → wasm falls back to basename
+ * of the fixed virtual out dir constant. */
+function bundleNames(opts: DiskNameOpts): NameOverrides | undefined {
+  if (opts.projectName === undefined && opts.outputName === undefined) return undefined;
+  const out: NameOverrides = {};
+  if (opts.projectName !== undefined) out.projectName = opts.projectName;
+  if (opts.outputName !== undefined) out.outputName = opts.outputName;
+  return out;
 }
 
 /**
@@ -59,20 +100,16 @@ export interface RunHooksOptions extends CheckOptions {
 export async function check(
   projectDir: string,
   fs: DiskFs,
-  opts: CheckOptions = {},
+  _opts: CheckOptions = {},
 ): Promise<CheckResponse> {
-  const virtualDir = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
-  const bundle = fs.readProject(projectDir, { virtualRoot: virtualDir });
-  return checkBundle(bundle, virtualDir);
+  const bundle = fs.readProject(projectDir);
+  return checkBundle(bundle);
 }
 
 /** Same as `check` but takes a pre-built bundle (memory-fs / preview flow). */
-export async function checkBundle(
-  bundle: Bundle,
-  virtualProjectDir: string = DEFAULT_VIRTUAL_PROJECT,
-): Promise<CheckResponse> {
+export async function checkBundle(bundle: Bundle): Promise<CheckResponse> {
   const wasm = await loadSpackleWasm();
-  return wasm.check(bundle, virtualProjectDir);
+  return wasm.check(bundle);
 }
 
 /**
@@ -82,21 +119,19 @@ export async function validateSlotData(
   projectDir: string,
   slotData: SlotData,
   fs: DiskFs,
-  opts: CheckOptions = {},
+  _opts: CheckOptions = {},
 ): Promise<ValidationResponse> {
-  const virtualDir = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
-  const bundle = fs.readProject(projectDir, { virtualRoot: virtualDir });
-  return validateSlotDataBundle(bundle, slotData, virtualDir);
+  const bundle = fs.readProject(projectDir);
+  return validateSlotDataBundle(bundle, slotData);
 }
 
 /** Bundle variant of `validateSlotData`. */
 export async function validateSlotDataBundle(
   bundle: Bundle,
   slotData: SlotData,
-  virtualProjectDir: string = DEFAULT_VIRTUAL_PROJECT,
 ): Promise<ValidationResponse> {
   const wasm = await loadSpackleWasm();
-  return wasm.validateSlotData(bundle, virtualProjectDir, slotData);
+  return wasm.validateSlotData(bundle, slotData);
 }
 
 /**
@@ -116,13 +151,9 @@ export async function generate(
   fs: DiskFs,
   opts: GenerateOptions = {},
 ): Promise<GenerateResponse> {
-  const virtualProject = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
-  const virtualOut = opts.virtualOutDir ?? DEFAULT_VIRTUAL_OUTPUT;
-  const bundle = fs.readProject(projectDir, { virtualRoot: virtualProject });
-  const result = await generateBundle(bundle, slotData, {
-    virtualProjectDir: virtualProject,
-    virtualOutDir: virtualOut,
-  });
+  const bundle = fs.readProject(projectDir);
+  const wasm = await loadSpackleWasm();
+  const result = wasm.generate(bundle, slotData, diskNames(outDir, opts));
   if (result.ok) {
     fs.writeOutput(outDir, { files: result.files, dirs: result.dirs });
   }
@@ -136,10 +167,8 @@ export async function generateBundle(
   slotData: SlotData,
   opts: GenerateOptions = {},
 ): Promise<GenerateResponse> {
-  const virtualProject = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
-  const virtualOut = opts.virtualOutDir ?? DEFAULT_VIRTUAL_OUTPUT;
   const wasm = await loadSpackleWasm();
-  return wasm.generate(projectBundle, virtualProject, virtualOut, slotData);
+  return wasm.generate(projectBundle, slotData, bundleNames(opts));
 }
 
 /**
@@ -160,13 +189,9 @@ export async function render(
   fs: DiskFs,
   opts: GenerateOptions = {},
 ): Promise<RenderResponse> {
-  const virtualProject = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
-  const virtualOut = opts.virtualOutDir ?? DEFAULT_VIRTUAL_OUTPUT;
-  const bundle = fs.readProject(projectDir, { virtualRoot: virtualProject });
-  const result = await renderBundle(bundle, slotData, {
-    virtualProjectDir: virtualProject,
-    virtualOutDir: virtualOut,
-  });
+  const bundle = fs.readProject(projectDir);
+  const wasm = await loadSpackleWasm();
+  const result = wasm.render(bundle, slotData, diskNames(outDir, opts));
   // No `result.ok` discriminant — write whatever rendered, regardless of
   // diagnostics. Caller decides what to do with the diagnostics array.
   if (result.files.length > 0 || result.dirs.length > 0) {
@@ -181,10 +206,8 @@ export async function renderBundle(
   slotData: SlotData,
   opts: GenerateOptions = {},
 ): Promise<RenderResponse> {
-  const virtualProject = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
-  const virtualOut = opts.virtualOutDir ?? DEFAULT_VIRTUAL_OUTPUT;
   const wasm = await loadSpackleWasm();
-  return wasm.render(projectBundle, virtualProject, virtualOut, slotData);
+  return wasm.render(projectBundle, slotData, bundleNames(opts));
 }
 
 /**
@@ -197,30 +220,33 @@ export async function renderBundle(
  * slot values plus hook toggles keyed by the hook's own `key`
  * (e.g. `{ "format_code": "false" }` to disable that hook).
  * `_project_name` and `_output_name` are injected wasm-side — don't
- * pre-inject.
+ * pre-inject. `outputName` defaults to `basename(outDir)` for
+ * disk-backed callers.
  */
 export async function planHooks(
   projectDir: string,
   outDir: string,
   data: Record<string, string>,
   fs: DiskFs,
-  opts: CheckOptions & { hookRan?: Record<string, boolean> } = {},
+  opts: {
+    hookRan?: Record<string, boolean>;
+    projectName?: string;
+    outputName?: string;
+  } = {},
 ): Promise<PlanHooksResponse> {
-  const virtualDir = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
-  const bundle = fs.readProject(projectDir, { virtualRoot: virtualDir });
-  return planHooksBundle(bundle, virtualDir, outDir, data, opts.hookRan);
+  const bundle = fs.readProject(projectDir);
+  return planHooksBundle(bundle, data, opts.hookRan, diskNames(outDir, opts));
 }
 
 /** Bundle variant of `planHooks`. */
 export async function planHooksBundle(
   projectBundle: Bundle,
-  virtualProjectDir: string,
-  outDir: string,
   data: Record<string, string>,
   hookRan?: Record<string, boolean>,
+  names?: NameOverrides,
 ): Promise<PlanHooksResponse> {
   const wasm = await loadSpackleWasm();
-  return wasm.planHooks(projectBundle, virtualProjectDir, outDir, data, hookRan);
+  return wasm.planHooks(projectBundle, data, hookRan, names);
 }
 
 /**
@@ -230,7 +256,8 @@ export async function planHooksBundle(
  *
  * Mirrors native `Project::run_hooks_stream` at `src/lib.rs:246`:
  * `data` is the full data map (slots + hook toggles). `_project_name` /
- * `_output_name` are injected wasm-side.
+ * `_output_name` are injected wasm-side. `outputName` defaults to
+ * `basename(outDir)`.
  *
  * Event protocol: see `HookEvent`. Consumers `for await` the generator
  * and update their UI on each `hook_start` / `hook_end` transition;
@@ -252,35 +279,33 @@ export function runHooksStream(
   fs: DiskFs,
   opts: RunHooksOptions = {},
 ): AsyncGenerator<HookEvent> {
-  const virtualDir = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
-  const bundle = fs.readProject(projectDir, { virtualRoot: virtualDir });
+  const bundle = fs.readProject(projectDir);
+  const names = diskNames(outDir, opts);
   // Wrap the planner call in an async bridge so the generator can start
   // yielding events without awaiting wasm load outside the iterator.
   async function* inner(): AsyncGenerator<HookEvent> {
     const wasm = await loadSpackleWasm();
-    yield* runHookPlanStream(
-      (b, pdir, odir, d, hookRan) => wasm.planHooks(b, pdir, odir, d, hookRan),
-      {
-        bundle,
-        projectDir: virtualDir,
-        outDir,
-        data,
-        hooks: opts.hooks,
-        cwd: opts.cwd ?? outDir,
-        env: opts.env,
-      },
-    );
+    yield* runHookPlanStream((b, d, hookRan) => wasm.planHooks(b, d, hookRan, names), {
+      bundle,
+      outDir,
+      data,
+      hooks: opts.hooks,
+      cwd: opts.cwd ?? outDir,
+      env: opts.env,
+    });
   }
   return inner();
 }
 
 export type {
   ConfigureSpackleWasmOptions,
+  NameOverrides,
   SpackleWasm,
   SpackleWasmModuleSource,
 } from "./wasm/index.ts";
 export { configureSpackleWasm, loadSpackleWasm } from "./wasm/index.ts";
 export {
+  BUNDLE_PROJECT_ROOT,
   DiskFs,
   type DiskFsOptions,
   type ReadProjectOptions,

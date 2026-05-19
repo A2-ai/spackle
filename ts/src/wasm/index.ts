@@ -33,6 +33,7 @@ export const { loadSpackleWasm, configureSpackleWasm } = createSpackleWasmLoader
 
 export type {
   ConfigureSpackleWasmOptions,
+  NameOverrides,
   SpackleWasm,
   SpackleWasmModuleSource,
 } from "./runtime.ts";

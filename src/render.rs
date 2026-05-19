@@ -7,7 +7,7 @@ use crate::{
     check, copy,
     diagnostic::{self, Diagnostic, DiagnosticSource, Severity},
     fs::FileSystem,
-    get_output_name, hook, slot, template,
+    get_output_name, hook, slot, template, NameOverrides,
 };
 
 pub struct RenderReport {
@@ -21,11 +21,16 @@ pub struct RenderReport {
 }
 
 /// Never returns `Err` — empty `diagnostics` means a clean render.
+///
+/// `names` lets callers override the `_project_name` / `_output_name`
+/// Tera vars independently of the bundle layout; pass
+/// [`NameOverrides::NONE`] for the historical defaults.
 pub fn render<F: FileSystem>(
     fs: &F,
     project_dir: &Path,
     out_dir: &Path,
     slot_data: &HashMap<String, String>,
+    names: NameOverrides<'_>,
 ) -> RenderReport {
     let mut diagnostics = Vec::new();
 
@@ -45,13 +50,19 @@ pub fn render<F: FileSystem>(
         }
     };
 
-    let project_name = config.name.clone().unwrap_or_else(|| {
-        project_dir
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned()
+    let project_name = names.project_name.map(str::to_owned).unwrap_or_else(|| {
+        config.name.clone().unwrap_or_else(|| {
+            project_dir
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        })
     });
+    let output_name = names
+        .output_name
+        .map(str::to_owned)
+        .unwrap_or_else(|| get_output_name(out_dir));
 
     // Slot data errors don't short-circuit — Tera will surface real
     // undefined-var hits per-file, which is more useful than aborting.
@@ -61,7 +72,7 @@ pub fn render<F: FileSystem>(
 
     let mut data = slot_data.clone();
     data.insert("_project_name".to_string(), project_name);
-    data.insert("_output_name".to_string(), get_output_name(out_dir));
+    data.insert("_output_name".to_string(), output_name);
 
     // copy_collect's outer `Err` is reserved for non-recoverable
     // preconditions (no writable dest root, no readable src); per-entry
@@ -143,7 +154,13 @@ mod tests {
             ("target".to_string(), "world".to_string()),
             ("filename".to_string(), "dynamic".to_string()),
         ]);
-        let report = render(&StdFs::new(), &fixture("basic_project"), &out, &data);
+        let report = render(
+            &StdFs::new(),
+            &fixture("basic_project"),
+            &out,
+            &data,
+            NameOverrides::NONE,
+        );
         assert!(
             report.diagnostics.is_empty(),
             "expected zero diagnostics, got {:?}",
@@ -159,7 +176,13 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let out = tmp.path().join("out");
         let data = HashMap::from([("defined_slot".to_string(), "value".to_string())]);
-        let report = render(&StdFs::new(), &fixture("bad_template"), &out, &data);
+        let report = render(
+            &StdFs::new(),
+            &fixture("bad_template"),
+            &out,
+            &data,
+            NameOverrides::NONE,
+        );
         assert!(
             report
                 .diagnostics
@@ -180,7 +203,13 @@ mod tests {
         // basic_project requires `greeting`, `target`, `filename` slots;
         // supply only one.
         let data = HashMap::from([("greeting".to_string(), "hello".to_string())]);
-        let report = render(&StdFs::new(), &fixture("basic_project"), &out, &data);
+        let report = render(
+            &StdFs::new(),
+            &fixture("basic_project"),
+            &out,
+            &data,
+            NameOverrides::NONE,
+        );
         assert!(
             report
                 .diagnostics
