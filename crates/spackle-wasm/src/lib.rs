@@ -5,6 +5,16 @@
 //! returns a serialized result. Rust never touches the host's filesystem;
 //! the TS host does all disk I/O and subprocess execution.
 //!
+//! `generate` is the exception to the pure bundle-in/bundle-out shape:
+//! output is streamed through a host-supplied `on_entry` callback rather
+//! than buffered into a returned bundle, so the wasm side no longer
+//! holds a second copy of the rendered subtree alongside Tera's render
+//! buffer. The template stage still renders all `.j2` files into a
+//! `Vec<RenderedFile>` before writing (see `template::fill`), so peak
+//! memory is bounded by the rendered template bytes rather than by one
+//! entry — copies stream cleanly. See the export's `///` docs for the
+//! event shape and `callback_fs.rs` for the full caveat.
+//!
 //! Per-export shapes and contracts live on the function `///` docs below.
 
 use std::collections::HashMap;
@@ -13,8 +23,10 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
+mod callback_fs;
 pub mod memory_fs;
 
+use callback_fs::{CallbackFs, JsCallbackSink};
 use memory_fs::{BundleEntry, MemoryFs};
 
 #[wasm_bindgen(start)]
@@ -58,12 +70,6 @@ struct ValidationErr {
 #[derive(Serialize)]
 struct GenerateOk {
     ok: bool,
-    files: Vec<BundleEntry>,
-    /// Directories under `out_dir` relative to it. Included separately
-    /// from `files` so empty dirs (created by the copy pass for
-    /// Directory entries that had no files pass the ignore filter)
-    /// survive the bundle round-trip — host must `mkdir -p` each.
-    dirs: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -170,9 +176,28 @@ pub fn validate_slot_data(
     }
 }
 
-/// Generate a filled project. Runs the full generate pipeline (copy +
-/// template fill) against an in-memory fs, returns the rendered subtree
-/// as a flat bundle with paths relative to `out_dir`.
+/// Generate a filled project, streaming each output entry through a
+/// host-supplied callback as it's produced.
+///
+/// `on_entry(event)` is called synchronously for every output file and
+/// directory, where `event` is one of:
+///   - `{ kind: "file", path: string, bytes: Uint8Array }` — `path` is
+///     relative to `out_dir`.
+///   - `{ kind: "dir", path: string }` — same path semantics.
+///
+/// Order: directories arrive root-to-leaf and before any file under
+/// them (parent-before-child), interleaved with file events as the
+/// copy/template walks produce them.
+///
+/// Return envelope:
+///   success: `{ ok: true }`
+///   failure: `{ ok: false, error: "..." }`
+///
+/// If `on_entry` throws, the error is latched and short-circuits any
+/// remaining Rust-side writes; the latched message is returned as the
+/// envelope's `error`. The host callback wins over downstream
+/// `GenerateError`s — those are typically just downstream effects of
+/// the latched abort.
 ///
 /// Hooks are a separate step — mirror the native CLI's two-call shape
 /// (`project.generate(...)` then `project.run_hooks_stream(...)`). Call
@@ -184,14 +209,17 @@ pub fn generate(
     project_dir: &str,
     out_dir: &str,
     slot_data_json: &str,
+    on_entry: js_sys::Function,
 ) -> JsValue {
     let entries = match decode_bundle(project_bundle) {
         Ok(e) => e,
         Err(msg) => return generate_err_value(msg),
     };
-    let fs = MemoryFs::from_bundle(entries);
     let project_path = PathBuf::from(project_dir);
     let out_path = PathBuf::from(out_dir);
+
+    let source = MemoryFs::from_bundle(entries);
+    let fs = CallbackFs::new(source, out_path.clone(), JsCallbackSink::new(on_entry));
 
     let project = match spackle::load_project(&fs, &project_path) {
         Ok(p) => p,
@@ -207,18 +235,23 @@ pub fn generate(
         return generate_err_value(format!("slot data invalid: {}", e));
     }
 
-    if let Err(e) = project.generate(&fs, &project_path, &out_path, &slot_data) {
+    let generate_result = project.generate(&fs, &project_path, &out_path, &slot_data);
+
+    // Host callback errors latch in CallbackFs and turn subsequent
+    // writes into io::Error — those propagate up as
+    // `GenerateError::FileError`. The latched message is the original
+    // cause; surface it preferentially.
+    if let Some(msg) = fs.take_callback_error() {
+        return generate_err_value(msg);
+    }
+
+    if let Err(e) = generate_result {
         return generate_err_value(e.to_string());
     }
 
-    let (files, dirs) = fs.drain_subtree(&out_path);
-    GenerateOk {
-        ok: true,
-        files,
-        dirs,
-    }
-    .serialize(&serializer())
-    .unwrap_or(JsValue::NULL)
+    GenerateOk { ok: true }
+        .serialize(&serializer())
+        .unwrap_or(JsValue::NULL)
 }
 
 /// Diagnostics-first render: never throws, never returns `ok: false`.

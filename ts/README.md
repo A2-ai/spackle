@@ -72,7 +72,8 @@ The library ships two host-side helpers. Use the one matching where your bytes a
 Use when your projects live on disk and you want generated output written back to disk.
 
 - Reads a project directory into a bundle via `readProject`.
-- Writes a generate response back out via `writeOutput`.
+- Streams each rendered entry to disk via `writeEntry` (the `generate(...)` orchestrator uses this under the hood).
+- Writes a buffered bundle out via `writeOutput` (for `generateBundle` / `render` outputs already in memory).
 - Enforces a workspace-root containment boundary; refuses paths that escape.
 - Matches native `spackle generate`'s "outDir must not pre-exist" contract.
 
@@ -112,4 +113,4 @@ You can mix: read a project from disk with `DiskFs.readProject`, inspect or muta
 
 - **Browser hosts need a custom `SpackleHooks`.** `runHooksStream()` uses `defaultHooks()` which picks `BunHooks` / `NodeHooks` at runtime; a browser throws with a clear message. Supply a custom executor (e.g. one that posts to a backend) to run hooks there. See [hooks docs](../docs/ts/hooks.md).
 - **UTF-8 paths only.**
-- **Whole-project marshalling.** Bundles live in memory during the call; fine for KB–MB templates, no streaming path yet.
+- **Input bundle and template render pass are buffered.** The `generate(...)` write side streams to disk through `DiskFs.writeEntry`, but the input project bundle is read in full before the wasm call and spackle core renders all `.j2` files into a `Vec<RenderedFile>` before the per-file write loop. Fine for KB–MB templates; very large fixtures need an input-side / render-side streaming path that doesn't exist yet.

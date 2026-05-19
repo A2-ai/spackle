@@ -29,13 +29,15 @@ const result = await generate(
 );
 
 if (result.ok) {
-    console.log(`Wrote ${result.files.length} files.`);
+    console.log(`Wrote ${result.files} file(s), ${result.dirs} dir(s).`);
 } else {
     console.error(result.error);
 }
 ```
 
-`DiskFs` handles reading the project into a bundle, calling wasm, and writing the output bundle back to disk. The `workspaceRoot` option is a containment boundary — both `projectDir` and `outDir` must resolve under it, or `DiskFs` refuses the call.
+`generate` streams each rendered entry to disk through `DiskFs.writeEntry` as Rust produces it. On success the response carries **counts**, not a bundle — if you need the rendered tree in memory, call `generateBundle` (see [API reference](./api.md#bundle-variants)) or read the output back from disk after the call.
+
+`DiskFs` handles reading the project into a bundle, streaming wasm output back out, and enforcing the `workspaceRoot` containment boundary — both `projectDir` and `outDir` must resolve under it, or `DiskFs` refuses the call.
 
 ## What's a "project"?
 

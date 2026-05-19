@@ -5,7 +5,8 @@
 import type {
   Bundle,
   CheckResponse,
-  GenerateResponse,
+  GenerateResult,
+  GenerateStreamEntry,
   PlanHooksResponse,
   RenderResponse,
   SlotData,
@@ -30,11 +31,16 @@ export interface RawWasmExports {
   initWasm: InitWasm;
   check(projectBundle: unknown, projectDir: string): string;
   validateSlotData(projectBundle: unknown, projectDir: string, slotDataJson: string): string;
+  /** Streams output entries through `onEntry` synchronously while the
+   * wasm call runs; returns a terminal envelope. The callback receives
+   * raw `{kind, path, bytes?}` objects from serde-wasm-bindgen — the
+   * typed wrapper below narrows this for callers. */
   generate(
     projectBundle: unknown,
     projectDir: string,
     outDir: string,
     slotDataJson: string,
+    onEntry: (event: unknown) => void,
   ): unknown;
   render(projectBundle: unknown, projectDir: string, outDir: string, slotDataJson: string): unknown;
   planHooks(
@@ -55,12 +61,21 @@ export interface SpackleWasm {
     projectDir: string,
     slotData: SlotData,
   ): ValidationResponse;
+  /** Run generate, streaming each output file/dir through `onEntry` as
+   * it's produced. Returns once Rust has finished walking the project.
+   * Bytes are dropped after each callback returns, so the wasm host no
+   * longer holds a duplicate output bundle. NOTE: this does NOT mean
+   * peak heap is one entry — core's template stage renders all `.j2`
+   * files into a `Vec<RenderedFile>` before the per-file write loop
+   * (see `crates/spackle-wasm/src/callback_fs.rs` for the full
+   * caveat). Copies stream cleanly; templates still spike. */
   generate(
     projectBundle: Bundle,
     projectDir: string,
     outDir: string,
     slotData: SlotData,
-  ): GenerateResponse;
+    onEntry: (event: GenerateStreamEntry) => void,
+  ): GenerateResult;
   /** Dynamic render-with-data, diagnostics-first. Never throws / never
    * returns `ok: false`. Empty `diagnostics` ⇒ clean render. */
   render(
@@ -133,15 +148,20 @@ async function initialize(
         raw.validateSlotData(projectBundle, projectDir, JSON.stringify(slotData)),
       ) as ValidationResponse;
     },
-    generate(projectBundle, projectDir, outDir, slotData) {
-      // generate returns a JsValue (object), not a JSON string.
+    generate(projectBundle, projectDir, outDir, slotData, onEntry) {
+      // generate returns a JsValue (object), not a JSON string. The
+      // callback receives serde-wasm-bindgen-shaped {kind, path, bytes?}
+      // objects — assert the narrowed entry shape here so consumers
+      // see the typed union.
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
       return raw.generate(
         projectBundle,
         projectDir,
         outDir,
         JSON.stringify(slotData),
-      ) as GenerateResponse;
+        // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
+        (event: unknown) => onEntry(event as GenerateStreamEntry),
+      ) as GenerateResult;
     },
     render(projectBundle, projectDir, outDir, slotData) {
       // render returns a JsValue (object), not a JSON string.

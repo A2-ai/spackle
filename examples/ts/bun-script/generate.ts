@@ -37,10 +37,11 @@ async function main() {
         process.exit(1);
     }
 
-    console.log(`Wrote ${result.files.length} file(s) to ${outDir}:`);
-    for (const entry of result.files) {
-        console.log(`  ${entry.path}  (${entry.bytes.length} bytes)`);
-    }
+    // `generate` streams entries to disk and returns counts, not a
+    // bundle — read the tree back off disk to inspect contents.
+    console.log(
+        `Streamed ${result.files} file(s), ${result.dirs} dir(s) to ${outDir}.`,
+    );
     console.log("\nContents:");
     for (const name of await readdir(outDir)) {
         const body = await readFile(join(outDir, name), "utf8");
