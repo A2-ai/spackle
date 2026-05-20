@@ -5,9 +5,9 @@
 import type {
   Bundle,
   CheckResponse,
-  GenerateResponse,
   PlanHooksResponse,
-  RenderResponse,
+  RenderFileResponse,
+  RenderPathResponse,
   SlotData,
   ValidationResponse,
 } from "./types.ts";
@@ -30,13 +30,11 @@ export interface RawWasmExports {
   initWasm: InitWasm;
   check(projectBundle: unknown, projectDir: string): string;
   validateSlotData(projectBundle: unknown, projectDir: string, slotDataJson: string): string;
-  generate(
-    projectBundle: unknown,
-    projectDir: string,
-    outDir: string,
-    slotDataJson: string,
-  ): unknown;
-  render(projectBundle: unknown, projectDir: string, outDir: string, slotDataJson: string): unknown;
+  /** Returns `{ bytes, diagnostics }` as a `JsValue` object (not a
+   * JSON string); the typed wrapper narrows it. */
+  renderFile(templateBundle: unknown, targetPath: string, slotDataJson: string): unknown;
+  /** Returns `{ path, diagnostics }` as a `JsValue` object. */
+  renderPath(pathTemplate: string, slotDataJson: string): unknown;
   planHooks(
     projectBundle: unknown,
     projectDir: string,
@@ -55,20 +53,18 @@ export interface SpackleWasm {
     projectDir: string,
     slotData: SlotData,
   ): ValidationResponse;
-  generate(
-    projectBundle: Bundle,
-    projectDir: string,
-    outDir: string,
-    slotData: SlotData,
-  ): GenerateResponse;
-  /** Dynamic render-with-data, diagnostics-first. Never throws / never
-   * returns `ok: false`. Empty `diagnostics` ⇒ clean render. */
-  render(
-    projectBundle: Bundle,
-    projectDir: string,
-    outDir: string,
-    slotData: SlotData,
-  ): RenderResponse;
+  /** Render one target template against an in-memory registry of
+   * template sources. `templateBundle` should contain every `.j2` /
+   * `.tera` body the host wants Tera to see — Tera 2's cross-template
+   * tags (`{% include %}` / `{% extends %}`) in `targetPath` resolve
+   * against the bundle. Static asset bytes must stay out of the
+   * bundle. The bundle paths and `targetPath` use the same key
+   * space. */
+  renderFile(templateBundle: Bundle, targetPath: string, slotData: SlotData): RenderFileResponse;
+  /** Render a single path template (e.g. `"src/{{ project }}.txt"`).
+   * On error, `path` falls back to the input — branch on
+   * `diagnostics`. */
+  renderPath(pathTemplate: string, slotData: SlotData): RenderPathResponse;
   planHooks(
     projectBundle: Bundle,
     projectDir: string,
@@ -133,25 +129,18 @@ async function initialize(
         raw.validateSlotData(projectBundle, projectDir, JSON.stringify(slotData)),
       ) as ValidationResponse;
     },
-    generate(projectBundle, projectDir, outDir, slotData) {
-      // generate returns a JsValue (object), not a JSON string.
+    renderFile(templateBundle, targetPath, slotData) {
+      // render_file returns a JsValue object, not a JSON string.
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
-      return raw.generate(
-        projectBundle,
-        projectDir,
-        outDir,
+      return raw.renderFile(
+        templateBundle,
+        targetPath,
         JSON.stringify(slotData),
-      ) as GenerateResponse;
+      ) as RenderFileResponse;
     },
-    render(projectBundle, projectDir, outDir, slotData) {
-      // render returns a JsValue (object), not a JSON string.
+    renderPath(pathTemplate, slotData) {
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
-      return raw.render(
-        projectBundle,
-        projectDir,
-        outDir,
-        JSON.stringify(slotData),
-      ) as RenderResponse;
+      return raw.renderPath(pathTemplate, JSON.stringify(slotData)) as RenderPathResponse;
     },
     planHooks(projectBundle, projectDir, outDir, data, hookRan) {
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion

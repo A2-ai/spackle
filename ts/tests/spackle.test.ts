@@ -1,21 +1,30 @@
-// End-to-end tests — exercise check/validateSlotData/generate through
-// the bundle-in / bundle-out API. DiskFs covers the disk-backed flow,
-// checkBundle / generateBundle covers the in-memory flow.
+// End-to-end tests for the TS orchestrator. Exercise the public
+// surface (`check`, `validateSlotData`, `generate`, `render`) against
+// the fixture projects in `tests/fixtures/`.
+//
+// The orchestrator owns project walking + disk I/O; wasm handles
+// config validation, per-file render, and hook planning. These tests
+// catch:
+//   - check / validateSlotData flow through wasm cleanly
+//   - disk-direct `generate` writes the rendered tree with the right
+//     contents, applies the ignore filter (basename at any depth),
+//     classifies templates by source name, and streams static files
+//   - render (diagnostics-first) collects diagnostics without aborting
+//   - failure modes (pre-existing outDir, slot validation failure)
+//     match native semantics
 
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { cp, mkdtemp, realpath, rm, readFile } from "node:fs/promises";
+import { cp, mkdtemp, realpath, rm, readFile, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import {
   DiskFs,
-  MemoryFs,
   check,
   checkBundle,
   configureSpackleWasm,
   generate,
-  generateBundle,
-  renderBundle,
+  render,
   validateSlotData,
 } from "../src/spackle.ts";
 
@@ -34,15 +43,6 @@ async function workspace(fixture: string) {
   await cp(join(FIXTURES, fixture), projectDir, { recursive: true });
   const outDir = join(root, "output");
   return { root, projectDir, outDir };
-}
-
-async function bundleFromDisk(fixtureSubpaths: string[], fixtureRoot: string, virtualRoot: string) {
-  return Promise.all(
-    fixtureSubpaths.map(async (sub) => {
-      const content = await readFile(join(fixtureRoot, sub));
-      return { path: `${virtualRoot}/${sub}`, bytes: new Uint8Array(content) };
-    }),
-  );
 }
 
 describe("spackle (DiskFs)", () => {
@@ -83,6 +83,67 @@ describe("spackle (DiskFs)", () => {
     expect(res.config).not.toBeNull();
   });
 
+  test("check: allows templates that use {% include %} (registry-backed render)", async () => {
+    // renderFile now takes a template-source registry, so cross-
+    // template tags resolve. `check` should NOT flag them.
+    const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-tag-")));
+    cleanup.push(root);
+    const projectDir = join(root, "project");
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(join(projectDir, "spackle.toml"), 'name = "incl"\n');
+    await writeFile(join(projectDir, "main.j2"), '{% include "partial.j2" %}\n');
+    await writeFile(join(projectDir, "partial.j2"), "static partial\n");
+    const fs = new DiskFs({ workspaceRoot: root });
+    const res = await check(projectDir, fs);
+    expect(res.diagnostics).toEqual([]);
+  });
+
+  test("generate: {% include %} resolves against the project registry", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-include-")));
+    cleanup.push(root);
+    const projectDir = join(root, "project");
+    const outDir = join(root, "output");
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(
+      join(projectDir, "spackle.toml"),
+      'name = "incl"\n[[slots]]\nkey = "who"\ntype = "String"\n',
+    );
+    await writeFile(join(projectDir, "main.j2"), 'hello {% include "partial.j2" %}');
+    await writeFile(join(projectDir, "partial.j2"), "{{ who }}!");
+
+    const fs = new DiskFs({ workspaceRoot: root });
+    const res = await generate(projectDir, outDir, { who: "world" }, fs);
+    expect(res.ok).toBe(true);
+    const out = await readFile(join(outDir, "main"), "utf8");
+    expect(out).toBe("hello world!");
+  });
+
+  test("generate: {% extends %} inheritance resolves against the registry", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-extends-")));
+    cleanup.push(root);
+    const projectDir = join(root, "project");
+    const outDir = join(root, "output");
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(
+      join(projectDir, "spackle.toml"),
+      'name = "ext"\n[[slots]]\nkey = "title"\ntype = "String"\n',
+    );
+    await writeFile(
+      join(projectDir, "base.j2"),
+      "BEGIN {% block body %}default{% endblock body %} END",
+    );
+    await writeFile(
+      join(projectDir, "child.j2"),
+      '{% extends "base.j2" %}{% block body %}{{ title }}{% endblock body %}',
+    );
+
+    const fs = new DiskFs({ workspaceRoot: root });
+    const res = await generate(projectDir, outDir, { title: "hello" }, fs);
+    expect(res.ok).toBe(true);
+    const child = await readFile(join(outDir, "child"), "utf8");
+    expect(child).toBe("BEGIN hello END");
+  });
+
   test("validateSlotData: accepts good data, rejects wrong type", async () => {
     const ws = await workspace("typed_slots");
     cleanup.push(ws.root);
@@ -116,8 +177,8 @@ describe("spackle (DiskFs)", () => {
     );
     expect(res.ok).toBe(true);
     if (res.ok) {
-      const paths = res.files.map((f) => f.path).toSorted();
-      expect(paths).toContain("README.md");
+      // generate returns counts; rendered tree lives on disk.
+      expect(res.files).toBeGreaterThan(0);
 
       const readme = await readFile(join(ws.outDir, "README.md"), "utf8");
       expect(readme).toContain("HI, world!");
@@ -137,13 +198,128 @@ describe("spackle (DiskFs)", () => {
     }
   });
 
+  test("generate: ignore matches by basename at any depth, not just first segment", async () => {
+    // Native `copy::copy_collect` matches the ignore list against
+    // each entry's basename as the walker descends, then prunes the
+    // subtree. So `ignore = ["secret"]` should skip BOTH `secret/...`
+    // and `sub/secret/...`. A first-segment-only check would miss
+    // the nested case.
+    const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-ignore-")));
+    cleanup.push(root);
+    const projectDir = join(root, "project");
+    await mkdir(join(projectDir, "secret"), { recursive: true });
+    await mkdir(join(projectDir, "sub", "secret"), { recursive: true });
+    await mkdir(join(projectDir, "keep"), { recursive: true });
+    await writeFile(join(projectDir, "spackle.toml"), 'name = "ig"\nignore = ["secret"]\n');
+    await writeFile(join(projectDir, "secret", "a.txt"), "top");
+    await writeFile(join(projectDir, "sub", "secret", "b.txt"), "nested");
+    await writeFile(join(projectDir, "keep", "c.txt"), "keepme");
+
+    const fs = new DiskFs({ workspaceRoot: root });
+    const outDir = join(root, "output");
+    const res = await generate(projectDir, outDir, {}, fs);
+    expect(res.ok).toBe(true);
+
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(join(outDir, "secret"))).toBe(false);
+    expect(existsSync(join(outDir, "sub", "secret"))).toBe(false);
+    expect(existsSync(join(outDir, "keep", "c.txt"))).toBe(true);
+  });
+
+  test("generate: a template inside an ignored subtree still renders (native template::fill parity)", async () => {
+    // Native `template::fill` walks the full project regardless of
+    // the ignore list; only `copy::copy` applies the filter. So a
+    // `.j2` in an ignored dir still renders, and its parent dir
+    // appears in the output as a side effect of writing the template.
+    // Static siblings in the same ignored dir do NOT get copied.
+    const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-ignore-tmpl-")));
+    cleanup.push(root);
+    const projectDir = join(root, "project");
+    await mkdir(join(projectDir, "drafts"), { recursive: true });
+    await writeFile(
+      join(projectDir, "spackle.toml"),
+      'name = "ig-tmpl"\nignore = ["drafts"]\n[[slots]]\nkey = "who"\ntype = "String"\n',
+    );
+    await writeFile(join(projectDir, "drafts", "greet.j2"), "hi {{ who }}");
+    await writeFile(join(projectDir, "drafts", "static.txt"), "should not copy");
+
+    const fs = new DiskFs({ workspaceRoot: root });
+    const outDir = join(root, "output");
+    const res = await generate(projectDir, outDir, { who: "world" }, fs);
+    expect(res.ok).toBe(true);
+
+    const { existsSync } = await import("node:fs");
+    const rendered = await readFile(join(outDir, "drafts", "greet"), "utf8");
+    expect(rendered).toBe("hi world");
+    expect(existsSync(join(outDir, "drafts", "static.txt"))).toBe(false);
+  });
+
+  test("generate: a template under a directory literally named spackle.toml still renders", async () => {
+    // Exotic edge case: a directory whose basename happens to be
+    // `spackle.toml`. Native `copy::copy_collect` skips that basename
+    // for copy, but `template::fill` walks the full tree regardless
+    // and renders any `.j2` inside. Non-template siblings get
+    // dropped by copy's ancestor-skip logic.
+    const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-toml-dir-")));
+    cleanup.push(root);
+    const projectDir = join(root, "project");
+    await mkdir(join(projectDir, "sub", "spackle.toml"), { recursive: true });
+    await writeFile(
+      join(projectDir, "spackle.toml"),
+      'name = "x"\n[[slots]]\nkey = "who"\ntype = "String"\n',
+    );
+    await writeFile(join(projectDir, "sub", "spackle.toml", "greet.j2"), "hi {{ who }}");
+    await writeFile(join(projectDir, "sub", "spackle.toml", "static.txt"), "should not copy");
+
+    const fs = new DiskFs({ workspaceRoot: root });
+    const outDir = join(root, "output");
+    const res = await generate(projectDir, outDir, { who: "world" }, fs);
+    expect(res.ok).toBe(true);
+
+    const { existsSync } = await import("node:fs");
+    // Template under the spackle.toml-named dir renders; parent dir
+    // is created as a side effect of writing the rendered template.
+    const rendered = await readFile(join(outDir, "sub", "spackle.toml", "greet"), "utf8");
+    expect(rendered).toBe("hi world");
+    // Static sibling skipped (config-file ancestor).
+    expect(existsSync(join(outDir, "sub", "spackle.toml", "static.txt"))).toBe(false);
+  });
+
+  test("generate: a static file whose rendered name ends in .j2 is still copied verbatim", async () => {
+    // Native classifies templates by **source** basename: `{{ name }}`
+    // is not a template because its source name doesn't end in `.j2`,
+    // even if it renders to `foo.j2`. The orchestrator must match —
+    // a render-time classification would wrongly route the static
+    // file through render_file.
+    const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-classify-")));
+    cleanup.push(root);
+    const projectDir = join(root, "project");
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(
+      join(projectDir, "spackle.toml"),
+      'name = "classify"\n[[slots]]\nkey = "name"\ntype = "String"\n',
+    );
+    // Source has no template ext; body has tokens that should NOT be
+    // interpolated (it's a copy, not a template).
+    await writeFile(join(projectDir, "{{ name }}"), "raw {{ unrelated }} body");
+
+    const fs = new DiskFs({ workspaceRoot: root });
+    const outDir = join(root, "output");
+    const res = await generate(projectDir, outDir, { name: "foo.j2" }, fs);
+    expect(res.ok).toBe(true);
+
+    // Filename was path-templated to `foo.j2` — but the body must be
+    // copied verbatim with `{{ unrelated }}` intact.
+    const body = await readFile(join(outDir, "foo.j2"), "utf8");
+    expect(body).toBe("raw {{ unrelated }} body");
+  });
+
   test("generate: refuses a pre-existing outDir (native AlreadyExists parity)", async () => {
     const ws = await workspace("basic_project");
     cleanup.push(ws.root);
     const fs = new DiskFs({ workspaceRoot: ws.root });
 
-    // Pre-create the out dir so writeOutput sees it already present.
-    await import("node:fs/promises").then((mod) => mod.mkdir(ws.outDir, { recursive: true }));
+    await mkdir(ws.outDir, { recursive: true });
 
     let err: unknown = null;
     try {
@@ -159,88 +335,120 @@ describe("spackle (DiskFs)", () => {
     expect(err).not.toBeNull();
     expect(String(err)).toMatch(/already exists/);
   });
+
+  test("generate streams a large static file through pipeline() without loading it all in memory", async () => {
+    // Build a project on the fly containing a large (1 MiB) static
+    // asset. The orchestrator should route it through
+    // `DiskFs.streamCopy` (which uses `pipeline(createReadStream,
+    // createWriteStream)`) rather than slurping it into a Uint8Array
+    // and round-tripping through wasm. We assert correctness by
+    // byte-comparing the copy; the streaming win is structural
+    // (`generate` never sees the file's bytes).
+    const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-large-")));
+    cleanup.push(root);
+    const projectDir = join(root, "project");
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(join(projectDir, "spackle.toml"), 'name = "stream-test"\n');
+
+    const payload = new Uint8Array(1024 * 1024);
+    for (let i = 0; i < payload.length; i++) payload[i] = (i * 7) & 0xff;
+    await writeFile(join(projectDir, "asset.bin"), payload);
+
+    const fs = new DiskFs({ workspaceRoot: root });
+    const outDir = join(root, "output");
+    const res = await generate(projectDir, outDir, {}, fs);
+    expect(res.ok).toBe(true);
+
+    const back = await readFile(join(outDir, "asset.bin"));
+    expect(back.byteLength).toBe(payload.byteLength);
+    expect(new Uint8Array(back)).toEqual(payload);
+  });
+
+  test("generate does not create outDir on slot validation failure", async () => {
+    const ws = await workspace("typed_slots");
+    cleanup.push(ws.root);
+    const fs = new DiskFs({ workspaceRoot: ws.root });
+    const res = await generate(
+      ws.projectDir,
+      ws.outDir,
+      { name: "demo", count: "not-a-number", enabled: "true" },
+      fs,
+    );
+    expect(res.ok).toBe(false);
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(ws.outDir)).toBe(false);
+  });
+
+  test("generate creates outDir on success even for empty projects", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-empty-")));
+    cleanup.push(root);
+    const projectDir = join(root, "project");
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(join(projectDir, "spackle.toml"), 'name = "empty"\n');
+    const outDir = join(root, "output");
+    const fs = new DiskFs({ workspaceRoot: root });
+    const res = await generate(projectDir, outDir, {}, fs);
+    expect(res.ok).toBe(true);
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(outDir)).toBe(true);
+  });
 });
 
 describe("spackle render (diagnostics-first)", () => {
-  test("renderBundle clean project: empty diagnostics, files present", async () => {
-    const bundle = await bundleFromDisk(
-      ["spackle.toml", "README.md.j2", "docs/static.md", "src/{{ filename }}.txt.j2"],
-      join(FIXTURES, "basic_project"),
-      "/project",
-    );
-    const res = await renderBundle(
-      bundle,
+  const cleanup: string[] = [];
+  beforeEach(() => void (cleanup.length = 0));
+  afterEach(async () => {
+    await Promise.all(cleanup.map((p) => rm(p, { recursive: true, force: true })));
+  });
+
+  test("clean project: empty diagnostics, files present", async () => {
+    const ws = await workspace("basic_project");
+    cleanup.push(ws.root);
+    const fs = new DiskFs({ workspaceRoot: ws.root });
+    const res = await render(
+      ws.projectDir,
+      ws.outDir,
       { greeting: "hi", target: "world", filename: "notes" },
-      { virtualProjectDir: "/project", virtualOutDir: "/output" },
+      fs,
     );
     expect(res.diagnostics).toEqual([]);
     expect(res.files.length).toBeGreaterThan(0);
     expect(res.hookPlan).not.toBeNull();
   });
 
-  test("renderBundle bad_template: surfaces per-file diagnostic with path", async () => {
-    const bundle = await bundleFromDisk(
-      ["spackle.toml", "bad.j2"],
-      join(FIXTURES, "bad_template"),
-      "/project",
-    );
-    const res = await renderBundle(
-      bundle,
-      { defined_slot: "value" },
-      { virtualProjectDir: "/project", virtualOutDir: "/output" },
-    );
+  test("bad_template: surfaces per-file diagnostic with path", async () => {
+    const ws = await workspace("bad_template");
+    cleanup.push(ws.root);
+    const fs = new DiskFs({ workspaceRoot: ws.root });
+    const res = await render(ws.projectDir, ws.outDir, { defined_slot: "value" }, fs);
     const renderDiag = res.diagnostics.find((d) => d.source === "render_body");
     expect(renderDiag).toBeDefined();
     expect(renderDiag?.message).toContain("invalid_slot");
     expect(renderDiag?.path).toBeDefined();
-    // hook plan still computed (no hooks defined, but plan should be []).
+    // No hooks defined in this fixture → empty plan, not null.
     expect(res.hookPlan).toEqual([]);
   });
 
-  test("renderBundle missing slot data: surfaces slot_data diagnostic", async () => {
-    const bundle = await bundleFromDisk(
-      ["spackle.toml", "README.md.j2", "docs/static.md", "src/{{ filename }}.txt.j2"],
-      join(FIXTURES, "basic_project"),
-      "/project",
-    );
-    const res = await renderBundle(
-      bundle,
-      // missing `target` and `filename`
-      { greeting: "hi" },
-      { virtualProjectDir: "/project", virtualOutDir: "/output" },
-    );
+  test("missing slot data: surfaces slot_data diagnostic", async () => {
+    const ws = await workspace("basic_project");
+    cleanup.push(ws.root);
+    const fs = new DiskFs({ workspaceRoot: ws.root });
+    const res = await render(ws.projectDir, ws.outDir, { greeting: "hi" }, fs);
     const slotDataDiag = res.diagnostics.find((d) => d.source === "slot_data");
     expect(slotDataDiag).toBeDefined();
   });
 });
 
-describe("spackle (bundle-only / MemoryFs)", () => {
-  test("checkBundle + generateBundle end-to-end without touching disk", async () => {
-    const bundle = await bundleFromDisk(
-      ["spackle.toml", "README.md.j2", "docs/static.md", "src/{{ filename }}.txt.j2"],
-      join(FIXTURES, "basic_project"),
-      "/project",
+describe("checkBundle (in-memory)", () => {
+  test("clean project bundle has no diagnostics", async () => {
+    // checkBundle is a 1:1 pass-through over wasm.check, useful for
+    // browser hosts that already have bundles in memory.
+    const tomlBytes = new TextEncoder().encode(
+      'name = "x"\n[[slots]]\nkey = "name"\ntype = "String"\n',
     );
-
-    const checkRes = await checkBundle(bundle, "/project");
-    expect(checkRes.diagnostics).toEqual([]);
-
-    const genRes = await generateBundle(
-      bundle,
-      { greeting: "hey", target: "mem", filename: "notes" },
-      { virtualProjectDir: "/project", virtualOutDir: "/output" },
-    );
-    expect(genRes.ok).toBe(true);
-    if (genRes.ok) {
-      // Output bundle paths are RELATIVE to out_dir.
-      const snap = MemoryFs.fromBundle(genRes.files, "/output").snapshot();
-      const readme = snap.files["/output/README.md"];
-      expect(readme).toBeDefined();
-      expect(new TextDecoder().decode(readme)).toContain("HEY, mem!");
-
-      const copied = snap.files["/output/docs/static.md"];
-      expect(copied).toBeDefined();
-      expect(new TextDecoder().decode(copied)).toContain("{{ greeting }}");
-    }
+    const bundle = [{ path: "/project/spackle.toml", bytes: tomlBytes }];
+    const res = await checkBundle(bundle, "/project");
+    expect(res.diagnostics).toEqual([]);
+    expect(res.config?.name).toBe("x");
   });
 });

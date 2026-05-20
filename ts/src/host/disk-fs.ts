@@ -1,39 +1,24 @@
-// DiskFs — host-side bundle reader/writer for local-disk projects.
-//
-// No longer a `SpackleFs` callback adapter (that model is gone). Under
-// the bundle-in / bundle-out design, the host serializes project files
-// into a bundle before calling wasm, and writes the returned output
-// bundle back to disk after. DiskFs is the reference impl of that
-// serialize / deserialize pair, rooted at a workspace directory with
-// containment enforced.
+// DiskFs — workspace boundary + per-file disk I/O helpers used by the
+// TS orchestrator. Canonicalizes paths under `workspaceRoot`,
+// stream-copies static files via `pipeline()`, writes rendered
+// template bytes via `writeFile`.
 
 import {
-  copyFileSync,
+  createReadStream,
+  createWriteStream,
   existsSync,
-  lstatSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
   realpathSync,
   writeFileSync,
 } from "node:fs";
 import {
   dirname as pathDirname,
   isAbsolute,
-  join as pathJoin,
   resolve as pathResolve,
   sep as pathSep,
 } from "node:path";
-
-import type { Bundle } from "../wasm/types.ts";
-
-/** Shape of a successful `generate` response — kept here (rather than
- * in wasm/types.ts) so DiskFs's signature doesn't import the full
- * response union. Matches the `{ ok: true, files, dirs }` shape. */
-export interface WriteOutputInput {
-  files: Bundle;
-  dirs?: string[];
-}
+import { pipeline } from "node:stream/promises";
 
 export interface DiskFsOptions {
   /**
@@ -42,16 +27,6 @@ export interface DiskFsOptions {
    * construction time so it can be canonicalized once.
    */
   workspaceRoot: string;
-}
-
-export interface ReadProjectOptions {
-  /**
-   * Virtual path prefix the bundle will use. Defaults to `/project`.
-   * Every file read from `projectDir` is emitted as `{virtualRoot}/...`
-   * in the bundle, relative to `projectDir`. Pass the same string as
-   * `projectDir` in subsequent wasm calls (`check`, `generate`).
-   */
-  virtualRoot?: string;
 }
 
 export class DiskFs {
@@ -71,94 +46,70 @@ export class DiskFs {
     }
   }
 
-  /**
-   * Walk `projectDir` recursively and emit a bundle with virtualized
-   * paths. Containment: `projectDir` must resolve under `workspaceRoot`;
-   * symlinks during the walk are skipped (not followed, not emitted) to
-   * prevent escape via planted links.
-   */
-  readProject(projectDir: string, opts: ReadProjectOptions = {}): Bundle {
-    const virtualRoot = opts.virtualRoot ?? "/project";
-    const absRoot = this.containDisk(projectDir);
-
-    const out: Bundle = [];
-    const walk = (absDir: string, virtDir: string) => {
-      for (const entry of readdirSync(absDir, { withFileTypes: true })) {
-        const abs = pathJoin(absDir, entry.name);
-        const virt = `${virtDir}/${entry.name}`;
-        if (entry.isSymbolicLink()) {
-          // Skip symlinks — don't follow, don't emit. Matches
-          // the walker behavior in `spackle::fs::walk`.
-          continue;
-        }
-        if (entry.isDirectory()) {
-          walk(abs, virt);
-        } else if (entry.isFile()) {
-          out.push({ path: virt, bytes: readFileSync(abs) });
-        }
-      }
-    };
-    walk(absRoot, virtualRoot);
-    return out;
+  /** Canonicalize an existing path under `workspaceRoot`. Throws if
+   * the path isn't absolute, doesn't exist, or escapes the root. */
+  containProject(projectDir: string): string {
+    return this.containDisk(projectDir);
   }
 
-  /**
-   * Write a rendered output bundle to `outDir`.
-   *
-   * Accepts either a flat `Bundle` (just files) or an object with
-   * `files` + `dirs` — when `dirs` is present, each listed directory
-   * is mkdir'd so empty dirs created by the Rust copy pass survive
-   * the round-trip (native spackle calls `create_dir_all` for every
-   * Directory entry during copy).
-   *
-   * Contract (matches native `GenerateError::AlreadyExists`):
-   *   `outDir` must NOT already exist on disk. If it does, throws —
-   *   same as `spackle generate` on native.
-   *
-   * Containment: `outDir` must resolve under `workspaceRoot` (we walk
-   * up to the nearest existing ancestor and canonicalize that).
-   * Per-entry traversal guard uses `path.resolve` to normalize
-   * platform-specific separators; `../x.txt`, `..\x.txt`, and any
-   * normalized escape are all rejected.
-   */
-  writeOutput(outDir: string, input: Bundle | WriteOutputInput): void {
-    const { files, dirs } = Array.isArray(input)
-      ? { files: input, dirs: undefined as string[] | undefined }
-      : input;
-
+  /** Contain `outDir` and verify it does not already exist. Doesn't
+   * create the directory — the caller mkdirs lazily so validation
+   * failures leave no empty dir on disk. Matches native's
+   * `GenerateError::AlreadyExists`. */
+  assertOutDirAvailable(outDir: string): string {
     const absOut = this.containDiskForCreate(outDir);
     if (existsSync(absOut)) {
-      throw new Error(`writeOutput: output directory already exists: ${absOut}`);
+      throw new Error(`assertOutDirAvailable: output directory already exists: ${absOut}`);
     }
-    mkdirSync(absOut, { recursive: true });
-
-    // Create empty dirs first so the final tree matches native
-    // generation even when a directory has no files under it.
-    for (const rel of dirs ?? []) {
-      const absDir = this.containedJoin(absOut, rel);
-      mkdirSync(absDir, { recursive: true });
-    }
-
-    for (const entry of files) {
-      const absFile = this.containedJoin(absOut, entry.path);
-      mkdirSync(pathDirname(absFile), { recursive: true });
-      writeFileSync(absFile, entry.bytes);
-    }
+    return absOut;
   }
 
-  /**
-   * Join `rel` under `absBase` and verify the result stays under
-   * `absBase`. Catches both `../escape` (Unix) and `..\escape`
-   * (Windows) because `path.resolve` normalizes separators before the
-   * prefix check. Also catches absolute `rel` values that would
-   * `path.join` on top of `absBase`.
-   */
-  private containedJoin(absBase: string, rel: string): string {
+  /** Idempotent `mkdir -p` for `outDir` under `workspaceRoot`. */
+  ensureOutDir(outDir: string): string {
+    const absOut = this.containDiskForCreate(outDir);
+    mkdirSync(absOut, { recursive: true });
+    return absOut;
+  }
+
+  /** Join `rel` under `absBase` and verify the result stays under it.
+   * Catches `../escape`, absolute `rel`, and (on Windows) backslash
+   * traversal because `path.resolve` normalizes separators before the
+   * prefix check. */
+  containedJoin(absBase: string, rel: string): string {
     const resolved = pathResolve(absBase, rel);
     if (resolved !== absBase && !resolved.startsWith(absBase + pathSep)) {
-      throw new Error(`writeOutput: entry path escapes outDir: ${rel}`);
+      throw new Error(`entry path escapes outDir: ${rel}`);
     }
     return resolved;
+  }
+
+  /** Write `bytes` at `absPath`, creating parent dirs as needed. */
+  writeFile(absPath: string, bytes: Uint8Array): void {
+    mkdirSync(pathDirname(absPath), { recursive: true });
+    writeFileSync(absPath, bytes);
+  }
+
+  /** Stream-copy `srcAbs` → `dstAbs` via `pipeline()`. Bytes traverse
+   * Node's default ~64 KiB highWaterMark chunks; large files never
+   * sit fully in memory. */
+  async streamCopy(srcAbs: string, dstAbs: string): Promise<void> {
+    mkdirSync(pathDirname(dstAbs), { recursive: true });
+    await pipeline(createReadStream(srcAbs), createWriteStream(dstAbs));
+  }
+
+  /** Read a single file's bytes from disk. */
+  readFile(absPath: string): Uint8Array {
+    return new Uint8Array(readFileSync(absPath));
+  }
+
+  /** True iff `path` exists on disk. */
+  exists(absPath: string): boolean {
+    return existsSync(absPath);
+  }
+
+  /** The canonicalized workspaceRoot. */
+  get workspaceRoot(): string {
+    return this.root;
   }
 
   /**
@@ -177,13 +128,11 @@ export class DiskFs {
   }
 
   /**
-   * Canonicalize a path that may not yet exist (write / mkdir flows).
-   * Walks up to the nearest existing ancestor, canonicalizes that, and
-   * rejoins remaining segments lexically. See the git history of the
-   * previous `resolve(..., forCreate: true)` method for the rationale:
-   * we catch symlink escapes through existing directories but accept
-   * a TOCTOU gap for symlinks planted mid-operation. OS-level
-   * sandboxing (Landlock etc.) is the real fix.
+   * Canonicalize a path that may not yet exist. Walks up to the
+   * nearest existing ancestor, canonicalizes that, rejoins the
+   * remaining segments lexically. Catches symlink escapes through
+   * existing dirs; TOCTOU on symlinks planted mid-op is out of scope
+   * (OS-level sandboxing is the real fix).
    */
   private containDiskForCreate(path: string): string {
     if (!isAbsolute(path)) {
@@ -210,9 +159,3 @@ export class DiskFs {
     return canonical;
   }
 }
-
-// Re-export Bundle type for callers that don't want to reach into wasm/.
-export type { Bundle } from "../wasm/types.ts";
-
-// Convenience: surface utilities callers might want for custom flows.
-export { copyFileSync, readFileSync, writeFileSync, lstatSync };

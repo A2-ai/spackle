@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fmt::Display,
+    io,
     path::{Path, PathBuf},
 };
 
@@ -242,7 +243,9 @@ pub fn copy_collect<F: FileSystem>(
                         continue;
                     }
                 }
-                match fs.copy_file(&src_path, &dst_path) {
+                // Stream via `io::copy` so GB-scale static assets
+                // don't materialize as a `Vec<u8>` per file.
+                match stream_copy(fs, &src_path, &dst_path) {
                     Ok(()) => copied_count += 1,
                     Err(e) => errors.push(Error {
                         source: Box::new(e),
@@ -263,6 +266,16 @@ pub fn copy_collect<F: FileSystem>(
         skipped_count,
         errors,
     })
+}
+
+/// `io::copy` from `fs.open_read(src)` into `fs.open_write(dst)`. Both
+/// handles drop at end-of-scope; that's what commits the in-memory
+/// writers (`MockFs` / `MemoryFs`). `StdFs` writes hit disk per call.
+fn stream_copy<F: FileSystem + ?Sized>(fs: &F, src: &Path, dst: &Path) -> io::Result<()> {
+    let mut reader = fs.open_read(src)?;
+    let mut writer = fs.open_write(dst)?;
+    io::copy(&mut reader, &mut writer)?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1,18 +1,16 @@
 # Custom bundle reader/writer
 
-`DiskFs` is one way to get files in and out of wasm. It's not the only way — the bundle contract is just `Array<{path: string, bytes: Uint8Array}>`. Any source that can produce or consume that shape works.
+`DiskFs` is one path through the orchestrator. It's not the only way — the wasm primitives (`check`, `renderFile`, `renderPath`, `validateSlotData`, `planHooks`) only need bundles in and bytes out, so any source / sink that can shuffle those works.
 
 ## What you actually need to implement
 
 For read:
-- A function that returns a `Bundle` given whatever identifies a project in your storage (an S3 prefix, a git ref, a ZIP, a CMS entry).
+- A function that returns a `Bundle` (`Array<{path: string, bytes: Uint8Array}>`) given whatever identifies a project in your storage (an S3 prefix, a git ref, a ZIP, a CMS entry).
 
 For write:
-- A function that accepts `(outIdentifier, { files, dirs })` and writes each entry under some output location. **Create each directory in `dirs` explicitly** — a successful `generate` response carries both `files` AND `dirs` precisely because native spackle's copy pass `create_dir_all`s every directory it walks, and the wasm output must match for behavioral parity. Emitting only files silently drops empty dirs (e.g. a `drafts/` folder whose every child is ignored).
+- A function that accepts a destination identifier and writes one entry at a time. The orchestrator below renders each `.j2` template and emits each static file one by one, so the writer is called per-entry. The per-entry write path only creates parent directories lazily for the files it writes; truly empty source directories (no descendants, not in `ignore`) won't appear in the output unless your bundle reader emits explicit directory entries and your orchestrator handles them. The disk-backed `DiskFs` orchestrator preserves them by walking dir entries directly off the filesystem — the bundle shape (`Array<{path, bytes}>`) has no native concept of a directory, so custom hosts that care have to bring their own convention.
 
-That's it. There's no interface to implement. No callbacks passed to wasm. Just produce `Bundle` for input; consume `{ files, dirs }` for output.
-
-Also match native's **"outDir must not pre-exist"** contract: refuse the write (or error out) if the target output location already exists. The bundled `DiskFs.writeOutput` does this; custom writers should too unless they have a deliberate overwrite policy.
+Also match native's **"outDir must not pre-exist"** contract: refuse the write if the target output location already exists, unless your host has a deliberate overwrite policy. The bundled `DiskFs.assertOutDirAvailable` enforces this on the disk path.
 
 ## Example: S3
 
@@ -64,18 +62,93 @@ async function writeOutputToS3(
     }
 }
 
-// Use with generateBundle (bypass DiskFs entirely):
-import { generateBundle } from "@a2-ai/spackle";
+// Compose the wasm primitives directly. No bundle-input `generate`
+// ships — orchestrating a bundle-source walk is the custom-host's
+// responsibility, because the orchestration shape varies per source.
+import { loadSpackleWasm } from "@a2-ai/spackle";
 
+const wasm = await loadSpackleWasm();
 const bundle = await readProjectFromS3("my-bucket", "templates/my-template");
-const result = await generateBundle(bundle, { name: "hello" });
-if (result.ok) {
-    await writeOutputToS3("my-bucket", "outputs/abc-123", {
-        files: result.files,
-        dirs: result.dirs,
-    });
+
+// 1. Validate.
+const checkRes = wasm.check(bundle, "/project");
+if (checkRes.diagnostics.some((d) => d.severity === "error")) {
+    throw new Error("project check failed");
 }
+const slotRes = wasm.validateSlotData(bundle, "/project", { name: "hello" });
+if (!slotRes.valid) throw new Error("invalid slot data");
+
+// 2. Walk the bundle and render per file. Inject _project_name /
+//    _output_name yourself (the disk orchestrator does this for you;
+//    custom hosts handle it).
+const data = {
+    name: "hello",
+    _project_name: checkRes.config?.name ?? "project",
+    _output_name: "abc-123",
+};
+const ignore = new Set(checkRes.config?.ignore ?? []);
+const segments = (rel: string) => rel.split("/");
+const isIgnored = (rel: string) => segments(rel).some((s) => ignore.has(s));
+// Skip the config file at any depth, plus any non-template under a
+// directory literally named `spackle.toml` (native parity with
+// `copy::copy_collect`'s skipped_ancestors).
+const isConfigFile = (rel: string) => {
+    const segs = segments(rel);
+    return segs[segs.length - 1] === "spackle.toml";
+};
+const hasConfigAncestor = (rel: string) => {
+    const segs = segments(rel);
+    for (let i = 0; i < segs.length - 1; i++) {
+        if (segs[i] === "spackle.toml") return true;
+    }
+    return false;
+};
+
+const outFiles: { path: string; bytes: Uint8Array }[] = [];
+const outDirs = new Set<string>();
+for (const entry of bundle) {
+    if (!entry.path.startsWith("/project/")) continue;
+    const rel = entry.path.slice("/project/".length);
+    if (isConfigFile(rel)) continue;
+
+    // Native `template::fill` walks the full tree; only the copy
+    // stage applies ignore and the config-file ancestor skip.
+    // Classify first, then filter non-templates.
+    const isTemplate = /\.(j2|tera)$/.test(rel);
+    if (!isTemplate) {
+        if (isIgnored(rel)) continue;
+        if (hasConfigAncestor(rel)) continue;
+    }
+
+    const pathRes = wasm.renderPath(rel, data);
+    if (pathRes.diagnostics.length) throw new Error(pathRes.diagnostics[0].message);
+    const renderedRel = pathRes.path;
+
+    if (isTemplate) {
+        const r = wasm.renderFile(entry.bytes, data, rel);
+        if (r.diagnostics.length) throw new Error(r.diagnostics[0].message);
+        outFiles.push({ path: renderedRel.replace(/\.(j2|tera)$/, ""), bytes: r.bytes });
+    } else {
+        outFiles.push({ path: renderedRel, bytes: entry.bytes });
+    }
+    // Accumulate the ancestor dirs of every written entry. Useful
+    // for sinks that need explicit directory markers (e.g., S3
+    // doesn't have real dirs — a `prefix/` key makes the structure
+    // visible to browsers / sync tools). This does NOT preserve
+    // truly empty source dirs — the bundle has no dir entries, so
+    // a source dir with no descendants is invisible here.
+    for (let p = renderedRel; p.includes("/"); p = p.slice(0, p.lastIndexOf("/"))) {
+        outDirs.add(p.slice(0, p.lastIndexOf("/")));
+    }
+}
+
+await writeOutputToS3("my-bucket", "outputs/abc-123", {
+    files: outFiles,
+    dirs: [...outDirs],
+});
 ```
+
+The custom orchestrator looks repetitive only because it's spelling out exactly what `generate` does for disk sources. The reason this isn't bundled into a `generateBundle` wrapper: each custom source has different idioms for reading bundles, allocating an output identifier, and writing back. Pulling that into one helper hides those decisions; spelling them out keeps the contract honest.
 
 ## Example: git ref
 
@@ -100,12 +173,9 @@ function readProjectFromGit(repo: string, ref: string, subtree: string): Bundle 
 
 ## Virtual path conventions
 
-Bundle paths are virtual — they only need to be absolute and consistent within one `check` / `generate` call. The conventions used by `DiskFs`:
+Bundle paths are virtual — they only need to be absolute and consistent across all wasm calls for a single project. The convention used by the orchestrator is `/project/<relative>`; any prefix works in a custom reader as long as you pass the same string as `virtualProjectDir` to `checkBundle` (and to `wasm.renderPath` / `wasm.renderFile` in your own composition).
 
-- Input project: `/project/<relative>` (configurable via `opts.virtualRoot`).
-- Output bundle: paths relative to `outDir` (fixed by Rust; can't be changed).
-
-You can use any prefix you like in a custom reader — just pass the same string as `virtualProjectDir` when you call `checkBundle` / `generateBundle`.
+Output paths are entirely the host's choice — wasm only renders bytes; it has no opinion on where they live.
 
 ## Containment
 

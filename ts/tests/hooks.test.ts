@@ -276,8 +276,13 @@ describe("argv helpers", () => {
   });
 });
 
-async function fixtureBundle(ws: { projectDir: string }, fs: DiskFs) {
-  return fs.readProject(ws.projectDir, { virtualRoot: "/project" });
+async function fixtureBundle(ws: { projectDir: string }, _fs: DiskFs) {
+  // `runHookPlanStream` only reads `spackle.toml` from the bundle, so
+  // a one-file bundle is sufficient. This used to go through
+  // `DiskFs.readProject`, which no longer exists — orchestration now
+  // happens via per-file primitives.
+  const toml = await readFile(join(ws.projectDir, "spackle.toml"));
+  return [{ path: "/project/spackle.toml", bytes: new Uint8Array(toml) }];
 }
 
 describe("runHookPlanStream — injected mock executor (native parity cases)", () => {

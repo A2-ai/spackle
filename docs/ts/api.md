@@ -1,6 +1,8 @@
 # API reference
 
-`@a2-ai/spackle` exposes six primary operations — `check`, `validateSlotData`, `generate`, `render`, `planHooks`, `runHooksStream` — plus `…Bundle` variants that skip disk I/O for the first four. Two host helpers (`DiskFs`, `MemoryFs`) handle moving data in and out; a `SpackleHooks` interface (with shipped `NodeHooks` / `BunHooks` impls + `defaultHooks()` auto-selector) handles subprocess execution for hooks.
+`@a2-ai/spackle` exposes six primary operations — `check`, `validateSlotData`, `generate`, `render`, `planHooks`, `runHooksStream`. The first three also have `…Bundle` pass-throughs (`checkBundle` / `validateSlotDataBundle` / `planHooksBundle`) for hosts that already have a bundle in memory and want to skip the disk read. `DiskFs` is the workspace boundary helper; `MemoryFs` is a pure-TS bundle holder for previews/tests; `SpackleHooks` (with shipped `NodeHooks` / `BunHooks` + `defaultHooks()`) executes hooks.
+
+Internally `generate` and `render` are disk-walking orchestrators that call the **per-file wasm primitives** (`renderFile`, `renderPath`, `check`, `validateSlotData`, `planHooks`) as they go. Static asset bytes never enter wasm — `generate` streams them disk-direct via `pipeline(createReadStream, createWriteStream)`. There's only one `generate` path (disk-direct); browser hosts / custom-source hosts that need a bundle-input orchestrator compose the wasm primitives themselves via `loadSpackleWasm`.
 
 ## `check` vs `render` vs `generate` — when to use what
 
@@ -8,7 +10,7 @@
 | --- | --- | --- | --- | --- |
 | `check` | No | No (collects all) | `{ config, diagnostics[] }` | Live diagnostics while the publisher edits files; CLI `spackle check`. |
 | `render` | Yes | No (collects all, partial preview) | `{ files, dirs, diagnostics[], hookPlan }` | Live preview as the publisher fills slot values; never throws. |
-| `generate` | Yes | Yes (aborts on first error) | `{ ok: true, ... } \| { ok: false, error }` | Production write-to-disk workflows that should abort on any failure. |
+| `generate` | Yes | Yes (aborts on first error) | `{ ok: true; files: number; dirs: number } \| { ok: false; error }` | Production write-to-disk workflows. Streams each entry to disk; returns counts only. |
 
 `check` and `render` share the same `Diagnostic` type — one UI rendering path covers both surfaces.
 
@@ -50,10 +52,10 @@ interface Diagnostic {
         | "render_body"   // template body render failure
         | "render_name";  // template filename render failure
     message: string;
-    path?: string;        // bundle-virtual path of offending file, or "spackle.toml"
+    path?: string;        // bundle-virtual or workspace-relative path
     ref?: string;         // slot/hook key when the diagnostic targets a config item
     span?: { line: number; column: number };
-    code?: string;        // stable id (e.g. "hook::unknown_needs")
+    code?: string;        // stable id (e.g. "hook::template_render_failed")
 }
 ```
 
@@ -78,11 +80,13 @@ interface CheckResponse {
 
 `check` **never throws / never returns `valid: false`** — it always returns the response. Empty `diagnostics` ⇒ the project is structurally sound. `config` is `null` only when `spackle.toml` failed to parse (a `config`-source diagnostic explains why).
 
-`bundleCheck(bundle, virtualProjectDir?)` is the bundle-only equivalent.
+Under the hood, `check` builds a small bundle from disk containing `spackle.toml` (real bytes), every `.j2`/`.tera` template (real bytes for body validation), and a path-only placeholder (empty `bytes`) for every other file (for path-template validation). Static asset bytes never enter wasm.
+
+`checkBundle(bundle, virtualProjectDir?)` is the bundle-only equivalent — useful when you've already built a bundle in memory (preview flows, browser hosts).
 
 ## `render(projectDir, outDir, slotData, fs, opts?)`
 
-Dynamic render — runs the full pipeline (`check` → slot data validation → copy → template fill → hook plan) in-memory under `fs` and produces a (possibly partial) bundle plus an exhaustive `diagnostics` array. **Never throws / never returns `ok: false`**.
+Dynamic render — walks the project on disk and produces a `(possibly partial) Bundle` plus an exhaustive `diagnostics` array. Per-file failures surface as diagnostics without aborting the walk; the host UI shows the preview pane and the diagnostics chip side-by-side. **Never throws / never returns `ok: false`**.
 
 ```ts
 function render(
@@ -104,11 +108,11 @@ interface RenderResponse {
 }
 ```
 
-Partial preview semantics: `files` contains every template that rendered successfully even when other files failed. The UI shows the preview pane and the diagnostics chip side-by-side without branching on success/failure. `hookPlan` is `null` only when the config didn't load.
+Partial preview semantics: `files` contains every template that rendered successfully even when other files failed. `hookPlan` is `null` only when the config didn't load.
 
 Use `render` for live UI previews; use `generate` (below) when you want fail-fast behavior for writing to disk.
 
-`renderBundle(bundle, slotData, opts?)` is the bundle-only equivalent.
+No bundle-input variant — `render` walks disk. Compose the wasm primitives directly if you need an in-memory preview.
 
 ## `validateSlotData(projectDir, slotData, fs, opts?)`
 
@@ -131,7 +135,7 @@ Rules enforced: every declared slot is present, types coerce (`"42"` → `Number
 
 ## `generate(projectDir, outDir, slotData, fs, opts?)`
 
-Run the full pipeline: copy non-template files, render `.j2` files, render path placeholders, write everything under `outDir`. Hooks are a separate call — see `runHooksStream()` below.
+Run the full pipeline: walk `projectDir`, render `.j2`/`.tera` template bodies via wasm, render path placeholders via wasm, stream-copy static files via `pipeline(createReadStream, createWriteStream)`, write everything under `outDir` as the walk progresses.
 
 ```ts
 function generate(
@@ -146,13 +150,19 @@ function generate(
 ): Promise<GenerateResponse>;
 
 type GenerateResponse =
-    | { ok: true; files: Bundle; dirs: string[] }
+    | { ok: true; files: number; dirs: number }
     | { ok: false; error: string };
 ```
 
-`result.files` carries the rendered bundle with paths **relative to `outDir`**. `result.dirs` carries directory paths (also relative) — present so **empty directories survive the round-trip**. Native `spackle generate` calls `create_dir_all` for every directory walked during the copy pass; without emitting them, a project whose `drafts/` directory is fully ignored (every file filtered out) would still have `drafts/` created on native but silently dropped under wasm. Hosts writing output manually MUST mkdir each entry in `dirs` to match native behavior.
+`result.files` / `result.dirs` are **counts**, not lists — the rendered tree is already on disk under `outDir` by the time the promise resolves. If you need the rendered output in memory, call `render` (diagnostics-first preview that returns a `Bundle`) or read the output back from disk after the call.
 
-`DiskFs.writeOutput` (built-in) handles both `files` and `dirs` for you. Output-dir contract: `writeOutput` throws if `outDir` already exists, matching native's `GenerateError::AlreadyExists`.
+Output-dir contract: throws if `outDir` already exists, matching native's `GenerateError::AlreadyExists`. The check happens **before** any wasm work, but `outDir` itself is created lazily on the first per-entry write — so a wasm-side failure (slot data type mismatch, bad bundle) leaves no empty directory on disk.
+
+Empty-directory parity: native `spackle generate` calls `create_dir_all` for every non-ignored directory it walks during the copy pass, so empty source directories (no children, but not in `ignore`) survive into the output. `generate` mirrors this — directories are mkdir'd as the walk yields them. Ignored directories are skipped entirely and do **not** appear in the output (unless a template inside them renders, in which case the directory is created as a side effect of writing that template — native parity with `template::fill`, which walks the full tree regardless of `ignore`). An `ensureOutDir` call at the end makes empty projects produce an empty `outDir`.
+
+**Memory.** Static files stream-copy through `pipeline(createReadStream, createWriteStream)` — peak memory per static is one ~64 KiB Node `highWaterMark` chunk regardless of file size. GB-scale assets are fine. Templated bodies still buffer fully in memory (Tera produces a `String`), but typical templates are KB-scale.
+
+**Template semantics.** `renderFile` builds a Tera instance per call from a template-source registry — every `.j2` / `.tera` body the host walked — and renders only the requested target. Tera 2's cross-template tags (`{% include %}` and `{% extends %}`) resolve across the project. Tera 2 does not support `{% macro %}` / `{% import %}`. Static assets never enter the registry; only template bodies cross the wasm boundary.
 
 ## `planHooks(projectDir, outDir, data, fs, opts?)`
 
@@ -191,7 +201,7 @@ interface HookPlanEntry {
 
 ## `runHooksStream(projectDir, outDir, data, fs, opts?)`
 
-Run the project's hooks, yielding `HookEvent`s as each hook progresses. Mirrors the native CLI's two-call shape: call after `generate()`. Reads the bundle, plans via wasm, executes each hook host-side via the injected or auto-selected `SpackleHooks`, and re-plans internally after any non-zero exit so chained conditionals re-evaluate against actual outcomes.
+Run the project's hooks, yielding `HookEvent`s as each hook progresses. Mirrors the native CLI's two-call shape: call after `generate()`. Reads `spackle.toml` into a tiny bundle, plans via wasm, executes each hook host-side via the injected or auto-selected `SpackleHooks`, and re-plans internally after any non-zero exit so chained conditionals re-evaluate against actual outcomes.
 
 ```ts
 function runHooksStream(
@@ -276,18 +286,13 @@ function formatArgv(argv: readonly string[]): string;
 
 `parseShellLine` and `formatArgv` are exported from the same module as the hook runner and use the same argv semantics. Use them when converting user-entered command text (e.g. `echo "hello world"`) to argv and back.
 
-## Bundle variants
+## Bundle pass-throughs
 
-For preview flows with no disk I/O, skip `DiskFs` entirely and drive wasm directly:
+For hosts that already have a bundle in memory (browsers, S3/git-backed sources, tests), three thin pass-throughs hand the bundle directly to the wasm exports without touching disk:
 
 ```ts
 function checkBundle(bundle: Bundle, virtualProjectDir?: string): Promise<CheckResponse>;
 function validateSlotDataBundle(bundle: Bundle, slotData: SlotData, virtualProjectDir?: string): Promise<ValidationResponse>;
-function generateBundle(
-    bundle: Bundle,
-    slotData: SlotData,
-    opts?: { virtualProjectDir?: string; virtualOutDir?: string },
-): Promise<GenerateResponse>;
 function planHooksBundle(
     projectBundle: Bundle,
     virtualProjectDir: string,
@@ -297,9 +302,9 @@ function planHooksBundle(
 ): Promise<PlanHooksResponse>;
 ```
 
-`generateBundle` has no streaming-hooks counterpart — bundle-only mode doesn't have a real `cwd` for subprocess execution. Use the disk-backed `runHooksStream()` above when you need hooks.
+No bundle-input variant of `generate` / `render` ships — those are disk-walking orchestrators. Browser / custom-source hosts that need bundle-input generation compose the per-file primitives themselves: read the bundle, call `wasm.renderFile` / `wasm.renderPath` per entry via `loadSpackleWasm()`, and assemble results in whatever shape suits them.
 
-Pair with `MemoryFs.toBundle()` / `MemoryFs.fromBundle()` to inspect results in-memory.
+Pair with `MemoryFs.toBundle()` / `MemoryFs.fromBundle()` to inspect inputs / outputs in-memory.
 
 ## Host helpers
 
@@ -308,19 +313,28 @@ Pair with `MemoryFs.toBundle()` / `MemoryFs.fromBundle()` to inspect results in-
 ```ts
 class DiskFs {
     constructor(opts: { workspaceRoot: string });
-    readProject(projectDir: string, opts?: { virtualRoot?: string }): Bundle;
-    writeOutput(
-        outDir: string,
-        input: Bundle | { files: Bundle; dirs?: string[] },
-    ): void;
+    readonly workspaceRoot: string;
+
+    // Containment: every `projectDir` / `outDir` argument passed to the
+    // orchestrator goes through one of these.
+    containProject(projectDir: string): string;
+    assertOutDirAvailable(outDir: string): string;  // contains + AlreadyExists, no mkdir
+    ensureOutDir(outDir: string): string;           // idempotent mkdir -p
+    containedJoin(absBase: string, rel: string): string;
+
+    // Per-file I/O the orchestrator drives directly.
+    readFile(absPath: string): Uint8Array;
+    writeFile(absPath: string, bytes: Uint8Array): void;
+    streamCopy(srcAbs: string, dstAbs: string): Promise<void>;  // via pipeline()
+    exists(absPath: string): boolean;
 }
 ```
 
-`writeOutput` accepts either a flat `Bundle` (files only — convenient for hand-rolled calls) or the `{ files, dirs }` shape returned by `generate`. Pass `{ files, dirs }` to preserve empty directories. Ancestor dirs for file writes are created automatically either way.
+**Containment.** `workspaceRoot` is canonicalized once. Every path the orchestrator hands back to `DiskFs` resolves under it; anything else throws. Per-entry write paths are joined with `containedJoin` so a rendered path can't escape `outDir` even if a template produced `../`-flavored output. The block uses `path.resolve` + prefix comparison so OS-normalized escapes (Windows `..\`) are caught transparently.
 
-**`outDir` must not already exist.** `writeOutput` refuses a pre-existing `outDir` with an `already exists` error (parity with native `spackle generate`). Callers should pick a fresh path per run, or `rm -rf` the target before calling.
+**Streaming.** `streamCopy` uses `pipeline(createReadStream, createWriteStream)`. GB-scale static assets cross the pipe in Node's ~64 KiB chunks; never sit fully in memory. `readFileSync(src) + writeFileSync(dst)` would slurp the whole file into a `Buffer` per copy — never use that pattern in custom orchestrators.
 
-**Containment:** `workspaceRoot` is canonicalized once. Every path fed into `readProject` / `writeOutput` must resolve under it; anything else throws. Per-entry traversal is blocked using `path.resolve` + prefix comparison — rejects `../escape`, absolute overrides, and any OS-normalized escape.
+**`outDir` must not already exist** for `assertOutDirAvailable` — same `already exists` error as native `spackle generate`. `ensureOutDir` is the idempotent variant; `generate` calls it after a successful run so empty projects still produce an empty `outDir`.
 
 ### `MemoryFs`
 
@@ -336,11 +350,11 @@ class MemoryFs {
 }
 ```
 
-Pure TS. No filesystem interaction. Useful for tests and preview flows.
+Pure TS. No filesystem interaction. Useful for tests, custom-source preview flows, and snapshotting `render` output.
 
 ## Known limitations
 
-- **UTF-8 paths only.** The bundle boundary doesn't round-trip non-UTF-8 filenames.
-- **Whole-project marshalling.** Input and output bundles materialize in memory. Fine for typical templates (KB–MB); very large fixtures should wait on a streaming path.
+- **UTF-8 paths only.** Path strings cross the wasm boundary as UTF-8; non-UTF-8 filenames don't round-trip.
+- **Template render is buffered.** Spackle core's `render_in_memory` produces a `String` per template. Static copies stream cleanly via `pipeline()`; templated bodies remain a ceiling proportional to the template size. Typical templates are KB-scale, so this rarely binds in practice.
 - **Browser-side hooks require a custom `SpackleHooks`.** `defaultHooks()` throws in environments without Bun or Node. See [hooks.md](./hooks.md).
 - **`run_as_user` / polyjuice not exposed.** Native CLI can spawn hooks as another user; wasm path can't. Wrap it in a custom `SpackleHooks.execute` if needed.

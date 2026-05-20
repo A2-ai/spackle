@@ -29,13 +29,15 @@ const result = await generate(
 );
 
 if (result.ok) {
-    console.log(`Wrote ${result.files.length} files.`);
+    console.log(`Wrote ${result.files} file(s), ${result.dirs} dir(s).`);
 } else {
     console.error(result.error);
 }
 ```
 
-`DiskFs` handles reading the project into a bundle, calling wasm, and writing the output bundle back to disk. The `workspaceRoot` option is a containment boundary — both `projectDir` and `outDir` must resolve under it, or `DiskFs` refuses the call.
+`generate` walks `projectDir` on disk, calls the wasm per-file primitives (`renderFile` / `renderPath`) for templates and path placeholders, and stream-copies static files through `pipeline(createReadStream, createWriteStream)` so GB-scale assets never sit fully in memory. On success the response carries **counts**, not a bundle — if you need the rendered tree in memory, call `render` (the diagnostics-first preview) or read the output back from disk after the call.
+
+`DiskFs` enforces the `workspaceRoot` containment boundary — both `projectDir` and `outDir` must resolve under it, or `DiskFs` refuses the call — and provides the per-file I/O helpers (`writeFile`, `streamCopy`, `readFile`) the orchestrator drives.
 
 ## What's a "project"?
 

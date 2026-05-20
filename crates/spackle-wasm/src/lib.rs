@@ -1,11 +1,17 @@
-//! wasm-bindgen exports for spackle, bundle-in / bundle-out.
+//! wasm-bindgen exports for spackle. Per-file compute primitives the
+//! TS host calls as it walks a project on disk:
 //!
-//! Each export takes a project bundle — a JS `Array<{path, bytes: Uint8Array}>`
-//! — hydrates it into a [`MemoryFs`], runs the requested operation, and
-//! returns a serialized result. Rust never touches the host's filesystem;
-//! the TS host does all disk I/O and subprocess execution.
+//!   - [`check`] / [`validate_slot_data`] — config-level validation
+//!     against a small bundle (typically `spackle.toml` plus the
+//!     project's `.j2` / `.tera` templates).
+//!   - [`render_file`] — render one target template against an
+//!     in-memory registry of template sources, so Tera 2's
+//!     `{% include %}` and `{% extends %}` resolve across the
+//!     project. Static assets never enter the registry.
+//!   - [`render_path`] — render one path template.
+//!   - [`plan_hooks`] — resolve the hook plan; host executes.
 //!
-//! Per-export shapes and contracts live on the function `///` docs below.
+//! Per-export shapes and contracts live on the function `///` docs.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -34,18 +40,25 @@ struct CheckResponse<'a> {
     diagnostics: &'a Vec<spackle::Diagnostic>,
 }
 
-/// Structured response from `render`. Always returns this shape. Partial
-/// preview semantics: `files` contains every template that rendered
-/// successfully; `diagnostics` enumerates every failure across all stages
-/// (config / slot / hook / copy / render). `hook_plan` is `null` only
-/// when the config failed to load.
+/// Response from [`render_file`]. `bytes` is the rendered output (UTF-8
+/// of Tera's rendered string); `diagnostics` carries per-template
+/// errors (parse / undefined var / render). Empty `diagnostics` ⇒ clean
+/// render. On error `bytes` is empty — callers should branch on
+/// diagnostics, not on byte count.
 #[derive(Serialize)]
-struct RenderResponse<'a> {
-    files: Vec<BundleEntry>,
-    dirs: Vec<String>,
-    diagnostics: &'a Vec<spackle::Diagnostic>,
-    #[serde(rename = "hookPlan")]
-    hook_plan: Option<&'a Vec<spackle::hook::HookPlanEntry>>,
+struct RenderFileResponse {
+    #[serde(with = "serde_bytes")]
+    bytes: Vec<u8>,
+    diagnostics: Vec<spackle::Diagnostic>,
+}
+
+/// Response from [`render_path`]. `path` is the rendered path on
+/// success; on error it falls back to the original input so callers
+/// can surface the offending path in their UI. Branch on `diagnostics`.
+#[derive(Serialize)]
+struct RenderPathResponse {
+    path: String,
+    diagnostics: Vec<spackle::Diagnostic>,
 }
 
 /// Legacy `validate_slot_data` response. Kept for granular use.
@@ -53,23 +66,6 @@ struct RenderResponse<'a> {
 struct ValidationErr {
     valid: bool,
     errors: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct GenerateOk {
-    ok: bool,
-    files: Vec<BundleEntry>,
-    /// Directories under `out_dir` relative to it. Included separately
-    /// from `files` so empty dirs (created by the copy pass for
-    /// Directory entries that had no files pass the ignore filter)
-    /// survive the bundle round-trip — host must `mkdir -p` each.
-    dirs: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct GenerateErr {
-    ok: bool,
-    error: String,
 }
 
 #[derive(Serialize)]
@@ -102,22 +98,24 @@ fn serializer() -> serde_wasm_bindgen::Serializer {
     serde_wasm_bindgen::Serializer::new()
 }
 
-fn generate_err_value(error: String) -> JsValue {
-    GenerateErr { ok: false, error }
-        .serialize(&serializer())
-        .unwrap_or(JsValue::NULL)
-}
-
 fn decode_bundle(project_bundle: JsValue) -> Result<Vec<BundleEntry>, String> {
     serde_wasm_bindgen::from_value(project_bundle).map_err(|e| format!("invalid bundle: {}", e))
+}
+
+fn parse_slot_data(slot_data_json: &str) -> Result<HashMap<String, String>, String> {
+    serde_json::from_str(slot_data_json).map_err(|e| format!("invalid slot_data_json: {}", e))
 }
 
 // --- exports ---
 
 /// Run every static project check against `project_bundle`. Always
-/// returns a structured `CheckResponse` (never throws / never returns
-/// `valid: false`). Diagnostics are accumulated across all stages —
-/// callers see every problem in one call.
+/// returns a structured `CheckResponse` (never throws). Diagnostics
+/// accumulate across all stages so callers see every problem at once.
+///
+/// The bundle should contain `spackle.toml` plus any `.j2` / `.tera`
+/// templates the host wants validated. Non-template files can be
+/// passed with empty `bytes` so the path-template check covers them
+/// without inhaling their contents.
 #[wasm_bindgen]
 pub fn check(project_bundle: JsValue, project_dir: &str) -> String {
     let entries = match decode_bundle(project_bundle) {
@@ -134,9 +132,11 @@ pub fn check(project_bundle: JsValue, project_dir: &str) -> String {
             });
         }
     };
+
     let fs = MemoryFs::from_bundle(entries);
     let path = PathBuf::from(project_dir);
     let report = spackle::check_project(&fs, &path);
+
     json_or_panic(&CheckResponse {
         config: report.config.as_ref(),
         diagnostics: &report.diagnostics,
@@ -144,6 +144,8 @@ pub fn check(project_bundle: JsValue, project_dir: &str) -> String {
 }
 
 /// Validate slot data against the config loaded from the project bundle.
+/// The bundle only needs to contain `spackle.toml` — slot validation
+/// doesn't need template bodies.
 #[wasm_bindgen]
 pub fn validate_slot_data(
     project_bundle: JsValue,
@@ -160,9 +162,9 @@ pub fn validate_slot_data(
         Ok(p) => p,
         Err(e) => return invalid(vec![e.to_string()]),
     };
-    let data: HashMap<String, String> = match serde_json::from_str(slot_data_json) {
+    let data: HashMap<String, String> = match parse_slot_data(slot_data_json) {
         Ok(d) => d,
-        Err(e) => return invalid(vec![format!("invalid slot_data_json: {}", e)]),
+        Err(e) => return invalid(vec![e]),
     };
     match spackle::slot::validate_data(&data, &project.config.slots) {
         Ok(()) => r#"{"valid":true}"#.to_string(),
@@ -170,119 +172,166 @@ pub fn validate_slot_data(
     }
 }
 
-/// Generate a filled project. Runs the full generate pipeline (copy +
-/// template fill) against an in-memory fs, returns the rendered subtree
-/// as a flat bundle with paths relative to `out_dir`.
+/// Render one target template against an in-memory registry of template
+/// sources so Tera 2's `{% include %}` and `{% extends %}` in
+/// `target_path` (and anything it transitively references) resolve.
+/// Tera 2 dropped `{% macro %}` / `{% import %}`; those aren't
+/// supported here either.
 ///
-/// Hooks are a separate step — mirror the native CLI's two-call shape
-/// (`project.generate(...)` then `project.run_hooks_stream(...)`). Call
-/// `plan_hooks` after `generate` to get the resolved hook plan, then
-/// execute host-side. See `ts/src/host/hooks.ts` for the reference runner.
+/// `template_bundle` is a `Bundle` of `.j2` / `.tera` template bodies
+/// keyed by the same relative path the host uses for `target_path`.
+/// Static assets must not be in the bundle — peak wasm memory is
+/// the sum of every body in the registry, Tera's parsed templates, and
+/// one rendered string for the target.
+///
+/// `_project_name` / `_output_name` are not auto-injected; the host
+/// puts them into `slot_data` if templates reference them.
+///
+/// Filename templating is separate ([`render_path`]). For a `.j2` file
+/// with a templated name: call `render_path` on the relative path AND
+/// `render_file` on the body, then strip the trailing extension
+/// host-side.
 #[wasm_bindgen]
-pub fn generate(
-    project_bundle: JsValue,
-    project_dir: &str,
-    out_dir: &str,
+pub fn render_file(
+    template_bundle: JsValue,
+    target_path: &str,
     slot_data_json: &str,
 ) -> JsValue {
-    let entries = match decode_bundle(project_bundle) {
+    let entries = match decode_bundle(template_bundle) {
         Ok(e) => e,
-        Err(msg) => return generate_err_value(msg),
-    };
-    let fs = MemoryFs::from_bundle(entries);
-    let project_path = PathBuf::from(project_dir);
-    let out_path = PathBuf::from(out_dir);
-
-    let project = match spackle::load_project(&fs, &project_path) {
-        Ok(p) => p,
-        Err(e) => return generate_err_value(e.to_string()),
+        Err(msg) => return diag_response_file(target_path, msg),
     };
 
-    let slot_data: HashMap<String, String> = match serde_json::from_str(slot_data_json) {
+    let mut templates: HashMap<String, String> = HashMap::with_capacity(entries.len());
+    for entry in entries {
+        match String::from_utf8(entry.bytes) {
+            Ok(body) => {
+                templates.insert(entry.path, body);
+            }
+            Err(e) => {
+                return diag_response_file(
+                    target_path,
+                    format!("template `{}` is not valid UTF-8: {}", entry.path, e),
+                );
+            }
+        }
+    }
+
+    let slot_data = match parse_slot_data(slot_data_json) {
         Ok(d) => d,
-        Err(e) => return generate_err_value(format!("invalid slot_data_json: {}", e)),
+        Err(e) => return diag_response_file(target_path, e),
     };
 
-    if let Err(e) = spackle::slot::validate_data(&slot_data, &project.config.slots) {
-        return generate_err_value(format!("slot data invalid: {}", e));
+    match spackle::template::render_one_from_memory(&templates, target_path, &slot_data) {
+        Ok(rendered) => RenderFileResponse {
+            bytes: rendered.into_bytes(),
+            diagnostics: Vec::new(),
+        }
+        .serialize(&serializer())
+        .unwrap_or(JsValue::NULL),
+        Err(file_err) => {
+            let (message, tera_err) = match &file_err.kind {
+                spackle::template::FileErrorKind::ErrorParsingTemplate(e) => {
+                    (e.to_string(), Some(e))
+                }
+                spackle::template::FileErrorKind::ErrorRenderingContents(e) => {
+                    (e.to_string(), Some(e))
+                }
+                spackle::template::FileErrorKind::ErrorRenderingName(e) => {
+                    (e.to_string(), Some(e))
+                }
+                other => (other.to_string(), None),
+            };
+            let mut diag = spackle::Diagnostic::new(
+                spackle::Severity::Error,
+                spackle::DiagnosticSource::RenderBody,
+                message,
+            )
+            .with_path(file_err.file.clone());
+            if let Some(e) = tera_err {
+                if let Some(span) = spackle::diagnostic::extract_tera_span(e) {
+                    diag = diag.with_span(span);
+                }
+            }
+            RenderFileResponse {
+                bytes: Vec::new(),
+                diagnostics: vec![diag],
+            }
+            .serialize(&serializer())
+            .unwrap_or(JsValue::NULL)
+        }
     }
+}
 
-    if let Err(e) = project.generate(&fs, &project_path, &out_path, &slot_data) {
-        return generate_err_value(e.to_string());
-    }
-
-    let (files, dirs) = fs.drain_subtree(&out_path);
-    GenerateOk {
-        ok: true,
-        files,
-        dirs,
+fn diag_response_file(target_path: &str, message: String) -> JsValue {
+    let diag = spackle::Diagnostic::new(
+        spackle::Severity::Error,
+        spackle::DiagnosticSource::RenderBody,
+        message,
+    )
+    .with_path(target_path.to_string());
+    RenderFileResponse {
+        bytes: Vec::new(),
+        diagnostics: vec![diag],
     }
     .serialize(&serializer())
     .unwrap_or(JsValue::NULL)
 }
 
-/// Diagnostics-first render: never throws, never returns `ok: false`.
-/// Empty `diagnostics` ⇒ clean render. Use this for live UI feedback;
-/// `generate` keeps fail-fast semantics for write-to-disk workflows.
+/// Render a single path template with `slot_data`. Used for filename /
+/// directory-segment templating (e.g. `src/{{ project }}.txt`). On
+/// error, `path` falls back to the input so the host can attribute the
+/// diagnostic to a specific path in its UI; callers branch on
+/// `diagnostics`, not on `path` content.
 #[wasm_bindgen]
-pub fn render(
-    project_bundle: JsValue,
-    project_dir: &str,
-    out_dir: &str,
-    slot_data_json: &str,
-) -> JsValue {
-    let entries = match decode_bundle(project_bundle) {
-        Ok(e) => e,
-        Err(msg) => {
-            let diags = vec![spackle::Diagnostic::new(
-                spackle::Severity::Error,
-                spackle::DiagnosticSource::Config,
-                msg,
-            )];
-            return RenderResponse {
-                files: Vec::new(),
-                dirs: Vec::new(),
-                diagnostics: &diags,
-                hook_plan: None,
-            }
-            .serialize(&serializer())
-            .unwrap_or(JsValue::NULL);
-        }
-    };
-    let fs = MemoryFs::from_bundle(entries);
-    let project_path = PathBuf::from(project_dir);
-    let out_path = PathBuf::from(out_dir);
-
-    let slot_data: HashMap<String, String> = match serde_json::from_str(slot_data_json) {
+pub fn render_path(path_template: &str, slot_data_json: &str) -> JsValue {
+    let slot_data = match parse_slot_data(slot_data_json) {
         Ok(d) => d,
-        Err(e) => {
-            let diags = vec![spackle::Diagnostic::new(
-                spackle::Severity::Error,
-                spackle::DiagnosticSource::SlotData,
-                format!("invalid slot_data_json: {}", e),
-            )];
-            return RenderResponse {
-                files: Vec::new(),
-                dirs: Vec::new(),
-                diagnostics: &diags,
-                hook_plan: None,
-            }
-            .serialize(&serializer())
-            .unwrap_or(JsValue::NULL);
-        }
+        Err(e) => return diag_response_path(path_template, e),
     };
 
-    let report = spackle::render(&fs, &project_path, &out_path, &slot_data);
+    let context = match tera::Context::from_serialize(&slot_data) {
+        Ok(c) => c,
+        Err(e) => return diag_response_path(path_template, format!("context error: {}", e)),
+    };
 
-    // Harvest the rendered output subtree from the MemoryFs (paths
-    // relative to out_dir). Mirrors what `generate` does.
-    let (files, dirs) = fs.drain_subtree(&out_path);
+    match tera::Tera::one_off(path_template, &context, false) {
+        Ok(rendered) => RenderPathResponse {
+            path: rendered,
+            diagnostics: Vec::new(),
+        }
+        .serialize(&serializer())
+        .unwrap_or(JsValue::NULL),
+        Err(e) => {
+            let mut diag = spackle::Diagnostic::new(
+                spackle::Severity::Error,
+                spackle::DiagnosticSource::RenderName,
+                e.to_string(),
+            )
+            .with_path(path_template.to_string());
+            if let Some(span) = spackle::diagnostic::extract_tera_span(&e) {
+                diag = diag.with_span(span);
+            }
+            RenderPathResponse {
+                path: path_template.to_string(),
+                diagnostics: vec![diag],
+            }
+            .serialize(&serializer())
+            .unwrap_or(JsValue::NULL)
+        }
+    }
+}
 
-    RenderResponse {
-        files,
-        dirs,
-        diagnostics: &report.diagnostics,
-        hook_plan: report.hook_plan.as_ref(),
+fn diag_response_path(path_template: &str, message: String) -> JsValue {
+    let diag = spackle::Diagnostic::new(
+        spackle::Severity::Error,
+        spackle::DiagnosticSource::RenderName,
+        message,
+    )
+    .with_path(path_template.to_string());
+    RenderPathResponse {
+        path: path_template.to_string(),
+        diagnostics: vec![diag],
     }
     .serialize(&serializer())
     .unwrap_or(JsValue::NULL)

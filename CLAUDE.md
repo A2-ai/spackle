@@ -9,7 +9,8 @@ spackle/
 ├── src/                  # spackle core (rlib). Generic over `F: FileSystem`.
 ├── crates/
 │   ├── spackle-cli/      # spackle-cli (uses StdFs). Installed binary.
-│   └── spackle-wasm/     # cdylib, wasm-bindgen exports + Rust MemoryFs.
+│   └── spackle-wasm/     # cdylib, wasm-bindgen per-file primitives
+│                         # (check, render_file, render_path, plan_hooks).
 │                         # Both crates depend on `spackle` via path.
 ├── scripts/
 │   └── build-wasm.sh     # cargo build (wasm32) → wasm-bindgen --target web → wasm-opt.
@@ -55,7 +56,7 @@ CI: `.github/workflows/ci.yaml` runs cargo tests + bun tests. `.github/workflows
 
 ## Architecture in one paragraph
 
-`spackle` (core) is generic over a `FileSystem` trait (`src/fs.rs`) — every fs-touching function takes `&impl FileSystem`. Native callers pass `StdFs`. The wasm path lives in `crates/spackle-wasm/`, which depends on `spackle` and implements its own `MemoryFs`. Rust never crosses the wasm boundary for I/O — it's a **bundle-in / bundle-out pure function**: TS host hands in `Array<{path, bytes: Uint8Array}>`, Rust generates entirely in-memory, returns `{ files, dirs }`. The TS package (`ts/`) writes the output bundle to disk (or wherever) on its side.
+`spackle` (core) is generic over a `FileSystem` trait (`src/fs.rs`) — every fs-touching function takes `&impl FileSystem`. Native callers pass `StdFs`. The wasm path lives in `crates/spackle-wasm/`, which depends on `spackle` and exposes **per-file compute primitives** (`check`, `validate_slot_data`, `render_file`, `render_path`, `plan_hooks`). The TS host owns the project walk, the ignore filter, and disk I/O — calling wasm only for the bits that need Tera + spackle's templating semantics. GB-scale static assets never enter wasm: `generate` walks `projectDir` disk-direct, streams static copies through `pipeline(createReadStream, createWriteStream)`, and writes templated bytes via `writeFile` once Rust returns them. Native CLI is unchanged structurally — it threads `StdFs` through the same core primitives, and `copy::copy` now uses `io::copy` via the trait's `open_read`/`open_write` so GB-scale templates work native-side too.
 
 ## Naming conventions (settled after course corrections — don't re-flip)
 
@@ -71,12 +72,14 @@ CI: `.github/workflows/ci.yaml` runs cargo tests + bun tests. `.github/workflows
 
 ## Non-obvious invariants (don't accidentally break)
 
-- **No `std::fs` in the wasm binary.** `StdFs` is `#[cfg(not(target_arch = "wasm32"))]`. `spackle-wasm` uses `MemoryFs` only.
+- **No `std::fs` in the wasm binary.** `StdFs` is `#[cfg(not(target_arch = "wasm32"))]`. `spackle-wasm` only feeds small config bundles through `MemoryFs` — it never walks a whole project.
 - **`canonicalize()` removed from core.** `Project::get_name` / `get_output_name` use `file_stem()` / `file_name()` directly. Canonicalization happens host-side (`DiskFs` does it for containment).
-- **Bundle output paths are relative to `outDir`.** Host prepends its real disk root. Simplifies the contract; don't change back to absolute.
-- **Output bundle carries `files` AND `dirs`.** Empty dirs must survive the round-trip to match native `copy::copy`'s `create_dir_all` behavior. Dropping `dirs` silently regresses parity.
-- **`DiskFs.writeOutput` refuses a pre-existing `outDir`.** Matches native `GenerateError::AlreadyExists`. Don't weaken this without matching native too.
-- **Path containment uses `path.resolve` + prefix check, not `split("/")` blocklists.** Handles platform-specific separators transparently.
+- **Wasm exports are per-file primitives.** No `generate` / `render` whole-project export — those are TS-orchestrator functions composed on top of `check` / `render_file` / `render_path` / `plan_hooks`. Adding a whole-tree wasm export reintroduces the 4GB-linear-memory ceiling we just escaped.
+- **`render_file` takes a template-source registry.** The TS host passes a `Bundle` of every `.j2` / `.tera` body once per `generate` / `render` call; wasm builds a fresh Tera from it via the multi-pass `build_resilient_registry` and renders only `target_path`. Tera 2's cross-template tags (`{% include %}` / `{% extends %}`) resolve across the project — Tera 2 doesn't support `{% macro %}` / `{% import %}`. Unrelated sibling templates that fail to register don't break a clean target's render (partial-preview resilience). Static asset bytes are excluded from the bundle. Per-call registry rebuild is intentional — see `docs/design/wasm.md` for the deferred session-API optimization.
+- **`copy::copy` streams via `io::copy(open_read, open_write)`.** Don't switch back to `fs.copy_file` or `read_file`/`write_file` for the static-copy path — that buffers the whole file and breaks GB-scale assets. Template path keeps the byte-buffer methods (Tera consumes `&str`).
+- **TS `generate` walks disk directly.** Per-file callbacks into wasm cover Tera + path templating; static files stream-copy via `pipeline()`. `MemoryFs`-as-project-FS is gone host-side.
+- **`DiskFs.assertOutDirAvailable` refuses a pre-existing `outDir`.** Matches native `GenerateError::AlreadyExists`. Don't weaken this without matching native too.
+- **Path containment uses `path.resolve` + prefix check, not `split("/")` blocklists.** Handles platform-specific separators transparently. `DiskFs.containedJoin` enforces this for every per-entry write under `outDir`.
 - **`slugify` appears in `pkg/spackle_wasm.d.ts`.** Incidental tera export. Ignore.
 
 ## Hooks
@@ -85,7 +88,13 @@ CI: `.github/workflows/ci.yaml` runs cargo tests + bun tests. `.github/workflows
 
 **Session API consciously deferred.** Per-call bundle re-parse is sub-millisecond; not worth the stateful API complexity until profiles show otherwise.
 
-**Not exposed in the wasm path:** `run_as_user` / polyjuice; hooks in `generateBundle` (bundle-only mode has no real cwd).
+**Not exposed in the wasm path:** `run_as_user` / polyjuice. Hooks require a real `cwd` so they're disk-scoped — only the disk-based `runHooksStream` runs them. Browser hosts that need both bundle-input flows and hooks have to bridge subprocess execution themselves.
+
+## Streaming and memory
+
+Static files copy through `pipeline(createReadStream, createWriteStream)` in TS, and `io::copy(open_read, open_write)` in native Rust. Peak memory per static file is ~one pipe buffer (~64 KiB) regardless of file size. Templated bodies still spike on the render side — Tera produces a `String` per template — but typical templates are KB-scale; the goal of the per-file split was getting GB-scale static assets out of the wasm boundary, which it does.
+
+The wasm input bundle for `check` carries `spackle.toml` + every `.j2`/`.tera` template's real bytes + path-only placeholders (empty `bytes`) for static files. That last bit is what gives `check` full path-template coverage across the whole project without inhaling GB-scale static-asset bytes.
 
 ## Development practices
 

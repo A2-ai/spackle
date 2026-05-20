@@ -28,6 +28,58 @@ pub fn strip_template_ext(name: &str) -> Option<&str> {
     TEMPLATE_EXTS.iter().find_map(|ext| name.strip_suffix(ext))
 }
 
+/// Add as many templates as possible to a fresh Tera instance using
+/// multi-pass topological ordering. Each pass tries every still-
+/// unaccepted template via `add_raw_template`; it succeeds when its
+/// cross-template refs (`{% include %}` / `{% extends %}`) are already
+/// in the registry, so a child that extends a base will accept on the
+/// pass after its base does. The loop exits when no progress is made
+/// — at that point any still-pending templates either have genuine
+/// parse errors, missing dependencies, or transitively depend on a
+/// broken sibling.
+///
+/// Returns `(Tera, last_errors)` where `last_errors` maps each
+/// rejected template's name to the most recent `add_raw_template`
+/// error for it. Templates not in `last_errors` were accepted.
+///
+/// This shape is what gives the orchestrators partial-preview
+/// resilience: rendering a good `target_path` doesn't fail just
+/// because an unrelated sibling has a missing include or a syntax
+/// error — only `target_path`'s own ancestry has to resolve.
+fn build_resilient_registry(
+    templates: &HashMap<String, String>,
+) -> (Tera, HashMap<String, tera::Error>) {
+    let mut tera = Tera::default();
+    let mut remaining: Vec<(String, String)> = templates
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let mut last_err: HashMap<String, tera::Error> = HashMap::new();
+
+    loop {
+        let mut progress = false;
+        let mut still_remaining: Vec<(String, String)> = Vec::new();
+        for (name, content) in remaining.drain(..) {
+            match tera.add_raw_template(&name, &content) {
+                Ok(()) => {
+                    progress = true;
+                    last_err.remove(&name);
+                }
+                Err(e) => {
+                    last_err.insert(name.clone(), e);
+                    still_remaining.push((name, content));
+                }
+            }
+        }
+        remaining = still_remaining;
+        if !progress || remaining.is_empty() {
+            break;
+        }
+    }
+
+    (tera, last_err)
+}
+
 /// Validate templates in memory: check that bodies AND filename templates
 /// parse cleanly and that all variable references resolve to known slot
 /// keys (or the special `_project_name` / `_output_name` vars). Mirrors
@@ -38,21 +90,15 @@ pub fn validate_in_memory(
     templates: &HashMap<String, String>,
     slots: &[super::slot::Slot],
 ) -> Result<(), ValidateError> {
-    let mut tera = Tera::default();
-    let mut errors: Vec<ValidateFileError> = Vec::new();
-    // Collect parse failures per-file. Skipping the failed templates
-    // lets the rest still validate, and keeps the offending file's
-    // identity on the per-template error rather than buried in a
-    // wrapped global `tera::Error` message.
-    for (path, content) in templates {
-        if let Err(e) = tera.add_raw_template(path, content) {
-            errors.push(ValidateFileError {
-                file: path.clone(),
-                kind: ValidateFileErrorKind::Body,
-                error: e,
-            });
-        }
-    }
+    let (tera, registry_errs) = build_resilient_registry(templates);
+    let mut errors: Vec<ValidateFileError> = registry_errs
+        .into_iter()
+        .map(|(file, error)| ValidateFileError {
+            file,
+            kind: ValidateFileErrorKind::Body,
+            error,
+        })
+        .collect();
 
     let mut context = Context::from_serialize(
         &slots
@@ -97,6 +143,41 @@ pub fn validate_in_memory(
     Ok(())
 }
 
+/// Render a single template from an in-memory registry. Builds the
+/// registry with [`build_resilient_registry`] so unrelated siblings
+/// that fail to add (genuine parse errors, missing transitive deps)
+/// don't poison the render of an unrelated `target_path`. Tera 2's
+/// cross-template tags `{% include %}` and `{% extends %}` resolve;
+/// `{% macro %}` / `{% import %}` are not supported by Tera 2.
+///
+/// Errors are attributed to the offending file: if `target_path`
+/// itself failed to register, the returned `FileError.file` is
+/// `target_path` and the kind is `ErrorParsingTemplate`. Render-time
+/// failures (undefined slot refs in the target or its included
+/// templates) come through `tera.render` and are attributed to
+/// `target_path` since that's the entry point for this call.
+pub fn render_one_from_memory(
+    templates: &HashMap<String, String>,
+    target_path: &str,
+    data: &HashMap<String, String>,
+) -> Result<String, FileError> {
+    let (tera, mut registry_errs) = build_resilient_registry(templates);
+    if let Some(e) = registry_errs.remove(target_path) {
+        return Err(FileError {
+            kind: FileErrorKind::ErrorParsingTemplate(e),
+            file: target_path.to_string(),
+        });
+    }
+    let context = Context::from_serialize(data).map_err(|e| FileError {
+        kind: FileErrorKind::ErrorRenderingContents(e),
+        file: target_path.to_string(),
+    })?;
+    tera.render(target_path, &context).map_err(|e| FileError {
+        kind: FileErrorKind::ErrorRenderingContents(e),
+        file: target_path.to_string(),
+    })
+}
+
 /// Render templates in memory without touching the filesystem.
 /// `templates` maps relative paths (e.g. "{{name}}.txt.j2") to content strings.
 /// Returns a rendered file for each template, or per-file errors.
@@ -105,20 +186,14 @@ pub fn render_in_memory(
     templates: &HashMap<String, String>,
     data: &HashMap<String, String>,
 ) -> Result<Vec<Result<RenderedFile, FileError>>, tera::Error> {
-    let mut tera = Tera::default();
-    // Collect parse failures per-file so the offending file's identity
-    // survives as `FileError.file` rather than being buried in a wrapped
-    // global `tera::Error` message. Skipping the failed templates lets
-    // the rest render normally.
-    let mut parse_failures: Vec<FileError> = Vec::new();
-    for (path, content) in templates {
-        if let Err(e) = tera.add_raw_template(path, content) {
-            parse_failures.push(FileError {
-                kind: FileErrorKind::ErrorParsingTemplate(e),
-                file: path.clone(),
-            });
-        }
-    }
+    let (tera, registry_errs) = build_resilient_registry(templates);
+    let parse_failures: Vec<FileError> = registry_errs
+        .into_iter()
+        .map(|(file, error)| FileError {
+            kind: FileErrorKind::ErrorParsingTemplate(error),
+            file,
+        })
+        .collect();
     let context = Context::from_serialize(data)?;
 
     let template_names = tera.get_template_names();
@@ -460,6 +535,190 @@ mod tests {
     }
 
     #[test]
+    fn render_one_from_memory_resolves_include() {
+        let mut templates = HashMap::new();
+        templates.insert(
+            "main.j2".to_string(),
+            r#"hello {% include "partial.j2" %}"#.to_string(),
+        );
+        templates.insert("partial.j2".to_string(), "world".to_string());
+        let data: HashMap<String, String> = HashMap::new();
+        let out = render_one_from_memory(&templates, "main.j2", &data).expect("render ok");
+        assert_eq!(out, "hello world");
+    }
+
+    #[test]
+    fn render_one_from_memory_resolves_extends() {
+        let mut templates = HashMap::new();
+        templates.insert(
+            "base.j2".to_string(),
+            "BEGIN {% block body %}default{% endblock body %} END".to_string(),
+        );
+        templates.insert(
+            "child.j2".to_string(),
+            r#"{% extends "base.j2" %}{% block body %}hi {{ who }}{% endblock body %}"#.to_string(),
+        );
+        let mut data: HashMap<String, String> = HashMap::new();
+        data.insert("who".to_string(), "world".to_string());
+        let out = render_one_from_memory(&templates, "child.j2", &data).expect("render ok");
+        assert_eq!(out, "BEGIN hi world END");
+    }
+
+    #[test]
+    fn render_one_from_memory_renders_only_target() {
+        // A non-target template with a bad reference does NOT fail the
+        // render call unless the target transitively references it.
+        let mut templates = HashMap::new();
+        templates.insert("target.j2".to_string(), "ok".to_string());
+        templates.insert("unrelated.j2".to_string(), "{{ undefined_var }}".to_string());
+        let data: HashMap<String, String> = HashMap::new();
+        let out = render_one_from_memory(&templates, "target.j2", &data).expect("render ok");
+        assert_eq!(out, "ok");
+    }
+
+    #[test]
+    fn validate_in_memory_allows_cross_template_tags() {
+        // include / extends should validate cleanly when the
+        // referenced template is in the registry, regardless of
+        // HashMap iteration order. (Tera 2 dropped macros/import, so
+        // those aren't exercised here.)
+        let mut templates = HashMap::new();
+        templates.insert(
+            "main.j2".to_string(),
+            r#"{% include "partial.j2" %}"#.to_string(),
+        );
+        templates.insert("partial.j2".to_string(), "static".to_string());
+        templates.insert(
+            "base.j2".to_string(),
+            "{% block body %}default{% endblock body %}".to_string(),
+        );
+        templates.insert(
+            "child.j2".to_string(),
+            r#"{% extends "base.j2" %}{% block body %}hi{% endblock body %}"#.to_string(),
+        );
+        let slots: Vec<Slot> = Vec::new();
+        validate_in_memory(&templates, &slots).expect("validation should pass");
+    }
+
+    #[test]
+    fn validate_in_memory_attributes_missing_include_to_offender_not_siblings() {
+        // `good.j2` is fine. `bad.j2` references a missing template.
+        // Validation should flag `bad.j2`, not `good.j2`.
+        let mut templates = HashMap::new();
+        templates.insert("good.j2".to_string(), "{{ x }}".to_string());
+        templates.insert(
+            "bad.j2".to_string(),
+            r#"{% include "nope.j2" %}"#.to_string(),
+        );
+        let slots = vec![Slot {
+            key: "x".to_string(),
+            ..Default::default()
+        }];
+        let err = validate_in_memory(&templates, &slots).expect_err("should flag bad.j2");
+        match err {
+            ValidateError::RenderError(errs) => {
+                let files: Vec<&str> = errs.iter().map(|e| e.file.as_str()).collect();
+                assert!(files.contains(&"bad.j2"), "expected bad.j2 in errs: {:?}", files);
+                assert!(!files.contains(&"good.j2"), "good.j2 wrongly flagged: {:?}", files);
+            }
+            _ => panic!("expected RenderError"),
+        }
+    }
+
+    #[test]
+    fn render_in_memory_partial_preview_skips_only_unresolvable() {
+        // One template with missing include, two that are fine. The
+        // good ones should render; the bad one should surface as a
+        // per-file FileError. No global Err out — `render_in_memory`'s
+        // top-level Err is reserved for `Context::from_serialize` /
+        // global tera setup failures.
+        let mut templates = HashMap::new();
+        templates.insert("a.j2".to_string(), "A".to_string());
+        templates.insert("b.j2".to_string(), "B".to_string());
+        templates.insert(
+            "bad.j2".to_string(),
+            r#"{% include "nope.j2" %}"#.to_string(),
+        );
+        let data: HashMap<String, String> = HashMap::new();
+        let results = render_in_memory(&templates, &data).expect("global render ok");
+        let oks: Vec<String> = results
+            .iter()
+            .filter_map(|r| r.as_ref().ok())
+            .map(|f| f.original_path.to_string_lossy().into_owned())
+            .collect();
+        let errs: Vec<String> = results
+            .iter()
+            .filter_map(|r| r.as_ref().err())
+            .map(|e| e.file.clone())
+            .collect();
+        assert!(oks.contains(&"a.j2".to_string()), "a.j2 missing from oks: {:?}", oks);
+        assert!(oks.contains(&"b.j2".to_string()), "b.j2 missing from oks: {:?}", oks);
+        assert_eq!(errs, vec!["bad.j2".to_string()]);
+    }
+
+    #[test]
+    fn validate_in_memory_flags_missing_include_target() {
+        let mut templates = HashMap::new();
+        templates.insert(
+            "main.j2".to_string(),
+            r#"{% include "missing.j2" %}"#.to_string(),
+        );
+        let slots: Vec<Slot> = Vec::new();
+        let err = validate_in_memory(&templates, &slots).expect_err("should flag missing include");
+        match err {
+            ValidateError::RenderError(errs) => {
+                assert!(!errs.is_empty());
+            }
+            _ => panic!("expected RenderError"),
+        }
+    }
+
+    #[test]
+    fn render_one_from_memory_unrelated_bad_template_does_not_poison_target() {
+        // Multi-pass registry construction: `target.j2` has no
+        // cross-refs and parses cleanly, so it lands in the registry
+        // on pass 1 regardless of `bad.j2`. `bad.j2` references a
+        // non-existent template and never registers, but rendering
+        // `target.j2` succeeds because its own ancestry is intact.
+        let mut templates = HashMap::new();
+        templates.insert("target.j2".to_string(), "ok".to_string());
+        templates.insert(
+            "bad.j2".to_string(),
+            r#"{% include "nope.j2" %}"#.to_string(),
+        );
+        let data: HashMap<String, String> = HashMap::new();
+        let out =
+            render_one_from_memory(&templates, "target.j2", &data).expect("target should render");
+        assert_eq!(out, "ok");
+    }
+
+    #[test]
+    fn render_one_from_memory_target_with_missing_include_attributes_to_target() {
+        // Target itself has a broken include — error is attributed to
+        // the target's file, not the missing one.
+        let mut templates = HashMap::new();
+        templates.insert(
+            "target.j2".to_string(),
+            r#"{% include "nope.j2" %}"#.to_string(),
+        );
+        let data: HashMap<String, String> = HashMap::new();
+        let err = render_one_from_memory(&templates, "target.j2", &data)
+            .expect_err("missing include should error");
+        assert_eq!(err.file, "target.j2");
+        assert!(matches!(err.kind, FileErrorKind::ErrorParsingTemplate(_)));
+    }
+
+    #[test]
+    fn render_one_from_memory_target_parse_error_carries_path() {
+        let mut templates = HashMap::new();
+        templates.insert("target.j2".to_string(), "{% if %}".to_string());
+        let data: HashMap<String, String> = HashMap::new();
+        let err = render_one_from_memory(&templates, "target.j2", &data).expect_err("parse err");
+        assert_eq!(err.file, "target.j2");
+        assert!(matches!(err.kind, FileErrorKind::ErrorParsingTemplate(_)));
+    }
+
+    #[test]
     fn validate_in_memory_table() {
         struct Case {
             name: &'static str,
@@ -527,4 +786,5 @@ mod tests {
             );
         }
     }
+
 }
