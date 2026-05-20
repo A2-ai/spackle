@@ -96,7 +96,7 @@ function render(
     fs: DiskFs,
     opts?: {
         virtualProjectDir?: string;
-        virtualOutDir?: string;
+        names?: NameOverrides;
     },
 ): Promise<RenderResponse>;
 
@@ -145,7 +145,7 @@ function generate(
     fs: DiskFs,
     opts?: {
         virtualProjectDir?: string;
-        virtualOutDir?: string;
+        names?: NameOverrides;
     },
 ): Promise<GenerateResponse>;
 
@@ -177,6 +177,7 @@ function planHooks(
     opts?: {
         virtualProjectDir?: string;
         hookRan?: Record<string, boolean>;
+        names?: NameOverrides;
     },
 ): Promise<PlanHooksResponse>;
 
@@ -195,7 +196,7 @@ interface HookPlanEntry {
 }
 ```
 
-`data` matches native's `Project::run_hooks_stream` input: slot values PLUS hook toggles keyed by the hook's own `key` (so `data["format_code"] = "false"` disables that hook). `_project_name` / `_output_name` are injected wasm-side — don't pre-inject.
+`data` matches native's `Project::run_hooks_stream` input: slot values PLUS hook toggles keyed by the hook's own `key` (so `data["format_code"] = "false"` disables that hook). `_project_name` and `_output_name` are resolved and injected by the TS orchestrator; any caller-supplied values under those keys are overwritten. `_project_name` follows the rc2 default (`config.name` → `basename(projectDir)`). `_output_name` defaults to `basename(outDir)` but accepts an override via `opts.names.outputName` — see [NameOverrides](#nameoverrides). The override survives every re-plan.
 
 `hookRan` (optional): map of `{ hookKey: actualRanOutcome }`. Hooks present in this map are filtered from the returned plan (host already has their results) while `hook_ran_<key>` is pre-seeded so chained conditionals in downstream hooks evaluate against the real state.
 
@@ -214,6 +215,7 @@ function runHooksStream(
         hooks?: SpackleHooks;     // defaults to defaultHooks()
         cwd?: string;              // defaults to outDir
         env?: Record<string, string>;
+        names?: NameOverrides;
     },
 ): AsyncGenerator<HookEvent>;
 
@@ -306,6 +308,26 @@ No bundle-input variant of `generate` / `render` ships — those are disk-walkin
 
 Pair with `MemoryFs.toBundle()` / `MemoryFs.fromBundle()` to inspect inputs / outputs in-memory.
 
+## `NameOverrides`
+
+Override the rendered `_output_name` independent of the on-disk `outDir`. Solves the staging case: write to `spackle-gen-<uuid>` but render under a stable, human-readable name like `my_cool_project`.
+
+```ts
+interface NameOverrides {
+    outputName?: string;    // overrides _output_name
+}
+```
+
+Resolution for `_output_name`: explicit `outputName` → `basename(outDir)`. Empty string is a valid override (the host explicitly chose it). The override applies to `generate`, `render`, `planHooks`, and `runHooksStream` — and survives every hook re-plan.
+
+`_project_name` is **not** overridable; it stays on the rc2 default (`spackle.toml`'s `name` → `basename(projectDir)`).
+
+```ts
+await generate(projectDir, outDir, slotData, fs, {
+    names: { outputName: "my_cool_project" },
+});
+```
+
 ## Host helpers
 
 ### `DiskFs`
@@ -330,7 +352,7 @@ class DiskFs {
 }
 ```
 
-**Containment.** `workspaceRoot` is canonicalized once. Every path the orchestrator hands back to `DiskFs` resolves under it; anything else throws. Per-entry write paths are joined with `containedJoin` so a rendered path can't escape `outDir` even if a template produced `../`-flavored output. The block uses `path.resolve` + prefix comparison so OS-normalized escapes (Windows `..\`) are caught transparently.
+**Containment.** `workspaceRoot` is canonicalized once at construction. A path is accepted iff its canonical form lives under that root; anything else throws. Per-entry write paths are joined with `containedJoin` so a rendered path can't escape `outDir` even if a template produced `../`-flavored output. The block uses `path.resolve` + prefix comparison so OS-normalized escapes (Windows `..\`) are caught transparently. `workspaceRoot: "/"` is supported on POSIX — pick it when project / output trees may live under unrelated subtrees and you accept the broader trust boundary.
 
 **Streaming.** `streamCopy` uses `pipeline(createReadStream, createWriteStream)`. GB-scale static assets cross the pipe in Node's ~64 KiB chunks; never sit fully in memory. `readFileSync(src) + writeFileSync(dst)` would slurp the whole file into a `Buffer` per copy — never use that pattern in custom orchestrators.
 

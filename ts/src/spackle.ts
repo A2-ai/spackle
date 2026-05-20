@@ -39,6 +39,24 @@ function stripTemplateExt(name: string): string {
   return name;
 }
 
+/**
+ * Override the rendered output identity. The storage path (`outDir`)
+ * can differ from the name referenced by templates and hook commands
+ * as `{{ _output_name }}` — useful when the host writes to a staging
+ * directory (e.g. `spackle-gen-<uuid>`) but wants the rendered tree to
+ * carry a stable human-readable name (e.g. `my_cool_project`).
+ *
+ * `_project_name` is **not** overridable; it stays on its rc2 default
+ * (`spackle.toml`'s `name` → basename of the project directory).
+ *
+ * Precedence for `_output_name`: explicit `outputName` > `basename(outDir)`.
+ * Empty string is a valid override.
+ */
+export interface NameOverrides {
+  /** Overrides `_output_name`. Beats `basename(outDir)`. */
+  outputName?: string;
+}
+
 export interface CheckOptions {
   /** Virtual path the project bundle is rooted at. Defaults to
    * `/project`; rarely needs overriding. */
@@ -46,9 +64,18 @@ export interface CheckOptions {
 }
 
 export interface GenerateOptions extends CheckOptions {
-  /** Ignored by disk flows — `_output_name` is derived from `outDir`'s
-   * basename. Reserved for a future bundle-input composition. */
-  virtualOutDir?: string;
+  /** Override the rendered `_output_name` independent of `outDir`.
+   * See [[NameOverrides]]. */
+  names?: NameOverrides;
+}
+
+export interface PlanHooksOptions extends CheckOptions {
+  /** Per-hook execution outcome from a prior partial run; surfaces in
+   * subsequent hooks' `if = "{{ hook_ran_<key> }}"` conditionals. */
+  hookRan?: Record<string, boolean>;
+  /** Override the rendered `_output_name` independent of `outDir`.
+   * See [[NameOverrides]]. */
+  names?: NameOverrides;
 }
 
 export interface RunHooksOptions extends CheckOptions {
@@ -58,6 +85,9 @@ export interface RunHooksOptions extends CheckOptions {
   /** Working dir for spawned processes. Defaults to `outDir`. */
   cwd?: string;
   env?: Record<string, string>;
+  /** Override the rendered `_output_name` independent of `outDir`.
+   * See [[NameOverrides]]. */
+  names?: NameOverrides;
 }
 
 // --- walk ---
@@ -202,7 +232,8 @@ function buildConfigOnlyBundle(projectDir: string, virtualRoot: string): Bundle 
 
 // --- slot data injection ---
 
-function get_output_name(outDir: string): string {
+function get_output_name(outDir: string, override?: string): string {
+  if (override !== undefined) return override;
   // `path.basename` handles trailing separators the same way Rust's
   // `Path::file_name` does — "/tmp/out/" → "out", "/" → "".
   const base = pathBasename(outDir);
@@ -222,6 +253,32 @@ function injectSpecials(slotData: SlotData, projectName: string, outputName: str
     _project_name: projectName,
     _output_name: outputName,
   };
+}
+
+/**
+ * Resolve `_project_name` / `_output_name` for a hook flow and inject
+ * them into `data`, ALWAYS overwriting any caller-supplied values.
+ * Matches native parity: the resolved specials are authoritative;
+ * `data["_project_name"] = "evil"` from a host can never reach the
+ * templating context.
+ *
+ * `_project_name` is rc2-default (config.name → basename(projectDir));
+ * `_output_name` honors `overrides.outputName` if present, else
+ * `basename(outDir)`.
+ */
+async function resolveAndInjectHookNames(
+  data: Record<string, string>,
+  bundle: Bundle,
+  virtualDir: string,
+  absProject: string,
+  outDir: string,
+  overrides: NameOverrides | undefined,
+): Promise<Record<string, string>> {
+  const wasm = await loadSpackleWasm();
+  const checkRes = wasm.check(bundle, virtualDir);
+  const projectName = get_project_name(checkRes.config, absProject);
+  const outputName = get_output_name(outDir, overrides?.outputName);
+  return injectSpecials(data, projectName, outputName);
 }
 
 // --- check / validateSlotData ---
@@ -317,7 +374,7 @@ export async function generate(
   }
 
   const projectName = get_project_name(checkRes.config, absProject);
-  const outputName = get_output_name(outDir);
+  const outputName = get_output_name(outDir, opts.names?.outputName);
   const data = injectSpecials(slotData, projectName, outputName);
   const ignore = checkRes.config?.ignore ?? [];
 
@@ -428,7 +485,7 @@ export async function render(
   }
 
   const projectName = get_project_name(checkRes.config, absProject);
-  const outputName = get_output_name(outDir);
+  const outputName = get_output_name(outDir, opts.names?.outputName);
   const data = injectSpecials(slotData, projectName, outputName);
   const ignore = checkRes.config.ignore ?? [];
 
@@ -507,12 +564,20 @@ export async function planHooks(
   outDir: string,
   data: Record<string, string>,
   fs: DiskFs,
-  opts: CheckOptions & { hookRan?: Record<string, boolean> } = {},
+  opts: PlanHooksOptions = {},
 ): Promise<PlanHooksResponse> {
   const absProject = fs.containProject(projectDir);
   const virtualDir = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
   const bundle = buildConfigOnlyBundle(absProject, virtualDir);
-  return planHooksBundle(bundle, virtualDir, outDir, data, opts.hookRan);
+  const withNames = await resolveAndInjectHookNames(
+    data,
+    bundle,
+    virtualDir,
+    absProject,
+    outDir,
+    opts.names,
+  );
+  return planHooksBundle(bundle, virtualDir, outDir, withNames, opts.hookRan);
 }
 
 /** Bundle pass-through of `planHooks`. */
@@ -532,8 +597,10 @@ export async function planHooksBundle(
  * Executes host-side via `opts.hooks ?? defaultHooks()`.
  *
  * `data` is the full data map (slot values + hook toggles keyed by
- * the hook's raw `key`). `_project_name` / `_output_name` are
- * injected wasm-side.
+ * the hook's raw `key`). `_project_name` is rc2-default (config.name →
+ * basename(projectDir)); `_output_name` honors `opts.names.outputName`
+ * if present (else basename(outDir)) and the override applies across
+ * every re-plan.
  *
  * Non-zero exit continues the run; template render failures are a
  * terminal `template_errors` event.
@@ -550,13 +617,24 @@ export function runHooksStream(
   const bundle = buildConfigOnlyBundle(absProject, virtualDir);
   async function* inner(): AsyncGenerator<HookEvent> {
     const wasm: SpackleWasm = await loadSpackleWasm();
+    // Resolve names once; the resolved data flows back into the planner
+    // on every re-plan so the override (or config-derived default)
+    // stays authoritative.
+    const withNames = await resolveAndInjectHookNames(
+      data,
+      bundle,
+      virtualDir,
+      absProject,
+      outDir,
+      opts.names,
+    );
     yield* runHookPlanStream(
       (b, pdir, odir, d, hookRan) => wasm.planHooks(b, pdir, odir, d, hookRan),
       {
         bundle,
         projectDir: virtualDir,
         outDir,
-        data,
+        data: withNames,
         hooks: opts.hooks,
         cwd: opts.cwd ?? outDir,
         env: opts.env,

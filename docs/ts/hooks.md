@@ -21,7 +21,7 @@ for await (const event of runHooksStream(projectDir, outDir, data, fs)) {
 }
 ```
 
-`data` is a single map, matching native's `Project::run_hooks_stream`. It carries slot values *and* hook toggles (keyed by the hook's own `key`, e.g. `data["format_code"] = "false"` disables the `format_code` hook). `_project_name` and `_output_name` are injected wasm-side — do not pre-inject them.
+`data` is a single map, matching native's `Project::run_hooks_stream`. It carries slot values *and* hook toggles (keyed by the hook's own `key`, e.g. `data["format_code"] = "false"` disables the `format_code` hook). `_project_name` and `_output_name` are resolved by the TS orchestrator and injected automatically — any values under those keys in `data` are overwritten. `_project_name` follows the rc2 default (`config.name` → basename); pass `opts.names: { outputName }` to render under a name different from `basename(outDir)`, useful when writing to a staging dir like `spackle-gen-<uuid>`. The override survives every re-plan. See [`api.md` → NameOverrides](./api.md#nameoverrides).
 
 ## Event shape
 

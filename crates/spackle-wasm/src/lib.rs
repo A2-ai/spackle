@@ -184,8 +184,9 @@ pub fn validate_slot_data(
 /// the sum of every body in the registry, Tera's parsed templates, and
 /// one rendered string for the target.
 ///
-/// `_project_name` / `_output_name` are not auto-injected; the host
-/// puts them into `slot_data` if templates reference them.
+/// `_project_name` / `_output_name` are not auto-injected here (unlike
+/// [`plan_hooks`]); the host puts them into `slot_data` if templates
+/// reference them.
 ///
 /// Filename templating is separate ([`render_path`]). For a `.j2` file
 /// with a templated name: call `render_path` on the relative path AND
@@ -344,8 +345,22 @@ fn diag_response_path(path_template: &str, message: String) -> JsValue {
 /// Mirrors `Project::run_hooks_stream` at `src/lib.rs:246` in input
 /// shape: `data` is the full data map (slot values + hook toggles keyed
 /// by the hook's own `key`, e.g. `data["my_hook"] = "false"` disables
-/// it). `_project_name` and `_output_name` are injected here to match
-/// native — the caller does NOT pre-inject them.
+/// it).
+///
+/// `_project_name` / `_output_name` injection is **skip-if-present**:
+/// when absent from `data_json`, the defaults — `config.name` (else
+/// basename) and `basename(out_dir)` — are inserted to match
+/// `Project::run_hooks_stream` semantics. When present, the values
+/// `data_json` carries are honored as-is. This is the primitive
+/// contract; how a host arrives at those values is its concern.
+///
+/// Note that this differs from the native `Project::run_hooks_stream`
+/// path, which always-overwrites these keys before templating —
+/// trusting bundle-flow callers to pre-seed means a caller-supplied
+/// `_project_name` does reach the templating context. The disk-flow
+/// TS orchestrator (`runHooksStream` / `planHooks` in `@a2-ai/spackle`)
+/// always pre-seeds its resolved values before calling here, so the
+/// always-overwrite guarantee is preserved at that boundary.
 ///
 /// `hook_ran_json` (optional): JSON of `HashMap<String, bool>` where
 /// keys are hook keys and values are actual execution results. The host
@@ -409,11 +424,15 @@ fn plan_hooks_from_entries(
     // Parity with Project::run_hooks_stream at src/lib.rs:253-254:
     // inject the resolved `_project_name` + `_output_name` so hooks
     // templated with `{{ _output_name }}` render correctly.
-    data.insert("_project_name".to_string(), project.get_name());
-    data.insert(
-        "_output_name".to_string(),
-        spackle::get_output_name(Path::new(out_dir)),
-    );
+    //
+    // Skip-if-present: a host that has computed override names (e.g.
+    // storage path is a UUID but rendered identity is a slug) can
+    // pre-seed `data["_project_name"]` / `data["_output_name"]`. We
+    // honor those instead of clobbering with the config-derived values.
+    data.entry("_project_name".to_string())
+        .or_insert_with(|| project.get_name());
+    data.entry("_output_name".to_string())
+        .or_insert_with(|| spackle::get_output_name(Path::new(out_dir)));
 
     // Merge caller-supplied hook_ran_* overrides. Keys in hook_ran_json
     // are hook keys with boolean values indicating actual execution
@@ -699,6 +718,26 @@ mod plan_hooks_tests {
         let body = names["command"][2].as_str().unwrap();
         assert!(body.contains("hooks-demo"), "got: {}", body);
         assert!(body.contains("my_output"), "got: {}", body);
+    }
+
+    #[test]
+    fn caller_supplied_names_override_defaults() {
+        // Skip-if-present: a host that wants its own render identity
+        // (e.g. storage path is UUID, rendered identity is slug)
+        // pre-seeds `_project_name` / `_output_name` in `data_json`. The
+        // planner must honor those instead of clobbering with the
+        // config-derived values.
+        let plan = call(
+            r#"{"_project_name": "slug-override", "_output_name": "out-override"}"#,
+            None,
+        );
+        let names = find(&plan, "hook_names");
+        let body = names["command"][2].as_str().unwrap();
+        assert!(body.contains("slug-override"), "got: {}", body);
+        assert!(body.contains("out-override"), "got: {}", body);
+        // And the defaults must NOT have leaked through.
+        assert!(!body.contains("hooks-demo"), "got: {}", body);
+        assert!(!body.contains("my_output"), "got: {}", body);
     }
 
     #[test]

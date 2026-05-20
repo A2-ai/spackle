@@ -13,8 +13,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import {
+  basename as pathBasename,
   dirname as pathDirname,
   isAbsolute,
+  join as pathJoin,
   resolve as pathResolve,
   sep as pathSep,
 } from "node:path";
@@ -24,9 +26,22 @@ export interface DiskFsOptions {
   /**
    * Absolute path to the workspace root. The adapter refuses any path
    * that canonicalizes outside this root. Must exist on disk at
-   * construction time so it can be canonicalized once.
+   * construction time so it can be canonicalized once. POSIX `"/"` is
+   * supported.
    */
   workspaceRoot: string;
+}
+
+/**
+ * True iff `absPath` lives under `absRoot`. Handles `absRoot === "/"`
+ * correctly: appending `pathSep` would produce `"//"` and reject every
+ * real path, so we detect a root that already ends in the separator
+ * and skip the append.
+ */
+function isContainedUnder(absRoot: string, absPath: string): boolean {
+  if (absPath === absRoot) return true;
+  const prefix = absRoot.endsWith(pathSep) ? absRoot : absRoot + pathSep;
+  return absPath.startsWith(prefix);
 }
 
 export class DiskFs {
@@ -74,10 +89,11 @@ export class DiskFs {
   /** Join `rel` under `absBase` and verify the result stays under it.
    * Catches `../escape`, absolute `rel`, and (on Windows) backslash
    * traversal because `path.resolve` normalizes separators before the
-   * prefix check. */
+   * prefix check. POSIX `absBase === "/"` works correctly — see
+   * [[isContainedUnder]]. */
   containedJoin(absBase: string, rel: string): string {
     const resolved = pathResolve(absBase, rel);
-    if (resolved !== absBase && !resolved.startsWith(absBase + pathSep)) {
+    if (!isContainedUnder(absBase, resolved)) {
       throw new Error(`entry path escapes outDir: ${rel}`);
     }
     return resolved;
@@ -121,7 +137,7 @@ export class DiskFs {
       throw new Error(`path must be absolute: ${path}`);
     }
     const canonical = realpathSync(pathResolve(path));
-    if (canonical !== this.root && !canonical.startsWith(this.root + pathSep)) {
+    if (!isContainedUnder(this.root, canonical)) {
       throw new Error(`path escapes workspaceRoot: ${canonical} not under ${this.root}`);
     }
     return canonical;
@@ -146,14 +162,16 @@ export class DiskFs {
       if (parent === existing) {
         throw new Error(`containDiskForCreate(${path}): no existing ancestor`);
       }
-      tail.unshift(existing.slice(parent.length + 1));
+      // `pathBasename` + `pathJoin` instead of `existing.slice(parent.length + 1)`
+      // and string concat: when `parent === "/"`, the slice form drops an
+      // extra char (existing="/foo" → "oo") and the concat form doubles
+      // the separator (canonicalExisting="/" + sep + tail = "//foo").
+      tail.unshift(pathBasename(existing));
       existing = parent;
     }
     const canonicalExisting = realpathSync(existing);
-    const canonical = tail.length
-      ? `${canonicalExisting}${pathSep}${tail.join(pathSep)}`
-      : canonicalExisting;
-    if (canonical !== this.root && !canonical.startsWith(this.root + pathSep)) {
+    const canonical = tail.length ? pathJoin(canonicalExisting, ...tail) : canonicalExisting;
+    if (!isContainedUnder(this.root, canonical)) {
       throw new Error(`path escapes workspaceRoot: ${canonical} not under ${this.root}`);
     }
     return canonical;

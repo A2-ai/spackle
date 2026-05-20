@@ -439,6 +439,104 @@ describe("spackle render (diagnostics-first)", () => {
   });
 });
 
+describe("names overrides", () => {
+  const cleanup: string[] = [];
+  beforeEach(() => void (cleanup.length = 0));
+  afterEach(async () => {
+    await Promise.all(cleanup.map((p) => rm(p, { recursive: true, force: true })));
+  });
+
+  // Fixture: spackle.toml has a name, the file path is templated on
+  // `_output_name`, the body references both specials.
+  // `_project_name` is NOT overridable — it stays on rc2's
+  // config.name → basename(projectDir) fallback. `_output_name`
+  // accepts an override so a project written to a UUID staging dir
+  // can render under a human-readable slug.
+  async function fixture(
+    root: string,
+    opts: { configName?: string } = {},
+  ): Promise<{ projectDir: string; outDir: string }> {
+    const projectDir = join(root, "spackle-gen-uuid");
+    await mkdir(projectDir, { recursive: true });
+    const configName = opts.configName === undefined ? "" : `name = "${opts.configName}"\n`;
+    await writeFile(
+      join(projectDir, "spackle.toml"),
+      `${configName}[[slots]]\nkey = "noop"\ntype = "String"\n`,
+    );
+    await writeFile(
+      join(projectDir, "{{ _output_name }}.txt.j2"),
+      "project={{ _project_name }}, output={{ _output_name }}",
+    );
+    return { projectDir, outDir: join(root, "spackle-gen-out-uuid") };
+  }
+
+  test("generate: names.outputName beats basename(outDir); _project_name stays on config.name", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-names-")));
+    cleanup.push(root);
+    const { projectDir, outDir } = await fixture(root, { configName: "my_cool_project" });
+
+    const fs = new DiskFs({ workspaceRoot: root });
+    const res = await generate(projectDir, outDir, { noop: "x" }, fs, {
+      names: { outputName: "rendered_slug" },
+    });
+    expect(res.ok).toBe(true);
+
+    // Path templated with the override.
+    const rendered = await readFile(join(outDir, "rendered_slug.txt"), "utf8");
+    expect(rendered).toBe("project=my_cool_project, output=rendered_slug");
+  });
+
+  test("generate: omitted override keeps rc2 defaults for both specials", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-names-")));
+    cleanup.push(root);
+    // No config.name → _project_name falls back to basename(projectDir).
+    const { projectDir, outDir } = await fixture(root, { configName: undefined });
+
+    const fs = new DiskFs({ workspaceRoot: root });
+    const res = await generate(projectDir, outDir, { noop: "x" }, fs);
+    expect(res.ok).toBe(true);
+    // basename(outDir) = "spackle-gen-out-uuid"; basename(projectDir) = "spackle-gen-uuid".
+    const rendered = await readFile(join(outDir, "spackle-gen-out-uuid.txt"), "utf8");
+    expect(rendered).toBe("project=spackle-gen-uuid, output=spackle-gen-out-uuid");
+  });
+
+  test("render: outputName override flows through the diagnostics-first path", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-names-")));
+    cleanup.push(root);
+    const { projectDir, outDir } = await fixture(root, { configName: "from-config" });
+
+    const fs = new DiskFs({ workspaceRoot: root });
+    const res = await render(projectDir, outDir, { noop: "x" }, fs, {
+      names: { outputName: "render-out" },
+    });
+    expect(res.diagnostics).toEqual([]);
+    const entry = res.files.find((f) => f.path.endsWith("render-out.txt"));
+    expect(entry).toBeDefined();
+    expect(new TextDecoder().decode(entry!.bytes)).toBe("project=from-config, output=render-out");
+  });
+
+  test("outputName override accepts the empty string", async () => {
+    // Empty string is a meaningful explicit choice from the host.
+    const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-names-")));
+    cleanup.push(root);
+    const projectDir = join(root, "proj");
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(
+      join(projectDir, "spackle.toml"),
+      'name = "cfg"\n[[slots]]\nkey = "noop"\ntype = "String"\n',
+    );
+    await writeFile(join(projectDir, "body.txt.j2"), "out=[{{ _output_name }}]");
+    const outDir = join(root, "outdir-basename");
+    const fs = new DiskFs({ workspaceRoot: root });
+    const res = await generate(projectDir, outDir, { noop: "x" }, fs, {
+      names: { outputName: "" },
+    });
+    expect(res.ok).toBe(true);
+    const body = await readFile(join(outDir, "body.txt"), "utf8");
+    expect(body).toBe("out=[]");
+  });
+});
+
 describe("checkBundle (in-memory)", () => {
   test("clean project bundle has no diagnostics", async () => {
     // checkBundle is a 1:1 pass-through over wasm.check, useful for
