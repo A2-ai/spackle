@@ -83,11 +83,9 @@ describe("spackle (DiskFs)", () => {
     expect(res.config).not.toBeNull();
   });
 
-  test("check: rejects templates that use {% include %} (multi-template tag follow-up)", async () => {
-    // Per-file Tera::one_off has no template registry, so cross-
-    // template tags can't resolve. `check` flags them up front so the
-    // limitation surfaces here rather than as a confusing render-time
-    // error. See docs/design/wasm.md for the planned follow-up.
+  test("check: allows templates that use {% include %} (registry-backed render)", async () => {
+    // renderFile now takes a template-source registry, so cross-
+    // template tags resolve. `check` should NOT flag them.
     const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-tag-")));
     cleanup.push(root);
     const projectDir = join(root, "project");
@@ -97,9 +95,53 @@ describe("spackle (DiskFs)", () => {
     await writeFile(join(projectDir, "partial.j2"), "static partial\n");
     const fs = new DiskFs({ workspaceRoot: root });
     const res = await check(projectDir, fs);
-    const tagDiag = res.diagnostics.find((d) => d.message.includes("{% include %}"));
-    expect(tagDiag).toBeDefined();
-    expect(tagDiag?.source).toBe("render_body");
+    expect(res.diagnostics).toEqual([]);
+  });
+
+  test("generate: {% include %} resolves against the project registry", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-include-")));
+    cleanup.push(root);
+    const projectDir = join(root, "project");
+    const outDir = join(root, "output");
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(
+      join(projectDir, "spackle.toml"),
+      'name = "incl"\n[[slots]]\nkey = "who"\ntype = "String"\n',
+    );
+    await writeFile(join(projectDir, "main.j2"), 'hello {% include "partial.j2" %}');
+    await writeFile(join(projectDir, "partial.j2"), "{{ who }}!");
+
+    const fs = new DiskFs({ workspaceRoot: root });
+    const res = await generate(projectDir, outDir, { who: "world" }, fs);
+    expect(res.ok).toBe(true);
+    const out = await readFile(join(outDir, "main"), "utf8");
+    expect(out).toBe("hello world!");
+  });
+
+  test("generate: {% extends %} inheritance resolves against the registry", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-extends-")));
+    cleanup.push(root);
+    const projectDir = join(root, "project");
+    const outDir = join(root, "output");
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(
+      join(projectDir, "spackle.toml"),
+      'name = "ext"\n[[slots]]\nkey = "title"\ntype = "String"\n',
+    );
+    await writeFile(
+      join(projectDir, "base.j2"),
+      "BEGIN {% block body %}default{% endblock body %} END",
+    );
+    await writeFile(
+      join(projectDir, "child.j2"),
+      '{% extends "base.j2" %}{% block body %}{{ title }}{% endblock body %}',
+    );
+
+    const fs = new DiskFs({ workspaceRoot: root });
+    const res = await generate(projectDir, outDir, { title: "hello" }, fs);
+    expect(res.ok).toBe(true);
+    const child = await readFile(join(outDir, "child"), "utf8");
+    expect(child).toBe("BEGIN hello END");
   });
 
   test("validateSlotData: accepts good data, rejects wrong type", async () => {

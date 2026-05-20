@@ -165,6 +165,26 @@ function buildCheckBundle(projectDir: string, virtualRoot: string): Bundle {
 }
 
 /**
+ * Bundle of every `.j2` / `.tera` template body under `projectDir`,
+ * keyed by `relPath`. Passed once per `generate` / `render` call to
+ * `wasm.renderFile` so Tera 2's cross-template tags (`{% include %}`,
+ * `{% extends %}`) resolve against the project. Static asset bytes
+ * are excluded — Tera never sees them.
+ */
+function buildTemplateBundle(projectDir: string): Bundle {
+  const out: Bundle = [];
+  for (const entry of walkDisk(projectDir)) {
+    if (entry.kind !== "file") continue;
+    if (!hasTemplateExt(entry.relPath)) continue;
+    out.push({
+      path: entry.relPath,
+      bytes: new Uint8Array(readFileSync(entry.absPath)),
+    });
+  }
+  return out;
+}
+
+/**
  * `spackle.toml`-only bundle for `validateSlotData` and `planHooks`,
  * neither of which walks the tree. Empty bundle if the file is
  * missing — the wasm call surfaces that as a config diagnostic.
@@ -301,6 +321,11 @@ export async function generate(
   const data = injectSpecials(slotData, projectName, outputName);
   const ignore = checkRes.config?.ignore ?? [];
 
+  // Build the template-source registry once; the wasm renderFile call
+  // consumes it for every target template so cross-template tags
+  // resolve. Static asset bytes are excluded.
+  const templateBundle = buildTemplateBundle(absProject);
+
   let files = 0;
   let dirs = 0;
   for (const entry of walkDisk(absProject)) {
@@ -331,8 +356,7 @@ export async function generate(
     }
 
     if (isTemplate) {
-      const body = fs.readFile(entry.absPath);
-      const renderRes = wasm.renderFile(body, data, entry.relPath);
+      const renderRes = wasm.renderFile(templateBundle, entry.relPath, data);
       if (renderRes.diagnostics.length > 0) {
         const d = renderRes.diagnostics[0];
         if (d) return { ok: false, error: `${d.path ?? entry.relPath}: ${d.message}` };
@@ -408,6 +432,8 @@ export async function render(
   const data = injectSpecials(slotData, projectName, outputName);
   const ignore = checkRes.config.ignore ?? [];
 
+  const templateBundle = buildTemplateBundle(absProject);
+
   const fileMap = new Map<string, Uint8Array>();
   const dirSet = new Set<string>();
   for (const entry of walkDisk(absProject)) {
@@ -431,8 +457,7 @@ export async function render(
     }
 
     if (isTemplate) {
-      const body = fs.readFile(entry.absPath);
-      const renderRes = wasm.renderFile(body, data, entry.relPath);
+      const renderRes = wasm.renderFile(templateBundle, entry.relPath, data);
       diagnostics.push(...renderRes.diagnostics);
       if (renderRes.diagnostics.length === 0) {
         fileMap.set(stripTemplateExt(renderedRel), renderRes.bytes);

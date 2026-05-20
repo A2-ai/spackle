@@ -131,11 +131,12 @@ export type ValidationResponse = { valid: true } | { valid: false; errors: strin
  * is described in `diagnostics`. Callers branch on diagnostics, not on
  * byte count.
  *
- * `render_file` uses `Tera::one_off` per call — no template registry,
- * so `{% include %}`, `{% import %}`, and `{% extends %}` cannot
- * resolve cross-template references. `check` flags templates using
- * those tags so the limitation surfaces at check time; reintroducing
- * composition-aware rendering is a tracked follow-up. */
+ * `render_file` builds a Tera instance per call from the supplied
+ * template-source bundle and renders only the target template, so
+ * Tera 2's cross-template tags (`{% include %}` and `{% extends %}`)
+ * resolve across the project. Tera 2 dropped `{% macro %}` /
+ * `{% import %}`. Static asset bytes never enter the bundle — the
+ * host passes only `.j2` / `.tera` bodies. */
 export interface RenderFileResponse {
   bytes: Uint8Array;
   diagnostics: Diagnostic[];

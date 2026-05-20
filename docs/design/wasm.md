@@ -29,8 +29,8 @@ Internal notes for people modifying the wasm path. Consumer-facing docs live und
 │    → { config, diagnostics[] }                             │
 │  pub fn validate_slot_data(bundle, project_dir,            │
 │                             slot_data_json) -> String      │
-│  pub fn render_file(template_bytes, slot_data_json,        │
-│                     virtual_path?) -> JsValue              │
+│  pub fn render_file(template_bundle, target_path,          │
+│                     slot_data_json) -> JsValue             │
 │    → { bytes: Uint8Array, diagnostics[] }                  │
 │  pub fn render_path(path_template,                         │
 │                     slot_data_json) -> JsValue             │
@@ -80,9 +80,13 @@ Bundle expected to contain `spackle.toml` (real bytes) plus path-only placeholde
 
 Bundle only needs `spackle.toml`. Doesn't walk the project tree.
 
-### `render_file(template_bytes, slot_data_json, virtual_path?) → { bytes, diagnostics }`
+### `render_file(template_bundle, target_path, slot_data_json) → { bytes, diagnostics }`
 
-Renders one template body. `virtual_path` (optional) shows up in any returned diagnostic's `path` field so the host UI can attribute errors back to a specific file.
+Renders one target template against an in-memory registry. `template_bundle` is a `Bundle` of `.j2` / `.tera` template bodies keyed by the same relative paths the host uses for `target_path`; entries are added to a fresh `Tera` instance via the multi-pass `build_resilient_registry` helper so Tera 2's cross-template tags (`{% include %}` / `{% extends %}`) in the target (and anything it transitively references) resolve. Tera 2 does not support `{% macro %}` / `{% import %}`. Unrelated sibling templates that fail to register don't poison the render of a clean target — only the target's own ancestry has to resolve.
+
+Static assets must stay out of the bundle. Peak wasm memory is roughly the sum of template bodies passed in, Tera's parsed registry, and one rendered string for the target. Whole-project output never accumulates wasm-side because only `target_path` is rendered per call.
+
+`target_path` doubles as the diagnostic `path` attribution.
 
 `_project_name` / `_output_name` are not auto-injected here — the host already has both values when it walks the project; it injects them once into the data map rather than passing them per call.
 
@@ -231,15 +235,8 @@ Consumer-facing walkthrough: [`docs/ts/hooks.md`](../ts/hooks.md).
 
 ## Follow-ups
 
-### Restore multi-template Tera semantics
+### Optimization: reuse the Tera registry across calls
 
-`render_file` is `Tera::one_off` per call. There's no shared template registry, so `{% include %}`, `{% import %}`, and `{% extends %}` can't resolve other templates in the project — they have nothing to look up against. The old whole-project `render` wasm export DID register every template into one Tera instance (via `template::render_in_memory`), so cross-template references worked.
+`render_file` rebuilds the Tera instance from `template_bundle` every call. For a whole-project `generate`, that's O(N²) parse work — N target renders × N templates per registry build. The constant is small (parse is ~µs per template) and dwarfed by I/O for typical projects, so this is fine at current scale.
 
-`check`'s `template::validate_in_memory` (in `src/template.rs`) detects and rejects templates that use those tags as a `render_body` diagnostic, so this surfaces consistently at check time rather than as a confusing render error. The error message says these are tracked as a follow-up.
-
-When we revisit this, the design constraint from the per-file-primitives plan still applies: **don't bundle GB-scale static assets across the wasm boundary** to make composition work. Two shapes worth considering:
-
-- **Batched `render_templates(templates, slot_data)`** — input is a `Bundle` containing *only* the project's `.j2` / `.tera` files (static assets stay disk-side); output is a `Bundle` of rendered results. Same shape native `template::render_in_memory` already uses internally. Pros: clean parity with native, one Tera instance per call. Cons: deviates from the per-file primitive shape.
-- **`render_file(target_path, templates, slot_data)`** — keeps the per-file shape but accepts the templates bundle as context every call. Builds Tera fresh each time it's invoked. Pros: matches the directive's per-file framing. Cons: N² Tera construction over N templates; wasteful when the host is rendering the whole project.
-
-Pick when the constraints solidify (e.g., concrete user reports of broken includes, or a profile showing the construction overhead). Until then `check`-time rejection keeps things honest.
+If profiles ever show registry rebuilds dominating, the natural next step is a stateful session: `open_session(template_bundle) → SessionId` + `render_file_session(session_id, target_path, slot_data)` + `close_session`. Same shape as the deferred hook-planning session, same tradeoff (lifecycle complexity for amortized parse). Until that surfaces in a profile, the per-call rebuild is intentionally simpler.

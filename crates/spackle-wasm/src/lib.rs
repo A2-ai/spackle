@@ -4,10 +4,10 @@
 //!   - [`check`] / [`validate_slot_data`] — config-level validation
 //!     against a small bundle (typically `spackle.toml` plus the
 //!     project's `.j2` / `.tera` templates).
-//!   - [`render_file`] — render one template body. `Tera::one_off`,
-//!     no shared registry, so `{% include %}` / `{% import %}` /
-//!     `{% extends %}` won't resolve. `check` rejects templates that
-//!     use those tags. See `docs/design/wasm.md` for the follow-up.
+//!   - [`render_file`] — render one target template against an
+//!     in-memory registry of template sources, so Tera 2's
+//!     `{% include %}` and `{% extends %}` resolve across the
+//!     project. Static assets never enter the registry.
 //!   - [`render_path`] — render one path template.
 //!   - [`plan_hooks`] — resolve the hook plan; host executes.
 //!
@@ -116,12 +116,6 @@ fn parse_slot_data(slot_data_json: &str) -> Result<HashMap<String, String>, Stri
 /// templates the host wants validated. Non-template files can be
 /// passed with empty `bytes` so the path-template check covers them
 /// without inhaling their contents.
-///
-/// On top of the core pipeline this export also rejects
-/// `{% include %}` / `{% import %}` / `{% extends %}` in template
-/// bodies: the wasm render path uses `Tera::one_off`, no shared
-/// registry, so those tags can't resolve. The rejection is wasm-only
-/// — native handles them fine via its own registry.
 #[wasm_bindgen]
 pub fn check(project_bundle: JsValue, project_dir: &str) -> String {
     let entries = match decode_bundle(project_bundle) {
@@ -138,161 +132,15 @@ pub fn check(project_bundle: JsValue, project_dir: &str) -> String {
             });
         }
     };
-    let mut wasm_diags = scan_bundle_for_unsupported_tags(&entries);
 
     let fs = MemoryFs::from_bundle(entries);
     let path = PathBuf::from(project_dir);
     let report = spackle::check_project(&fs, &path);
 
-    let mut all = report.diagnostics.clone();
-    all.append(&mut wasm_diags);
     json_or_panic(&CheckResponse {
         config: report.config.as_ref(),
-        diagnostics: &all,
+        diagnostics: &report.diagnostics,
     })
-}
-
-/// Scan every `.j2` / `.tera` template body in the bundle for cross-
-/// template tags the wasm render path can't resolve.
-fn scan_bundle_for_unsupported_tags(entries: &[BundleEntry]) -> Vec<spackle::Diagnostic> {
-    let mut out = Vec::new();
-    for entry in entries {
-        if !has_template_ext(&entry.path) {
-            continue;
-        }
-        let body = match std::str::from_utf8(&entry.bytes) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        for tag in scan_cross_template_tags(body) {
-            out.push(
-                spackle::Diagnostic::new(
-                    spackle::Severity::Error,
-                    spackle::DiagnosticSource::RenderBody,
-                    format!(
-                        "`{{% {tag} %}}` is not supported — the wasm render path has no template registry. Tracked follow-up: multi-template Tera semantics."
-                    ),
-                )
-                .with_path(entry.path.clone()),
-            );
-        }
-    }
-    out
-}
-
-fn has_template_ext(name: &str) -> bool {
-    name.ends_with(".j2") || name.ends_with(".tera")
-}
-
-/// Scan a template body for `{% include %}` / `{% import %}` /
-/// `{% extends %}` tag *openings* that aren't inside a string literal,
-/// comment, or `{% raw %}` block.
-///
-/// The scanner walks bytes and treats Tera block delimiters as
-/// structure: `{{ … }}` expressions and `{% … %}` statements are
-/// skipped wholesale once entered, with quote-aware close detection
-/// so a tag-like sequence inside `"…"` / `'…'` doesn't fool us
-/// (e.g. `{{ "{% include %}" }}` is *not* a real include).
-fn scan_cross_template_tags(body: &str) -> Vec<&'static str> {
-    let mut found: Vec<&'static str> = Vec::new();
-    let bytes = body.as_bytes();
-    let mut i = 0;
-    let mut in_raw = false;
-    while i < bytes.len() {
-        // Comment: opaque to the rest of the scanner.
-        if !in_raw && i + 1 < bytes.len() && bytes[i] == b'{' && bytes[i + 1] == b'#' {
-            i = skip_past_close(bytes, i + 2, b'#', b'}', false);
-            continue;
-        }
-        // Expression: contents skipped with string-literal awareness.
-        if !in_raw && i + 1 < bytes.len() && bytes[i] == b'{' && bytes[i + 1] == b'{' {
-            i = skip_past_close(bytes, i + 2, b'}', b'}', true);
-            continue;
-        }
-        // Statement: read tag name, then skip to `%}` with string-
-        // literal awareness so a `%}` inside a string doesn't close
-        // the block early.
-        if i + 1 < bytes.len() && bytes[i] == b'{' && bytes[i + 1] == b'%' {
-            let mut j = i + 2;
-            if j < bytes.len() && bytes[j] == b'-' {
-                j += 1;
-            }
-            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                j += 1;
-            }
-            let name_start = j;
-            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
-                j += 1;
-            }
-            let tag_name = &body[name_start..j];
-
-            if in_raw {
-                if tag_name == "endraw" {
-                    in_raw = false;
-                }
-            } else if tag_name == "raw" {
-                in_raw = true;
-            } else {
-                let matched: Option<&'static str> = match tag_name {
-                    "include" => Some("include"),
-                    "import" => Some("import"),
-                    "extends" => Some("extends"),
-                    _ => None,
-                };
-                if let Some(name) = matched {
-                    if !found.contains(&name) {
-                        found.push(name);
-                    }
-                }
-            }
-            // Inside raw, Tera doesn't parse string literals — skip
-            // with quote-awareness only when we're outside raw.
-            i = skip_past_close(bytes, j, b'%', b'}', !in_raw);
-            continue;
-        }
-        i += 1;
-    }
-    found
-}
-
-/// Advance past the next `(close1, close2)` byte pair starting at
-/// `from`. When `respect_quotes` is true, single- and double-quoted
-/// string literals (with backslash escapes) are treated as opaque so
-/// a quoted `close1 close2` doesn't terminate the block. Returns
-/// `bytes.len()` if the close is never found.
-fn skip_past_close(
-    bytes: &[u8],
-    from: usize,
-    close1: u8,
-    close2: u8,
-    respect_quotes: bool,
-) -> usize {
-    let mut i = from;
-    let mut quote: Option<u8> = None;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if let Some(q) = quote {
-            if b == b'\\' && i + 1 < bytes.len() {
-                i += 2;
-                continue;
-            }
-            if b == q {
-                quote = None;
-            }
-            i += 1;
-            continue;
-        }
-        if respect_quotes && (b == b'\'' || b == b'"') {
-            quote = Some(b);
-            i += 1;
-            continue;
-        }
-        if b == close1 && i + 1 < bytes.len() && bytes[i + 1] == close2 {
-            return i + 2;
-        }
-        i += 1;
-    }
-    bytes.len()
 }
 
 /// Validate slot data against the config loaded from the project bundle.
@@ -324,60 +172,86 @@ pub fn validate_slot_data(
     }
 }
 
-/// Render a single template body. `Tera::one_off` — no shared
-/// registry, so cross-template tags don't resolve (see [`check`]).
+/// Render one target template against an in-memory registry of template
+/// sources so Tera 2's `{% include %}` and `{% extends %}` in
+/// `target_path` (and anything it transitively references) resolve.
+/// Tera 2 dropped `{% macro %}` / `{% import %}`; those aren't
+/// supported here either.
 ///
-/// `virtual_path` is optional and shows up in any returned diagnostic's
-/// `path` field for UI attribution.
+/// `template_bundle` is a `Bundle` of `.j2` / `.tera` template bodies
+/// keyed by the same relative path the host uses for `target_path`.
+/// Static assets must not be in the bundle — peak wasm memory is
+/// the sum of every body in the registry, Tera's parsed templates, and
+/// one rendered string for the target.
 ///
 /// `_project_name` / `_output_name` are not auto-injected; the host
 /// puts them into `slot_data` if templates reference them.
 ///
-/// Filename templating is separate ([`render_path`]). For a `.j2`
-/// file with a templated name: call `render_path` on the relative
-/// path AND `render_file` on the body, then strip the trailing
-/// extension host-side.
+/// Filename templating is separate ([`render_path`]). For a `.j2` file
+/// with a templated name: call `render_path` on the relative path AND
+/// `render_file` on the body, then strip the trailing extension
+/// host-side.
 #[wasm_bindgen]
 pub fn render_file(
-    template_bytes: &[u8],
+    template_bundle: JsValue,
+    target_path: &str,
     slot_data_json: &str,
-    virtual_path: Option<String>,
 ) -> JsValue {
-    let body = match std::str::from_utf8(template_bytes) {
-        Ok(s) => s,
-        Err(e) => {
-            return diag_response_file(virtual_path, format!("template is not valid UTF-8: {}", e))
-        }
+    let entries = match decode_bundle(template_bundle) {
+        Ok(e) => e,
+        Err(msg) => return diag_response_file(target_path, msg),
     };
+
+    let mut templates: HashMap<String, String> = HashMap::with_capacity(entries.len());
+    for entry in entries {
+        match String::from_utf8(entry.bytes) {
+            Ok(body) => {
+                templates.insert(entry.path, body);
+            }
+            Err(e) => {
+                return diag_response_file(
+                    target_path,
+                    format!("template `{}` is not valid UTF-8: {}", entry.path, e),
+                );
+            }
+        }
+    }
 
     let slot_data = match parse_slot_data(slot_data_json) {
         Ok(d) => d,
-        Err(e) => return diag_response_file(virtual_path, e),
+        Err(e) => return diag_response_file(target_path, e),
     };
 
-    let context = match tera::Context::from_serialize(&slot_data) {
-        Ok(c) => c,
-        Err(e) => return diag_response_file(virtual_path, format!("context error: {}", e)),
-    };
-
-    match tera::Tera::one_off(body, &context, false) {
+    match spackle::template::render_one_from_memory(&templates, target_path, &slot_data) {
         Ok(rendered) => RenderFileResponse {
             bytes: rendered.into_bytes(),
             diagnostics: Vec::new(),
         }
         .serialize(&serializer())
         .unwrap_or(JsValue::NULL),
-        Err(e) => {
+        Err(file_err) => {
+            let (message, tera_err) = match &file_err.kind {
+                spackle::template::FileErrorKind::ErrorParsingTemplate(e) => {
+                    (e.to_string(), Some(e))
+                }
+                spackle::template::FileErrorKind::ErrorRenderingContents(e) => {
+                    (e.to_string(), Some(e))
+                }
+                spackle::template::FileErrorKind::ErrorRenderingName(e) => {
+                    (e.to_string(), Some(e))
+                }
+                other => (other.to_string(), None),
+            };
             let mut diag = spackle::Diagnostic::new(
                 spackle::Severity::Error,
                 spackle::DiagnosticSource::RenderBody,
-                e.to_string(),
-            );
-            if let Some(p) = virtual_path {
-                diag = diag.with_path(p);
-            }
-            if let Some(span) = spackle::diagnostic::extract_tera_span(&e) {
-                diag = diag.with_span(span);
+                message,
+            )
+            .with_path(file_err.file.clone());
+            if let Some(e) = tera_err {
+                if let Some(span) = spackle::diagnostic::extract_tera_span(e) {
+                    diag = diag.with_span(span);
+                }
             }
             RenderFileResponse {
                 bytes: Vec::new(),
@@ -389,15 +263,13 @@ pub fn render_file(
     }
 }
 
-fn diag_response_file(virtual_path: Option<String>, message: String) -> JsValue {
-    let mut diag = spackle::Diagnostic::new(
+fn diag_response_file(target_path: &str, message: String) -> JsValue {
+    let diag = spackle::Diagnostic::new(
         spackle::Severity::Error,
         spackle::DiagnosticSource::RenderBody,
         message,
-    );
-    if let Some(p) = virtual_path {
-        diag = diag.with_path(p);
-    }
+    )
+    .with_path(target_path.to_string());
     RenderFileResponse {
         bytes: Vec::new(),
         diagnostics: vec![diag],
@@ -746,107 +618,6 @@ fn plan_hooks_err(msg: String) -> String {
         ok: false,
         error: msg,
     })
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod scan_tests {
-    use super::scan_cross_template_tags;
-
-    #[test]
-    fn plain_include_import_extends_caught() {
-        assert_eq!(scan_cross_template_tags(r#"{% include "x" %}"#), vec!["include"]);
-        assert_eq!(scan_cross_template_tags(r#"{% import "m" as m %}"#), vec!["import"]);
-        assert_eq!(scan_cross_template_tags(r#"{% extends "b" %}"#), vec!["extends"]);
-    }
-
-    #[test]
-    fn whitespace_trim_variant_caught() {
-        assert_eq!(scan_cross_template_tags(r#"{%- include "x" -%}"#), vec!["include"]);
-    }
-
-    #[test]
-    fn raw_block_suppresses_detection() {
-        let body = r#"{% raw %}{% include "x" %}{% endraw %}"#;
-        assert!(scan_cross_template_tags(body).is_empty());
-    }
-
-    #[test]
-    fn tag_outside_raw_still_caught_after_block_closes() {
-        let body = r#"{% raw %}{% include "x" %}{% endraw %}{% include "y" %}"#;
-        assert_eq!(scan_cross_template_tags(body), vec!["include"]);
-    }
-
-    #[test]
-    fn comment_block_suppresses_detection() {
-        let body = r#"{# example: {% include "x" %} #}"#;
-        assert!(scan_cross_template_tags(body).is_empty());
-    }
-
-    #[test]
-    fn distinct_tags_deduped_per_template() {
-        let body = r#"{% include "a" %}{% include "b" %}{% extends "c" %}"#;
-        assert_eq!(scan_cross_template_tags(body), vec!["include", "extends"]);
-    }
-
-    #[test]
-    fn similar_identifiers_not_matched() {
-        // `include_foo` shares a prefix but is a distinct identifier;
-        // the scanner reads the full identifier and only matches exact
-        // tag names.
-        let body = r#"{% include_foo "x" %}"#;
-        assert!(scan_cross_template_tags(body).is_empty());
-    }
-
-    #[test]
-    fn control_flow_tags_not_flagged() {
-        let body = r#"{% if x %}a{% else %}b{% endif %}{% for i in xs %}{% endfor %}"#;
-        assert!(scan_cross_template_tags(body).is_empty());
-    }
-
-    #[test]
-    fn empty_body_is_empty() {
-        assert!(scan_cross_template_tags("").is_empty());
-        assert!(scan_cross_template_tags("plain text").is_empty());
-    }
-
-    #[test]
-    fn tag_inside_expression_string_literal_is_not_flagged() {
-        // `{{ "..." }}` — the tag-like text is inside a string literal
-        // inside an expression. Tera parses this as a `String` value,
-        // not as an include directive.
-        let body = r#"{{ "{% include \"x\" %}" }}"#;
-        assert!(
-            scan_cross_template_tags(body).is_empty(),
-            "got: {:?}",
-            scan_cross_template_tags(body),
-        );
-    }
-
-    #[test]
-    fn tag_inside_single_quoted_expression_string_is_not_flagged() {
-        let body = r#"{{ '{% include %}' }}"#;
-        assert!(scan_cross_template_tags(body).is_empty());
-    }
-
-    #[test]
-    fn tag_inside_statement_string_literal_is_not_flagged() {
-        // Outer `{% set %}` contains a string literal with tag-like
-        // text. Only the outer statement is real; the inside is data.
-        let body = r#"{% set x = "{% include %}" %}"#;
-        assert!(
-            scan_cross_template_tags(body).is_empty(),
-            "got: {:?}",
-            scan_cross_template_tags(body),
-        );
-    }
-
-    #[test]
-    fn real_tag_alongside_string_literal_still_caught() {
-        // Real outer include with a string literal containing a
-        // tag-like substring. Should flag exactly one include.
-        let body = r#"{% include "fragment_{% include %}.j2" %}"#;
-        assert_eq!(scan_cross_template_tags(body), vec!["include"]);
-    }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

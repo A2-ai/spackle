@@ -162,7 +162,7 @@ Empty-directory parity: native `spackle generate` calls `create_dir_all` for eve
 
 **Memory.** Static files stream-copy through `pipeline(createReadStream, createWriteStream)` — peak memory per static is one ~64 KiB Node `highWaterMark` chunk regardless of file size. GB-scale assets are fine. Templated bodies still buffer fully in memory (Tera produces a `String`), but typical templates are KB-scale.
 
-**Template semantics.** `renderFile` is `Tera::one_off` per call — no shared template registry. `{% include %}`, `{% import %}`, and `{% extends %}` cannot resolve cross-template references; `check` rejects templates that use these tags so the limitation surfaces at check time. Reintroducing composition-aware rendering without bundling GB-scale static assets is a tracked follow-up — see [`docs/design/wasm.md`](../design/wasm.md).
+**Template semantics.** `renderFile` builds a Tera instance per call from a template-source registry — every `.j2` / `.tera` body the host walked — and renders only the requested target. Tera 2's cross-template tags (`{% include %}` and `{% extends %}`) resolve across the project. Tera 2 does not support `{% macro %}` / `{% import %}`. Static assets never enter the registry; only template bodies cross the wasm boundary.
 
 ## `planHooks(projectDir, outDir, data, fs, opts?)`
 

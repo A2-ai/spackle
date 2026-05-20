@@ -32,7 +32,7 @@ export interface RawWasmExports {
   validateSlotData(projectBundle: unknown, projectDir: string, slotDataJson: string): string;
   /** Returns `{ bytes, diagnostics }` as a `JsValue` object (not a
    * JSON string); the typed wrapper narrows it. */
-  renderFile(templateBytes: Uint8Array, slotDataJson: string, virtualPath?: string | null): unknown;
+  renderFile(templateBundle: unknown, targetPath: string, slotDataJson: string): unknown;
   /** Returns `{ path, diagnostics }` as a `JsValue` object. */
   renderPath(pathTemplate: string, slotDataJson: string): unknown;
   planHooks(
@@ -53,15 +53,14 @@ export interface SpackleWasm {
     projectDir: string,
     slotData: SlotData,
   ): ValidationResponse;
-  /** Render a single template body. No template registry — cross-
-   * template tags don't resolve. `check` rejects them so the
-   * limitation surfaces consistently. `virtualPath` is optional;
-   * shows up in error diagnostics for UI attribution. */
-  renderFile(
-    templateBytes: Uint8Array,
-    slotData: SlotData,
-    virtualPath?: string,
-  ): RenderFileResponse;
+  /** Render one target template against an in-memory registry of
+   * template sources. `templateBundle` should contain every `.j2` /
+   * `.tera` body the host wants Tera to see — Tera 2's cross-template
+   * tags (`{% include %}` / `{% extends %}`) in `targetPath` resolve
+   * against the bundle. Static asset bytes must stay out of the
+   * bundle. The bundle paths and `targetPath` use the same key
+   * space. */
+  renderFile(templateBundle: Bundle, targetPath: string, slotData: SlotData): RenderFileResponse;
   /** Render a single path template (e.g. `"src/{{ project }}.txt"`).
    * On error, `path` falls back to the input — branch on
    * `diagnostics`. */
@@ -130,13 +129,13 @@ async function initialize(
         raw.validateSlotData(projectBundle, projectDir, JSON.stringify(slotData)),
       ) as ValidationResponse;
     },
-    renderFile(templateBytes, slotData, virtualPath) {
+    renderFile(templateBundle, targetPath, slotData) {
       // render_file returns a JsValue object, not a JSON string.
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
       return raw.renderFile(
-        templateBytes,
+        templateBundle,
+        targetPath,
         JSON.stringify(slotData),
-        virtualPath ?? null,
       ) as RenderFileResponse;
     },
     renderPath(pathTemplate, slotData) {
