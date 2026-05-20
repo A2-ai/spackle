@@ -9,12 +9,11 @@ import { join, relative } from "node:path";
 
 import {
   DiskFs,
-  MemoryFs,
   check,
   configureSpackleWasm,
   generate,
-  generateBundle,
   planHooks,
+  render,
   runHooksStream,
   validateSlotData,
 } from "../src/spackle.ts";
@@ -124,39 +123,29 @@ for (const fixture of ["basic_project", "bad_template"]) {
   }
 }
 
-// --- generateBundle: basic_project in-memory (no disk for input or output) ---
+// --- render: basic_project diagnostics-first preview against disk ---
 
 {
-  const projectBundle = new MemoryFs({
-    files: {
-      "/project/spackle.toml": await Bun.file(
-        join(FIXTURES, "basic_project", "spackle.toml"),
-      ).text(),
-      "/project/README.md.j2": await Bun.file(
-        join(FIXTURES, "basic_project", "README.md.j2"),
-      ).text(),
-      "/project/docs/static.md": await Bun.file(
-        join(FIXTURES, "basic_project", "docs", "static.md"),
-      ).text(),
-    },
-  }).toBundle();
-
-  console.log("=== generateBundle(basic_project) — in-memory preview ===");
-  const result = await generateBundle(projectBundle, {
-    greeting: "hey",
-    target: "mem",
-    filename: "notes",
-  });
-  if (result.ok) {
+  const ws = await workspace("basic_project");
+  try {
+    const fs = new DiskFs({ workspaceRoot: ws.root });
+    console.log("=== render(basic_project) — diagnostics-first preview ===");
+    const result = await render(
+      ws.projectDir,
+      ws.outDir,
+      { greeting: "hey", target: "preview", filename: "notes" },
+      fs,
+    );
+    console.log(`  diagnostics=${result.diagnostics.length}`);
     console.log(`  rendered ${result.files.length} file(s):`);
     for (const f of result.files) {
       const preview = new TextDecoder().decode(f.bytes).slice(0, 40);
       console.log(`    ${f.path}  ${JSON.stringify(preview)}`);
     }
-  } else {
-    console.log(`  FAILED: ${result.error}`);
+    console.log();
+  } finally {
+    await rm(ws.root, { recursive: true, force: true });
   }
-  console.log();
 }
 
 // --- planHooks + runHooksStream: two-call flow against hooks_fixture ---

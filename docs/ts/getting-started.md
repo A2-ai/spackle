@@ -35,9 +35,9 @@ if (result.ok) {
 }
 ```
 
-`generate` streams each rendered entry to disk through `DiskFs.writeEntry` as Rust produces it. On success the response carries **counts**, not a bundle — if you need the rendered tree in memory, call `generateBundle` (see [API reference](./api.md#bundle-variants)) or read the output back from disk after the call.
+`generate` walks `projectDir` on disk, calls the wasm per-file primitives (`renderFile` / `renderPath`) for templates and path placeholders, and stream-copies static files through `pipeline(createReadStream, createWriteStream)` so GB-scale assets never sit fully in memory. On success the response carries **counts**, not a bundle — if you need the rendered tree in memory, call `render` (the diagnostics-first preview) or read the output back from disk after the call.
 
-`DiskFs` handles reading the project into a bundle, streaming wasm output back out, and enforcing the `workspaceRoot` containment boundary — both `projectDir` and `outDir` must resolve under it, or `DiskFs` refuses the call.
+`DiskFs` enforces the `workspaceRoot` containment boundary — both `projectDir` and `outDir` must resolve under it, or `DiskFs` refuses the call — and provides the per-file I/O helpers (`writeFile`, `streamCopy`, `readFile`) the orchestrator drives.
 
 ## What's a "project"?
 

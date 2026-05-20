@@ -5,10 +5,9 @@
 import type {
   Bundle,
   CheckResponse,
-  GenerateResult,
-  GenerateStreamEntry,
   PlanHooksResponse,
-  RenderResponse,
+  RenderFileResponse,
+  RenderPathResponse,
   SlotData,
   ValidationResponse,
 } from "./types.ts";
@@ -31,18 +30,11 @@ export interface RawWasmExports {
   initWasm: InitWasm;
   check(projectBundle: unknown, projectDir: string): string;
   validateSlotData(projectBundle: unknown, projectDir: string, slotDataJson: string): string;
-  /** Streams output entries through `onEntry` synchronously while the
-   * wasm call runs; returns a terminal envelope. The callback receives
-   * raw `{kind, path, bytes?}` objects from serde-wasm-bindgen — the
-   * typed wrapper below narrows this for callers. */
-  generate(
-    projectBundle: unknown,
-    projectDir: string,
-    outDir: string,
-    slotDataJson: string,
-    onEntry: (event: unknown) => void,
-  ): unknown;
-  render(projectBundle: unknown, projectDir: string, outDir: string, slotDataJson: string): unknown;
+  /** Returns `{ bytes, diagnostics }` as a `JsValue` object (not a
+   * JSON string); the typed wrapper narrows it. */
+  renderFile(templateBytes: Uint8Array, slotDataJson: string, virtualPath?: string | null): unknown;
+  /** Returns `{ path, diagnostics }` as a `JsValue` object. */
+  renderPath(pathTemplate: string, slotDataJson: string): unknown;
   planHooks(
     projectBundle: unknown,
     projectDir: string,
@@ -61,29 +53,19 @@ export interface SpackleWasm {
     projectDir: string,
     slotData: SlotData,
   ): ValidationResponse;
-  /** Run generate, streaming each output file/dir through `onEntry` as
-   * it's produced. Returns once Rust has finished walking the project.
-   * Bytes are dropped after each callback returns, so the wasm host no
-   * longer holds a duplicate output bundle. NOTE: this does NOT mean
-   * peak heap is one entry — core's template stage renders all `.j2`
-   * files into a `Vec<RenderedFile>` before the per-file write loop
-   * (see `crates/spackle-wasm/src/callback_fs.rs` for the full
-   * caveat). Copies stream cleanly; templates still spike. */
-  generate(
-    projectBundle: Bundle,
-    projectDir: string,
-    outDir: string,
+  /** Render a single template body. No template registry — cross-
+   * template tags don't resolve. `check` rejects them so the
+   * limitation surfaces consistently. `virtualPath` is optional;
+   * shows up in error diagnostics for UI attribution. */
+  renderFile(
+    templateBytes: Uint8Array,
     slotData: SlotData,
-    onEntry: (event: GenerateStreamEntry) => void,
-  ): GenerateResult;
-  /** Dynamic render-with-data, diagnostics-first. Never throws / never
-   * returns `ok: false`. Empty `diagnostics` ⇒ clean render. */
-  render(
-    projectBundle: Bundle,
-    projectDir: string,
-    outDir: string,
-    slotData: SlotData,
-  ): RenderResponse;
+    virtualPath?: string,
+  ): RenderFileResponse;
+  /** Render a single path template (e.g. `"src/{{ project }}.txt"`).
+   * On error, `path` falls back to the input — branch on
+   * `diagnostics`. */
+  renderPath(pathTemplate: string, slotData: SlotData): RenderPathResponse;
   planHooks(
     projectBundle: Bundle,
     projectDir: string,
@@ -148,30 +130,18 @@ async function initialize(
         raw.validateSlotData(projectBundle, projectDir, JSON.stringify(slotData)),
       ) as ValidationResponse;
     },
-    generate(projectBundle, projectDir, outDir, slotData, onEntry) {
-      // generate returns a JsValue (object), not a JSON string. The
-      // callback receives serde-wasm-bindgen-shaped {kind, path, bytes?}
-      // objects — assert the narrowed entry shape here so consumers
-      // see the typed union.
+    renderFile(templateBytes, slotData, virtualPath) {
+      // render_file returns a JsValue object, not a JSON string.
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
-      return raw.generate(
-        projectBundle,
-        projectDir,
-        outDir,
+      return raw.renderFile(
+        templateBytes,
         JSON.stringify(slotData),
-        // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
-        (event: unknown) => onEntry(event as GenerateStreamEntry),
-      ) as GenerateResult;
+        virtualPath ?? null,
+      ) as RenderFileResponse;
     },
-    render(projectBundle, projectDir, outDir, slotData) {
-      // render returns a JsValue (object), not a JSON string.
+    renderPath(pathTemplate, slotData) {
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
-      return raw.render(
-        projectBundle,
-        projectDir,
-        outDir,
-        JSON.stringify(slotData),
-      ) as RenderResponse;
+      return raw.renderPath(pathTemplate, JSON.stringify(slotData)) as RenderPathResponse;
     },
     planHooks(projectBundle, projectDir, outDir, data, hookRan) {
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion

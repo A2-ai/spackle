@@ -172,4 +172,4 @@ Until that signal shows up, the pure-function model is the right default.
 ## Not in scope
 
 - **`run_as_user`.** The native CLI can spawn hooks as a different user via `polyjuice`. The wasm path doesn't expose this — wrap your own `SpackleHooks.execute` if you need it.
-- **`generateBundle` + hooks.** Bundle-only (MemoryFs) generation has no real `cwd`; hooks are disk-scoped by design.
+- **Bundle-input flows + hooks.** Hooks need a real `cwd` to spawn subprocesses in, so the orchestrator is disk-only by design. Browser hosts that need both bundle-input generation AND hooks have to bridge subprocess execution to a backend themselves.

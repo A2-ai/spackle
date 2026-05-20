@@ -23,8 +23,8 @@ function mockRaw(): MockRaw {
     },
     check: () => `{"config":{"name":null,"ignore":[],"slots":[],"hooks":[]},"diagnostics":[]}`,
     validateSlotData: () => `{"valid":true}`,
-    generate: () => ({ ok: true, files: [], dirs: [] }),
-    render: () => ({ files: [], dirs: [], diagnostics: [], hookPlan: null }),
+    renderFile: () => ({ bytes: new Uint8Array(), diagnostics: [] }),
+    renderPath: () => ({ path: "", diagnostics: [] }),
     planHooks: () => `{"ok":true,"plan":[]}`,
   };
 }

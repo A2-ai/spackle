@@ -1,24 +1,24 @@
 //! Filesystem abstraction.
 //!
-//! All fs operations in spackle's core go through the `FileSystem` trait
-//! so the crate isn't pinned to `std::fs`. Two in-tree implementations:
+//! Core fs operations go through the `FileSystem` trait so spackle
+//! isn't pinned to `std::fs`. Two in-tree implementations:
 //!
 //!   - [`StdFs`] — wraps `std::fs`. Native-only (cfg-gated to
-//!     `not(target_arch = "wasm32")`). Used by the CLI and by any
-//!     Rust code running outside wasm.
+//!     `not(target_arch = "wasm32")`).
 //!   - [`MockFs`] — in-memory, for unit tests that don't want a tmpdir.
 //!
-//! Wasm builds live in the separate `spackle-wasm` crate, which ships
-//! its own `MemoryFs` impl of this trait and drives generation entirely
-//! in-memory. That keeps `std::fs` out of the wasm binary.
+//! Path semantics: each call takes a `&Path`. Impls decide how paths
+//! are resolved; `StdFs` uses real disk paths.
 //!
-//! Path semantics: the trait is path-shaped (not fd-shaped) — each call
-//! takes a `&Path`. Impls decide how paths are resolved. `StdFs` uses
-//! real disk paths; `MemoryFs` (in `spackle-wasm`) uses arbitrary
-//! absolute paths inside an in-process map.
+//! Streaming I/O: [`FileSystem::open_read`] / [`open_write`] hand back
+//! `Box<dyn Read + 'a>` / `Box<dyn Write + 'a>` so [`copy::copy`] can
+//! `io::copy` between source and destination without slurping a
+//! whole-file `Vec<u8>` per copy. Template I/O still goes through
+//! `read_file` / `write_file` (Tera needs `&str`).
 
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 /// File metadata surfaced by [`FileSystem::stat`].
@@ -47,11 +47,12 @@ pub struct FileEntry {
     pub file_type: FileType,
 }
 
-/// Per-file operations spackle's core needs from any filesystem backend.
+/// Per-file operations spackle's core needs from any fs backend.
 ///
-/// Methods are per-file and synchronous — no streams, no batch transforms.
-/// This is the guardrail against accumulating a whole project's contents
-/// in memory inside the component.
+/// Byte-buffer methods (`read_file` / `write_file`) handle template
+/// I/O where Tera needs the whole body in memory anyway. Streaming
+/// methods (`open_read` / `open_write`) feed `io::copy` for static
+/// asset copies so GB-scale files don't slurp into a `Vec<u8>`.
 pub trait FileSystem {
     fn read_file(&self, path: &Path) -> io::Result<Vec<u8>>;
     fn write_file(&self, path: &Path, content: &[u8]) -> io::Result<()>;
@@ -59,9 +60,16 @@ pub trait FileSystem {
     /// Immediate children of `path`. Caller recurses via `list_dir` +
     /// `stat` if it wants a deep walk; see [`walk`].
     fn list_dir(&self, path: &Path) -> io::Result<Vec<FileEntry>>;
-    fn copy_file(&self, src: &Path, dst: &Path) -> io::Result<()>;
     fn exists(&self, path: &Path) -> bool;
     fn stat(&self, path: &Path) -> io::Result<FileStat>;
+
+    /// Open `path` for streaming reads. Feeds `io::copy` in `copy::copy`.
+    fn open_read<'a>(&'a self, path: &Path) -> io::Result<Box<dyn Read + 'a>>;
+
+    /// Open `path` for streaming writes. The returned writer must
+    /// finalize on `Drop` — `io::copy` doesn't `flush`, so in-memory
+    /// impls that buffer have to commit in their `Drop` impl.
+    fn open_write<'a>(&'a self, path: &Path) -> io::Result<Box<dyn Write + 'a>>;
 }
 
 /// Depth-first walk over a directory tree, yielding `(relative_path, FileStat)`
@@ -163,10 +171,6 @@ mod std_fs {
             Ok(out)
         }
 
-        fn copy_file(&self, src: &Path, dst: &Path) -> io::Result<()> {
-            fs::copy(src, dst).map(|_| ())
-        }
-
         fn exists(&self, path: &Path) -> bool {
             path.exists()
         }
@@ -182,6 +186,14 @@ mod std_fs {
                 size: md.len(),
             })
         }
+
+        fn open_read<'a>(&'a self, path: &Path) -> io::Result<Box<dyn Read + 'a>> {
+            Ok(Box::new(fs::File::open(path)?))
+        }
+
+        fn open_write<'a>(&'a self, path: &Path) -> io::Result<Box<dyn Write + 'a>> {
+            Ok(Box::new(fs::File::create(path)?))
+        }
     }
 }
 
@@ -190,8 +202,8 @@ mod std_fs {
 /// In-memory filesystem for tests. Stores bytes keyed by canonical path.
 /// Not thread-safe (uses `RefCell`) — tests don't need it to be.
 pub struct MockFs {
-    files: std::cell::RefCell<HashMap<PathBuf, Vec<u8>>>,
-    dirs: std::cell::RefCell<std::collections::HashSet<PathBuf>>,
+    files: RefCell<HashMap<PathBuf, Vec<u8>>>,
+    dirs: RefCell<std::collections::HashSet<PathBuf>>,
 }
 
 impl MockFs {
@@ -200,8 +212,8 @@ impl MockFs {
         // Implicit root dir.
         dirs.insert(PathBuf::from("/"));
         Self {
-            files: std::cell::RefCell::new(HashMap::new()),
-            dirs: std::cell::RefCell::new(dirs),
+            files: RefCell::new(HashMap::new()),
+            dirs: RefCell::new(dirs),
         }
     }
 
@@ -306,11 +318,6 @@ impl FileSystem for MockFs {
         Ok(out)
     }
 
-    fn copy_file(&self, src: &Path, dst: &Path) -> io::Result<()> {
-        let content = self.read_file(src)?;
-        self.write_file(dst, &content)
-    }
-
     fn exists(&self, path: &Path) -> bool {
         self.files.borrow().contains_key(path) || self.dirs.borrow().contains(path)
     }
@@ -332,6 +339,57 @@ impl FileSystem for MockFs {
             io::ErrorKind::NotFound,
             format!("no such path: {}", path.display()),
         ))
+    }
+
+    fn open_read<'a>(&'a self, path: &Path) -> io::Result<Box<dyn Read + 'a>> {
+        let bytes = self.read_file(path)?;
+        Ok(Box::new(io::Cursor::new(bytes)))
+    }
+
+    fn open_write<'a>(&'a self, path: &Path) -> io::Result<Box<dyn Write + 'a>> {
+        // Fail fast on missing parent so the error doesn't get
+        // swallowed inside the drop-time commit.
+        if let Some(parent) = path.parent() {
+            if !self.dirs.borrow().contains(parent) {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("parent directory does not exist: {}", parent.display()),
+                ));
+            }
+        }
+        Ok(Box::new(MockFsWriter {
+            fs: self,
+            path: path.to_path_buf(),
+            buf: Vec::new(),
+        }))
+    }
+}
+
+/// Commit-on-drop writer over [`MockFs`]. `io::copy` doesn't `flush`,
+/// so the commit has to ride `Drop`.
+struct MockFsWriter<'a> {
+    fs: &'a MockFs,
+    path: PathBuf,
+    buf: Vec<u8>,
+}
+
+impl<'a> Write for MockFsWriter<'a> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.buf.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> Drop for MockFsWriter<'a> {
+    fn drop(&mut self) {
+        // Errors can't propagate through `Drop`. The parent-exists
+        // check at `open_write` covers the realistic failure mode;
+        // everything else is `HashMap::insert`, which is infallible.
+        let _ = self.fs.write_file(&self.path, &self.buf);
     }
 }
 

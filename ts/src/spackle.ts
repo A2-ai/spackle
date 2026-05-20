@@ -1,49 +1,43 @@
-// Orchestration entry — bundle-in / bundle-out.
-//
-// Under this design Rust is a pure compute step: the host hands it a
-// project bundle (files as `{path, bytes}`), Rust runs generation
-// against an in-memory fs, and the host writes outputs to disk however
-// it wants. `generate` is the one exception — output streams through a
-// host callback instead of being returned as a bundle, so the host no
-// longer accumulates a duplicate copy of the rendered output. The copy
-// stage streams cleanly; the template stage still buffers all rendered
-// `.j2` bodies in core (`template::fill` → `render_in_memory`) before
-// the per-file write loop runs, so peak heap is bounded by the input
-// bundle plus the rendered template bytes — see `generate`'s docs
-// below for the full caveat.
-//
-// Convenience APIs:
-//   - `check(projectDir, fs)` / `checkBundle(bundle, virtualDir)`
-//   - `validateSlotData(...)` / `validateSlotDataBundle(...)`
-//   - `generate(projectDir, outDir, slotData, fs, opts)` — disk-streaming
-//     wrapper; writes each rendered entry via `DiskFs.writeEntry` as Rust
-//     produces it. Returns counts, not a materialized bundle.
-//   - `generateBundle(projectBundle, slotData, opts)` — buffered variant
-//     for memory-fs / preview flows; collects streamed entries into the
-//     legacy `{ files, dirs }` shape.
-//   - `generateStream(projectBundle, slotData, opts)` — async-generator
-//     ergonomics for progress UI.
-//   - `render(projectDir, outDir, ...)` / `renderBundle(...)` —
-//     diagnostics-first preview path (never throws; partial results OK).
+// TS-side orchestrator. Walks the project on disk, calls the wasm
+// per-file primitives (`check`, `renderFile`, `renderPath`,
+// `validateSlotData`, `planHooks`) as it goes, and writes output via
+// `DiskFs`. Static asset bytes stream disk-direct through `pipeline()`
+// and never cross the wasm boundary.
+
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { basename as pathBasename, join as pathJoin } from "node:path";
 
 import { DiskFs } from "./host/disk-fs.ts";
 import { type HookEvent, runHookPlanStream, type SpackleHooks } from "./host/hooks.ts";
-import { loadSpackleWasm } from "./wasm/index.ts";
+import { loadSpackleWasm, type SpackleWasm } from "./wasm/index.ts";
 import type {
   Bundle,
   CheckResponse,
-  GenerateDiskResponse,
+  Diagnostic,
   GenerateResponse,
-  GenerateStreamEntry,
-  GenerateStreamEvent,
+  HookPlanEntry,
   PlanHooksResponse,
   RenderResponse,
   SlotData,
+  SpackleConfig,
   ValidationResponse,
 } from "./wasm/types.ts";
 
 const DEFAULT_VIRTUAL_PROJECT = "/project";
-const DEFAULT_VIRTUAL_OUTPUT = "/output";
+
+const CONFIG_FILE = "spackle.toml";
+const TEMPLATE_EXTS = [".j2", ".tera"] as const;
+
+function hasTemplateExt(name: string): boolean {
+  return TEMPLATE_EXTS.some((ext) => name.endsWith(ext));
+}
+
+function stripTemplateExt(name: string): string {
+  for (const ext of TEMPLATE_EXTS) {
+    if (name.endsWith(ext)) return name.slice(0, -ext.length);
+  }
+  return name;
+}
 
 export interface CheckOptions {
   /** Virtual path the project bundle is rooted at. Defaults to
@@ -52,8 +46,8 @@ export interface CheckOptions {
 }
 
 export interface GenerateOptions extends CheckOptions {
-  /** Virtual path used for the generate output root. Defaults to
-   * `/output`. */
+  /** Ignored by disk flows — `_output_name` is derived from `outDir`'s
+   * basename. Reserved for a future bundle-input composition. */
   virtualOutDir?: string;
 }
 
@@ -66,22 +60,169 @@ export interface RunHooksOptions extends CheckOptions {
   env?: Record<string, string>;
 }
 
+// --- walk ---
+
+interface DiskWalkEntry {
+  /** Relative to `projectDir`, forward-slash-separated. */
+  relPath: string;
+  /** Absolute path on disk. */
+  absPath: string;
+  kind: "file" | "dir";
+}
+
 /**
- * Validate a project at `projectDir` on disk. Reads the project into a
- * bundle via DiskFs, then calls wasm `check`. Returns the parsed config
- * on success so UIs can render slot forms without re-parsing TOML.
+ * Depth-first walk under `projectDir`. Yields dirs before their
+ * contents so the orchestrator can mkdir parents before writing
+ * children. Symlinks are skipped (not followed, not emitted).
+ *
+ * Entries whose basename is `spackle.toml` are suppressed from the
+ * yield stream, but a directory with that name is still recursed
+ * into. Native `template::fill` walks the full project regardless of
+ * basename, so a template under `spackle.toml/` must still surface
+ * for rendering; only the entry itself (and non-template descendants
+ * — handled by the orchestrator) drops out.
+ *
+ * Ignore is NOT applied here — native applies it only in the copy
+ * stage, so a template in an ignored subtree still renders. Callers
+ * decide per-entry whether to honor `ignore`.
+ */
+function* walkDisk(projectDir: string): Generator<DiskWalkEntry> {
+  function* visit(absDir: string, relPrefix: string): Generator<DiskWalkEntry> {
+    for (const entry of readdirSync(absDir, { withFileTypes: true })) {
+      if (entry.isSymbolicLink()) continue;
+      const name = entry.name;
+
+      const abs = pathJoin(absDir, name);
+      const rel = relPrefix === "" ? name : `${relPrefix}/${name}`;
+
+      if (name === CONFIG_FILE) {
+        if (entry.isDirectory()) yield* visit(abs, rel);
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        yield { relPath: rel, absPath: abs, kind: "dir" };
+        yield* visit(abs, rel);
+      } else if (entry.isFile()) {
+        yield { relPath: rel, absPath: abs, kind: "file" };
+      }
+    }
+  }
+  yield* visit(projectDir, "");
+}
+
+/** True when any segment of `relPath` matches an entry in `ignore`. */
+function isIgnoredByBasename(relPath: string, ignore: readonly string[]): boolean {
+  if (ignore.length === 0) return false;
+  for (const segment of relPath.split("/")) {
+    if (ignore.includes(segment)) return true;
+  }
+  return false;
+}
+
+/**
+ * True when any ancestor segment of `relPath` (i.e. any segment
+ * except the final basename) is `spackle.toml`. Mirrors native
+ * `copy::copy_collect`'s skipped_ancestors check: a path under a
+ * `spackle.toml/` directory is skipped from copy, but templates
+ * inside still render.
+ */
+function hasConfigFileAncestor(relPath: string): boolean {
+  const segments = relPath.split("/");
+  for (let i = 0; i < segments.length - 1; i++) {
+    if (segments[i] === CONFIG_FILE) return true;
+  }
+  return false;
+}
+
+/**
+ * Build a check-input bundle: `spackle.toml` + every template body +
+ * empty-bytes placeholders for every other file. `copy::validate_paths`
+ * inspects path strings but never reads bytes, so the empty placeholders
+ * give it the structure it needs without pulling GB-scale static asset
+ * bytes across the wasm boundary.
+ */
+function buildCheckBundle(projectDir: string, virtualRoot: string): Bundle {
+  const out: Bundle = [];
+  const tomlAbs = pathJoin(projectDir, CONFIG_FILE);
+  if (existsSync(tomlAbs)) {
+    out.push({
+      path: `${virtualRoot}/${CONFIG_FILE}`,
+      bytes: new Uint8Array(readFileSync(tomlAbs)),
+    });
+  }
+  for (const entry of walkDisk(projectDir)) {
+    if (entry.kind !== "file") continue;
+    const virtPath = `${virtualRoot}/${entry.relPath}`;
+    if (hasTemplateExt(entry.relPath)) {
+      out.push({ path: virtPath, bytes: new Uint8Array(readFileSync(entry.absPath)) });
+    } else {
+      // Path-only — `copy::validate_paths` reads paths, never bytes.
+      out.push({ path: virtPath, bytes: new Uint8Array() });
+    }
+  }
+  return out;
+}
+
+/**
+ * `spackle.toml`-only bundle for `validateSlotData` and `planHooks`,
+ * neither of which walks the tree. Empty bundle if the file is
+ * missing — the wasm call surfaces that as a config diagnostic.
+ */
+function buildConfigOnlyBundle(projectDir: string, virtualRoot: string): Bundle {
+  const tomlAbs = pathJoin(projectDir, CONFIG_FILE);
+  if (!existsSync(tomlAbs)) return [];
+  return [
+    {
+      path: `${virtualRoot}/${CONFIG_FILE}`,
+      bytes: new Uint8Array(readFileSync(tomlAbs)),
+    },
+  ];
+}
+
+// --- slot data injection ---
+
+function get_output_name(outDir: string): string {
+  // `path.basename` handles trailing separators the same way Rust's
+  // `Path::file_name` does — "/tmp/out/" → "out", "/" → "".
+  const base = pathBasename(outDir);
+  return base !== "" ? base : "project";
+}
+
+function get_project_name(config: SpackleConfig | null, projectDir: string): string {
+  if (config?.name) return config.name;
+  const base = pathBasename(projectDir);
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(0, dot) : base;
+}
+
+function injectSpecials(slotData: SlotData, projectName: string, outputName: string): SlotData {
+  return {
+    ...slotData,
+    _project_name: projectName,
+    _output_name: outputName,
+  };
+}
+
+// --- check / validateSlotData ---
+
+/**
+ * Static project validation. Returns the parsed config on success so
+ * UIs can render slot forms without re-parsing TOML.
  */
 export async function check(
   projectDir: string,
   fs: DiskFs,
   opts: CheckOptions = {},
 ): Promise<CheckResponse> {
+  const absProject = fs.containProject(projectDir);
   const virtualDir = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
-  const bundle = fs.readProject(projectDir, { virtualRoot: virtualDir });
+  const bundle = buildCheckBundle(absProject, virtualDir);
   return checkBundle(bundle, virtualDir);
 }
 
-/** Same as `check` but takes a pre-built bundle (memory-fs / preview flow). */
+/** Pass-through wrapper over `wasm.check` for hosts that build the
+ * bundle themselves. */
 export async function checkBundle(
   bundle: Bundle,
   virtualProjectDir: string = DEFAULT_VIRTUAL_PROJECT,
@@ -90,21 +231,20 @@ export async function checkBundle(
   return wasm.check(bundle, virtualProjectDir);
 }
 
-/**
- * Validate slot data against a project on disk.
- */
+/** Validate slot data against a project on disk. */
 export async function validateSlotData(
   projectDir: string,
   slotData: SlotData,
   fs: DiskFs,
   opts: CheckOptions = {},
 ): Promise<ValidationResponse> {
+  const absProject = fs.containProject(projectDir);
   const virtualDir = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
-  const bundle = fs.readProject(projectDir, { virtualRoot: virtualDir });
+  const bundle = buildConfigOnlyBundle(absProject, virtualDir);
   return validateSlotDataBundle(bundle, slotData, virtualDir);
 }
 
-/** Bundle variant of `validateSlotData`. */
+/** Bundle pass-through of `validateSlotData`. */
 export async function validateSlotDataBundle(
   bundle: Bundle,
   slotData: SlotData,
@@ -114,40 +254,20 @@ export async function validateSlotDataBundle(
   return wasm.validateSlotData(bundle, virtualProjectDir, slotData);
 }
 
+// --- generate (disk-direct, fail-fast) ---
+
 /**
- * Generate a filled project, streaming each rendered file/dir to disk
- * as Rust produces it.
+ * Walk `projectDir` and write the filled project to `outDir`. Static
+ * files stream through `pipeline()`; templated bodies render via wasm
+ * and write via `DiskFs.writeFile`. Returns counts; the rendered tree
+ * is on disk by the time the promise resolves.
  *
- * Reads the project bundle from `projectDir` (eagerly), then drives the
- * wasm streaming generate with a callback that synchronously writes
- * each entry under `outDir`. The host never accumulates a separate copy
- * of the output bundle — bytes are written and dropped per event.
+ * Fail-fast: the first per-entry failure short-circuits the rest of
+ * the walk. Whatever was already written stays — there's no rollback.
+ * Config / slot data errors fail before `outDir` is created.
  *
- * **Memory caveat**: this is NOT "one entry" peak memory for projects
- * with templates. Spackle core renders all `.j2` files into a
- * `Vec<RenderedFile>` (a list of rendered strings) before the write
- * loop runs, so peak heap during the template stage is the sum of all
- * rendered template bytes plus the input bundle. The streaming win
- * applies cleanly to the `copy` stage (static files stream one at a
- * time) and removes the post-render duplicate output buffer; large
- * template bodies remain a ceiling until core grows a streaming render
- * pass.
- *
- * Returns counts (`files`, `dirs`) on success — not a materialized
- * bundle. Callers that want the rendered output in memory should call
- * `generateBundle` instead.
- *
- * Failure semantics match native `Project::generate`: validation
- * failures (bad config, slot data type mismatch, malformed bundle)
- * fail BEFORE `outDir` is created on disk. Mid-stream failures (a
- * template tera error after the first write, or a host-callback
- * throw) leave whatever was already written — there's no rollback,
- * matching native CLI behavior. Pick a fresh `outDir` per run.
- *
- * Hooks are a separate step — iterate `runHooksStream()` after
- * `generate()` if the project defines any. Mirrors the native CLI's
- * two-call shape (`project.generate(...)` then
- * `project.run_hooks_stream(...)`).
+ * Hooks are a separate step — call `runHooksStream()` after
+ * `generate` if the project defines any.
  */
 export async function generate(
   projectDir: string,
@@ -155,141 +275,102 @@ export async function generate(
   slotData: SlotData,
   fs: DiskFs,
   opts: GenerateOptions = {},
-): Promise<GenerateDiskResponse> {
+): Promise<GenerateResponse> {
   const virtualProject = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
-  const virtualOut = opts.virtualOutDir ?? DEFAULT_VIRTUAL_OUTPUT;
-  const wasm = await loadSpackleWasm();
-  const bundle = fs.readProject(projectDir, { virtualRoot: virtualProject });
+  const absProject = fs.containProject(projectDir);
 
-  // Containment + AlreadyExists check WITHOUT creating outDir — defer
-  // creation until the first streamed entry. That way wasm-side
-  // validation failures (bad slot data, bad config, bad bundle) leave
-  // no empty outDir on disk, matching native `Project::generate` which
-  // only creates the destination as part of `copy::copy`.
+  // AlreadyExists is the first thing native checks; match that order
+  // so a pre-existing outDir fails before any wasm work.
   const absOut = fs.assertOutDirAvailable(outDir);
+
+  const wasm = await loadSpackleWasm();
+
+  const checkInput = buildCheckBundle(absProject, virtualProject);
+  const checkRes = wasm.check(checkInput, virtualProject);
+  const fatal = checkRes.diagnostics.find((d) => d.severity === "error");
+  if (fatal) return { ok: false, error: `${fatal.path ?? "spackle.toml"}: ${fatal.message}` };
+
+  const configBundle = buildConfigOnlyBundle(absProject, virtualProject);
+  const slotRes = wasm.validateSlotData(configBundle, virtualProject, slotData);
+  if (!slotRes.valid) {
+    return { ok: false, error: slotRes.errors.join("; ") };
+  }
+
+  const projectName = get_project_name(checkRes.config, absProject);
+  const outputName = get_output_name(outDir);
+  const data = injectSpecials(slotData, projectName, outputName);
+  const ignore = checkRes.config?.ignore ?? [];
 
   let files = 0;
   let dirs = 0;
-  const result = wasm.generate(bundle, virtualProject, virtualOut, slotData, (event) => {
-    fs.writeEntry(absOut, event);
-    if (event.kind === "file") files++;
-    else dirs++;
-  });
-  if (!result.ok) {
-    return { ok: false, error: result.error };
+  for (const entry of walkDisk(absProject)) {
+    // Classify on the **source** filename, not the rendered path. A
+    // static file whose templated name renders to `foo.j2` is still
+    // a copy, not a template (e.g. `{{ name }}` with `name = "foo.j2"`).
+    const isTemplate = entry.kind === "file" && hasTemplateExt(entry.relPath);
+
+    // Dirs and static files get skipped by both filters; templates
+    // render regardless of either (native `template::fill` walks the
+    // full tree).
+    if (!isTemplate) {
+      if (isIgnoredByBasename(entry.relPath, ignore)) continue;
+      if (hasConfigFileAncestor(entry.relPath)) continue;
+    }
+
+    const pathRes = wasm.renderPath(entry.relPath, data);
+    if (pathRes.diagnostics.length > 0) {
+      const d = pathRes.diagnostics[0];
+      if (d) return { ok: false, error: `${d.path ?? entry.relPath}: ${d.message}` };
+    }
+    const renderedRel = pathRes.path;
+
+    if (entry.kind === "dir") {
+      fs.ensureOutDir(fs.containedJoin(absOut, renderedRel));
+      dirs++;
+      continue;
+    }
+
+    if (isTemplate) {
+      const body = fs.readFile(entry.absPath);
+      const renderRes = wasm.renderFile(body, data, entry.relPath);
+      if (renderRes.diagnostics.length > 0) {
+        const d = renderRes.diagnostics[0];
+        if (d) return { ok: false, error: `${d.path ?? entry.relPath}: ${d.message}` };
+      }
+      const dstAbs = fs.containedJoin(absOut, stripTemplateExt(renderedRel));
+      fs.writeFile(dstAbs, renderRes.bytes);
+      files++;
+    } else {
+      const dstAbs = fs.containedJoin(absOut, renderedRel);
+      try {
+        // Sequential: parallel copies would explode the FD budget on
+        // large projects.
+        // oxlint-disable-next-line eslint/no-await-in-loop
+        await fs.streamCopy(entry.absPath, dstAbs);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { ok: false, error: `${entry.relPath}: ${msg}` };
+      }
+      files++;
+    }
   }
 
-  // Empty-project parity: native `copy::copy` unconditionally calls
-  // `create_dir_all(dest)` so a project with zero files still produces
-  // an empty outDir. Streaming generate skips the out_root event, so
-  // ensure outDir on success — mkdir recursive is idempotent so this
-  // is a no-op when writeEntry already created it.
+  // An all-ignored / empty project still produces an empty `outDir`.
   fs.ensureOutDir(absOut);
 
   return { ok: true, files, dirs };
 }
 
-/**
- * Bundle-to-bundle variant of `generate` — buffers the streamed entries
- * into a `Bundle` and returns the legacy `{ ok, files, dirs }` shape.
- * For preview / in-process consumers that want the rendered tree in
- * memory; use `generateStream` for async-iter ergonomics or `generate`
- * for true-streaming disk writes.
- *
- * Dedupes and sorts to preserve the **final-tree** semantics the old
- * buffered path had (which drained an in-memory map): when both
- * `copy::copy` and `template::fill` write to the same output path
- * (e.g., a project with `foo` and `foo.j2` both rendering to `foo`),
- * the second write wins — matching what lands on disk under streaming
- * `generate(...)` because the second `writeFileSync` overwrites the
- * first. Output is sorted by path so consumers can rely on stable
- * order regardless of HashMap iteration in the underlying walk.
- *
- * NOTE: this internally buffers — peak memory is the same as the
- * pre-streaming API. Streaming benefits the disk path; in-memory
- * consumers always pay full output size.
- */
-export async function generateBundle(
-  projectBundle: Bundle,
-  slotData: SlotData,
-  opts: GenerateOptions = {},
-): Promise<GenerateResponse> {
-  const virtualProject = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
-  const virtualOut = opts.virtualOutDir ?? DEFAULT_VIRTUAL_OUTPUT;
-  const wasm = await loadSpackleWasm();
-
-  // Dedupe via Map<path, BundleEntry>: later writes replace earlier
-  // ones, mirroring disk-write last-wins semantics. Set<string> for
-  // dirs is just dedup; create_dir_all events fire repeatedly for the
-  // same ancestor as different files traverse it.
-  const fileMap = new Map<string, GenerateStreamEntry & { kind: "file" }>();
-  const dirSet = new Set<string>();
-  const result = wasm.generate(projectBundle, virtualProject, virtualOut, slotData, (event) => {
-    if (event.kind === "file") {
-      fileMap.set(event.path, event);
-    } else {
-      dirSet.add(event.path);
-    }
-  });
-  if (!result.ok) {
-    return { ok: false, error: result.error };
-  }
-
-  const files: Bundle = Array.from(fileMap.values(), (e) => ({
-    path: e.path,
-    bytes: e.bytes,
-  })).toSorted((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  const dirs = Array.from(dirSet).toSorted();
-  return { ok: true, files, dirs };
-}
+// --- render (disk-direct, diagnostics-first) ---
 
 /**
- * Streaming variant — yields each rendered entry as an async generator
- * event, with terminal `done` / `error` events. Mirrors the
- * `runHooksStream` shape.
+ * Diagnostics-first preview against a disk project. Walks
+ * `projectDir`, accumulates rendered + copied files into a `Bundle`,
+ * and collects every per-file failure into `diagnostics`. Never
+ * throws / never returns `ok: false`; per-file failures don't abort
+ * the walk. Use `generate` for fail-fast disk writes.
  *
- * MEMORY NOTE: this does NOT reduce peak memory. The wasm call is
- * synchronous, so the host callback runs to completion before this
- * generator can `yield` — entries pile up in an internal queue, then
- * stream out. The value of this API is ergonomics (preview, progress
- * UI), not memory. For disk writes that avoid a duplicate host-side
- * output buffer, call `generate(projectDir, outDir, ...)` — and read
- * its docs for the template-render memory caveat that applies there.
- */
-export async function* generateStream(
-  projectBundle: Bundle,
-  slotData: SlotData,
-  opts: GenerateOptions = {},
-): AsyncGenerator<GenerateStreamEvent> {
-  const virtualProject = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
-  const virtualOut = opts.virtualOutDir ?? DEFAULT_VIRTUAL_OUTPUT;
-  const wasm = await loadSpackleWasm();
-
-  const queue: GenerateStreamEntry[] = [];
-  const result = wasm.generate(projectBundle, virtualProject, virtualOut, slotData, (event) =>
-    queue.push(event),
-  );
-
-  for (const event of queue) {
-    yield event;
-  }
-  if (result.ok) {
-    yield { kind: "done" };
-  } else {
-    yield { kind: "error", error: result.error };
-  }
-}
-
-/**
- * Render a project with diagnostics-first semantics. Unlike `generate`,
- * `render` **never throws / never returns `ok: false`** — it always
- * returns a `RenderResponse` carrying a (possibly partial) bundle plus
- * the full `diagnostics` array spanning config / slot / hook / copy /
- * render stages. Empty `diagnostics` ⇒ clean render.
- *
- * Use `render` for live UI previews where the user wants to see every
- * problem at once; use `generate` for write-to-disk workflows that
- * should abort on the first error.
+ * `hookPlan` is included unless the config didn't parse.
  */
 export async function render(
   projectDir: string,
@@ -298,44 +379,103 @@ export async function render(
   fs: DiskFs,
   opts: GenerateOptions = {},
 ): Promise<RenderResponse> {
+  const absProject = fs.containProject(projectDir);
   const virtualProject = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
-  const virtualOut = opts.virtualOutDir ?? DEFAULT_VIRTUAL_OUTPUT;
-  const bundle = fs.readProject(projectDir, { virtualRoot: virtualProject });
-  const result = await renderBundle(bundle, slotData, {
-    virtualProjectDir: virtualProject,
-    virtualOutDir: virtualOut,
-  });
-  // No `result.ok` discriminant — write whatever rendered, regardless of
-  // diagnostics. Caller decides what to do with the diagnostics array.
-  if (result.files.length > 0 || result.dirs.length > 0) {
-    fs.writeOutput(outDir, { files: result.files, dirs: result.dirs });
+
+  const wasm = await loadSpackleWasm();
+
+  const checkInput = buildCheckBundle(absProject, virtualProject);
+  const checkRes = wasm.check(checkInput, virtualProject);
+  const diagnostics: Diagnostic[] = [...checkRes.diagnostics];
+
+  if (!checkRes.config) {
+    return { files: [], dirs: [], diagnostics, hookPlan: null };
   }
-  return result;
+
+  // Slot data errors become diagnostics, not a hard abort — Tera
+  // substitutes empty strings for missing keys so the preview can
+  // still partially render.
+  const configBundle = buildConfigOnlyBundle(absProject, virtualProject);
+  const slotRes = wasm.validateSlotData(configBundle, virtualProject, slotData);
+  if (!slotRes.valid) {
+    for (const message of slotRes.errors) {
+      diagnostics.push({ severity: "error", source: "slot_data", message });
+    }
+  }
+
+  const projectName = get_project_name(checkRes.config, absProject);
+  const outputName = get_output_name(outDir);
+  const data = injectSpecials(slotData, projectName, outputName);
+  const ignore = checkRes.config.ignore ?? [];
+
+  const fileMap = new Map<string, Uint8Array>();
+  const dirSet = new Set<string>();
+  for (const entry of walkDisk(absProject)) {
+    const isTemplate = entry.kind === "file" && hasTemplateExt(entry.relPath);
+    // Dirs and static files get filtered by ignore and by
+    // spackle.toml-ancestor; templates render regardless.
+    if (!isTemplate) {
+      if (isIgnoredByBasename(entry.relPath, ignore)) continue;
+      if (hasConfigFileAncestor(entry.relPath)) continue;
+    }
+
+    const pathRes = wasm.renderPath(entry.relPath, data);
+    diagnostics.push(...pathRes.diagnostics);
+    // On render_name failure, `path` falls back to the input so the
+    // walk continues against a stable path.
+    const renderedRel = pathRes.path;
+
+    if (entry.kind === "dir") {
+      dirSet.add(renderedRel);
+      continue;
+    }
+
+    if (isTemplate) {
+      const body = fs.readFile(entry.absPath);
+      const renderRes = wasm.renderFile(body, data, entry.relPath);
+      diagnostics.push(...renderRes.diagnostics);
+      if (renderRes.diagnostics.length === 0) {
+        fileMap.set(stripTemplateExt(renderedRel), renderRes.bytes);
+      }
+    } else {
+      // Static bytes go into the preview bundle. GB-scale assets
+      // should use `generate` (which streams) — `render` buffers.
+      fileMap.set(renderedRel, fs.readFile(entry.absPath));
+    }
+  }
+
+  const planRes = wasm.planHooks(configBundle, virtualProject, outDir, data);
+  let hookPlan: HookPlanEntry[] | null = null;
+  if (planRes.ok) {
+    hookPlan = planRes.plan;
+    for (const entry of planRes.plan) {
+      for (const msg of entry.template_errors ?? []) {
+        diagnostics.push({
+          severity: "error",
+          source: "hook_config",
+          message: msg,
+          ref: entry.key,
+          path: CONFIG_FILE,
+          code: "hook::template_render_failed",
+        });
+      }
+    }
+  } else {
+    diagnostics.push({ severity: "error", source: "hook_config", message: planRes.error });
+  }
+
+  const files: Bundle = [...fileMap.entries()]
+    .map(([path, bytes]) => ({ path, bytes }))
+    .toSorted((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const dirs = [...dirSet].toSorted();
+  return { files, dirs, diagnostics, hookPlan };
 }
 
-/** Bundle-to-bundle variant of `render` — for MemoryFs / preview flows. */
-export async function renderBundle(
-  projectBundle: Bundle,
-  slotData: SlotData,
-  opts: GenerateOptions = {},
-): Promise<RenderResponse> {
-  const virtualProject = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
-  const virtualOut = opts.virtualOutDir ?? DEFAULT_VIRTUAL_OUTPUT;
-  const wasm = await loadSpackleWasm();
-  return wasm.render(projectBundle, virtualProject, virtualOut, slotData);
-}
+// --- hooks ---
 
 /**
- * Inspect the hook plan without executing. Reads the project into a
- * bundle, calls the wasm planner, and returns the resolved plan
- * (templated commands, should-run flags, skip reasons, template
- * errors). Useful for UIs that want to preview what would run.
- *
- * `data` is the full data map matching native `Project::run_hooks_stream`:
- * slot values plus hook toggles keyed by the hook's own `key`
- * (e.g. `{ "format_code": "false" }` to disable that hook).
- * `_project_name` and `_output_name` are injected wasm-side — don't
- * pre-inject.
+ * Inspect the hook plan without executing. Returns the resolved plan
+ * (templated commands, should-run flags, skip reasons).
  */
 export async function planHooks(
   projectDir: string,
@@ -344,12 +484,13 @@ export async function planHooks(
   fs: DiskFs,
   opts: CheckOptions & { hookRan?: Record<string, boolean> } = {},
 ): Promise<PlanHooksResponse> {
+  const absProject = fs.containProject(projectDir);
   const virtualDir = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
-  const bundle = fs.readProject(projectDir, { virtualRoot: virtualDir });
+  const bundle = buildConfigOnlyBundle(absProject, virtualDir);
   return planHooksBundle(bundle, virtualDir, outDir, data, opts.hookRan);
 }
 
-/** Bundle variant of `planHooks`. */
+/** Bundle pass-through of `planHooks`. */
 export async function planHooksBundle(
   projectBundle: Bundle,
   virtualProjectDir: string,
@@ -362,26 +503,15 @@ export async function planHooksBundle(
 }
 
 /**
- * Run the project's hooks, yielding `HookEvent`s as they occur. Reads
- * the project into a bundle, plans via wasm, and executes host-side via
- * `opts.hooks ?? defaultHooks()`.
+ * Run the project's hooks, yielding `HookEvent`s as they occur.
+ * Executes host-side via `opts.hooks ?? defaultHooks()`.
  *
- * Mirrors native `Project::run_hooks_stream` at `src/lib.rs:246`:
- * `data` is the full data map (slots + hook toggles). `_project_name` /
- * `_output_name` are injected wasm-side.
+ * `data` is the full data map (slot values + hook toggles keyed by
+ * the hook's raw `key`). `_project_name` / `_output_name` are
+ * injected wasm-side.
  *
- * Event protocol: see `HookEvent`. Consumers `for await` the generator
- * and update their UI on each `hook_start` / `hook_end` transition;
- * this is the hook for SSE bridging — bridge by yielding each event as
- * an SSE frame. Terminal `template_errors` / `plan_error` events end
- * the iterator (no throws for expected failure modes).
- *
- * Failure semantics match native: non-zero exit yields a `hook_end`
- * with `kind: "failed"` but the run continues; chained
- * `hook_ran_<key>` conditionals re-evaluate against actual outcomes via
- * an in-loop re-plan (visible as a `replan` event). Template rendering
- * failures are a hard abort before any execution (terminal
- * `template_errors` event).
+ * Non-zero exit continues the run; template render failures are a
+ * terminal `template_errors` event.
  */
 export function runHooksStream(
   projectDir: string,
@@ -390,12 +520,11 @@ export function runHooksStream(
   fs: DiskFs,
   opts: RunHooksOptions = {},
 ): AsyncGenerator<HookEvent> {
+  const absProject = fs.containProject(projectDir);
   const virtualDir = opts.virtualProjectDir ?? DEFAULT_VIRTUAL_PROJECT;
-  const bundle = fs.readProject(projectDir, { virtualRoot: virtualDir });
-  // Wrap the planner call in an async bridge so the generator can start
-  // yielding events without awaiting wasm load outside the iterator.
+  const bundle = buildConfigOnlyBundle(absProject, virtualDir);
   async function* inner(): AsyncGenerator<HookEvent> {
-    const wasm = await loadSpackleWasm();
+    const wasm: SpackleWasm = await loadSpackleWasm();
     yield* runHookPlanStream(
       (b, pdir, odir, d, hookRan) => wasm.planHooks(b, pdir, odir, d, hookRan),
       {
@@ -412,18 +541,15 @@ export function runHooksStream(
   return inner();
 }
 
+// --- re-exports ---
+
 export type {
   ConfigureSpackleWasmOptions,
   SpackleWasm,
   SpackleWasmModuleSource,
 } from "./wasm/index.ts";
 export { configureSpackleWasm, loadSpackleWasm } from "./wasm/index.ts";
-export {
-  DiskFs,
-  type DiskFsOptions,
-  type ReadProjectOptions,
-  type WriteOutputInput,
-} from "./host/disk-fs.ts";
+export { DiskFs, type DiskFsOptions } from "./host/disk-fs.ts";
 export { MemoryFs, type MemoryFsSeed } from "./host/memory-fs.ts";
 export {
   BunHooks,
@@ -449,15 +575,12 @@ export type {
   DiagnosticSeverity,
   DiagnosticSource,
   DiagnosticSpan,
-  GenerateDiskResponse,
   GenerateResponse,
-  GenerateStreamDirEvent,
-  GenerateStreamEntry,
-  GenerateStreamEvent,
-  GenerateStreamFileEvent,
   Hook,
   HookPlanEntry,
   PlanHooksResponse,
+  RenderFileResponse,
+  RenderPathResponse,
   RenderResponse,
   Slot,
   SlotData,
