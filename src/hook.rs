@@ -116,6 +116,125 @@ impl Hook {
     }
 }
 
+const SHELL_OPERATORS: &[&str] = &["&&", "||", "|", ";"];
+
+#[derive(Debug, thiserror::Error)]
+pub enum HookCommandError {
+    #[error(
+        "shell operators ({operators}) combined with template syntax in command elements: \
+         auto-wrap is unsafe (shell injection risk via slot values). \
+         Use explicit command = [\"bash\", \"-c\", \"...\"] and quote templated values yourself."
+    )]
+    OperatorTemplateCollision { operators: String },
+}
+
+fn posix_quote(s: &str) -> String {
+    if s.is_empty() {
+        return "''".to_string();
+    }
+    if s.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(c, '_' | '-' | '/' | '.' | ':' | '=' | '@' | ',' | '+')
+    }) {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+fn contains_operator_token(s: &str) -> bool {
+    s.split_whitespace()
+        .any(|tok| SHELL_OPERATORS.contains(&tok))
+}
+
+fn contains_tera_syntax(s: &str) -> bool {
+    s.contains("{{") || s.contains("{%") || s.contains("{#")
+}
+
+/// Normalize a hook command for execution.
+///
+/// - Returns the input unchanged when no shell operators are present, or
+///   when the command is already wrapped (`["bash"|"sh", "-c", ...]`).
+/// - When any element is exactly `&&`, `||`, `|`, or `;` (OR the command
+///   is a single-element vec whose lone string contains an operator
+///   token as a whitespace-bounded word), rewrites the command to
+///   `["bash", "-c", "<POSIX-quoted body>"]`.
+/// - Errors when wrap would trigger AND any element contains Tera
+///   syntax (`{{`, `{%`, `{#`) — the author must use explicit
+///   `["bash", "-c", "..."]` so they own shell-safety of substituted
+///   values.
+///
+/// Idempotent — safe to call from both the planner and the executor.
+pub fn normalize_hook_command_for_execution(
+    command: &[String],
+) -> Result<Vec<String>, HookCommandError> {
+    if command.is_empty() {
+        return Ok(command.to_vec());
+    }
+
+    // Already-wrapped guard: `["bash"|"sh", "-c", ...]`.
+    if command.len() >= 2 && (command[0] == "bash" || command[0] == "sh") && command[1] == "-c" {
+        return Ok(command.to_vec());
+    }
+
+    let has_operator_element = command
+        .iter()
+        .any(|e| SHELL_OPERATORS.contains(&e.as_str()));
+    let single_with_operator = command.len() == 1 && contains_operator_token(&command[0]);
+
+    if !(has_operator_element || single_with_operator) {
+        return Ok(command.to_vec());
+    }
+
+    // Collect which operators appear, for the error message.
+    let mut found_ops: Vec<&str> = command
+        .iter()
+        .filter_map(|e| SHELL_OPERATORS.iter().copied().find(|op| op == &e.as_str()))
+        .collect();
+    if found_ops.is_empty() && single_with_operator {
+        for tok in command[0].split_whitespace() {
+            if let Some(op) = SHELL_OPERATORS.iter().copied().find(|op| *op == tok) {
+                found_ops.push(op);
+            }
+        }
+    }
+    found_ops.sort();
+    found_ops.dedup();
+
+    if command.iter().any(|e| contains_tera_syntax(e)) {
+        return Err(HookCommandError::OperatorTemplateCollision {
+            operators: found_ops.join(", "),
+        });
+    }
+
+    let body = if single_with_operator {
+        command[0].clone()
+    } else {
+        command
+            .iter()
+            .map(|tok| {
+                if SHELL_OPERATORS.contains(&tok.as_str()) {
+                    tok.clone()
+                } else {
+                    posix_quote(tok)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+
+    Ok(vec!["bash".to_string(), "-c".to_string(), body])
+}
+
 #[derive(Serialize, Debug)]
 pub enum ConditionalError {
     InvalidContext(#[serde(skip)] tera::Error),
@@ -301,6 +420,24 @@ pub fn evaluate_hook_plan(
             Ok(true) => {}
         }
 
+        // Auto-wrap chained shell commands before templating. Detection is
+        // pre-template by design: a slot value rendering to `&&` must not
+        // silently become shell syntax.
+        let command_to_template = match normalize_hook_command_for_execution(&hook.command) {
+            Ok(normalized) => normalized,
+            Err(e) => {
+                results.push(HookPlanEntry {
+                    key: hook.key.clone(),
+                    command: hook.command.clone(),
+                    should_run: false,
+                    skip_reason: Some("template_error".to_string()),
+                    template_errors: vec![format!("hook '{}': {}", hook.key, e)],
+                });
+                // Do NOT flip hook_ran — collision is a hard plan-stage error.
+                continue;
+            }
+        };
+
         // Template the command args. Matches native semantics: templating
         // failure is a hard error — the hook is NOT runnable, and
         // hook_ran_* is NOT flipped (downstream conditionals see false).
@@ -309,7 +446,7 @@ pub fn evaluate_hook_plan(
             Err(e) => {
                 results.push(HookPlanEntry {
                     key: hook.key.clone(),
-                    command: hook.command.clone(),
+                    command: command_to_template,
                     should_run: false,
                     skip_reason: Some("template_error".to_string()),
                     template_errors: vec![format!("context error: {}", e)],
@@ -320,8 +457,7 @@ pub fn evaluate_hook_plan(
         };
 
         let mut template_errors = Vec::new();
-        let templated_command: Vec<String> = hook
-            .command
+        let templated_command: Vec<String> = command_to_template
             .iter()
             .map(|arg| match Tera::one_off(arg, &context, false) {
                 Ok(rendered) => rendered,
@@ -373,6 +509,8 @@ pub enum Error {
     InvalidConditional(Hook, ConditionalError),
     #[error("Setup failed: {0}")]
     SetupFailed(Hook, io::Error),
+    #[error("invalid hook command for '{key}': {source}", key = .0.key, source = .1)]
+    InvalidHookCommand(Hook, #[source] HookCommandError),
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -412,14 +550,18 @@ pub fn run_hooks_stream(
         }
     }
 
-    // Apply template to command
+    // Normalize chained shell commands BEFORE templating, then template.
+    // Auto-wrap detection is pre-template so a slot value rendering to `&&`
+    // cannot silently become shell syntax.
     let mut templated_hooks = Vec::new();
     for hook in queued_hooks {
+        let normalized = normalize_hook_command_for_execution(&hook.command)
+            .map_err(|e| Error::InvalidHookCommand(hook.clone(), e))?;
+
         let context = Context::from_serialize(data)
             .map_err(|e| Error::ErrorRenderingTemplate(hook.clone(), e))?;
 
-        let command = hook
-            .command
+        let command = normalized
             .iter()
             .map(|arg| {
                 Tera::one_off(arg, &context, false)
@@ -606,6 +748,9 @@ impl std::error::Error for ConfigError {}
 ///   - `if` conditional templates that fail to parse (unclosed brackets,
 ///     bad syntax)
 ///   - `command` arg templates that fail to parse
+///   - `command` argv shapes that combine shell operators with template
+///     expressions (auto-wrap unsafe — see
+///     [`normalize_hook_command_for_execution`])
 ///
 /// Returns every problem found, not just the first. The companion to
 /// `slot::validate`, used by the top-level `check` to produce structured
@@ -655,6 +800,18 @@ pub fn validate_config(hooks: &[Hook], slots: &[Slot]) -> Vec<ConfigError> {
                     code: Some("hook::command_template_parse"),
                 });
             }
+        }
+
+        // Auto-wrap collision is statically knowable — surface it at
+        // config-validation time so `spackle check` catches what
+        // `plan_hooks` / native execution would later refuse.
+        if let Err(e) = normalize_hook_command_for_execution(&hook.command) {
+            errors.push(ConfigError {
+                hook_key: hook.key.clone(),
+                message: e.to_string(),
+                span: None,
+                code: Some("hook::command_shell_injection_risk"),
+            });
         }
     }
 
@@ -1444,5 +1601,356 @@ mod tests {
                 assert!(plan[1].template_errors.is_empty());
             }
         }
+    }
+
+    // --- normalize_hook_command_for_execution ---
+
+    fn vs(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn normalize_hook_command_for_execution_table() {
+        struct Case {
+            name: &'static str,
+            input: Vec<String>,
+            expected: Result<Vec<String>, ()>, // Err(()) means "any HookCommandError"
+        }
+
+        let cases = vec![
+            Case {
+                name: "empty",
+                input: vec![],
+                expected: Ok(vec![]),
+            },
+            Case {
+                name: "no operators",
+                input: vs(&["echo", "hi"]),
+                expected: Ok(vs(&["echo", "hi"])),
+            },
+            Case {
+                name: "operator between args",
+                input: vs(&["git", "init", "&&", "git", "add", "."]),
+                expected: Ok(vs(&["bash", "-c", "git init && git add ."])),
+            },
+            Case {
+                name: "operator with quoted arg",
+                input: vs(&[
+                    "git",
+                    "commit",
+                    "-m",
+                    "initial commit",
+                    "&&",
+                    "git",
+                    "status",
+                ]),
+                expected: Ok(vs(&[
+                    "bash",
+                    "-c",
+                    "git commit -m 'initial commit' && git status",
+                ])),
+            },
+            Case {
+                name: "arg with single quote",
+                input: vs(&["echo", "it's", "&&", "true"]),
+                expected: Ok(vs(&["bash", "-c", "echo 'it'\\''s' && true"])),
+            },
+            Case {
+                name: "arg with $ stays literal via single-quote",
+                input: vs(&["echo", "$PATH", "&&", "echo", "done"]),
+                expected: Ok(vs(&["bash", "-c", "echo '$PATH' && echo done"])),
+            },
+            Case {
+                name: "pipe operator",
+                input: vs(&["cat", "f", "|", "wc", "-l"]),
+                expected: Ok(vs(&["bash", "-c", "cat f | wc -l"])),
+            },
+            Case {
+                name: "or operator",
+                input: vs(&["false", "||", "true"]),
+                expected: Ok(vs(&["bash", "-c", "false || true"])),
+            },
+            Case {
+                name: "semicolon operator",
+                input: vs(&["true", ";", "echo", "hi"]),
+                expected: Ok(vs(&["bash", "-c", "true ; echo hi"])),
+            },
+            Case {
+                name: "operator as substring NOT triggered",
+                input: vs(&["echo", "a&&b"]),
+                expected: Ok(vs(&["echo", "a&&b"])),
+            },
+            Case {
+                name: "already wrapped (bash)",
+                input: vs(&["bash", "-c", "x && y"]),
+                expected: Ok(vs(&["bash", "-c", "x && y"])),
+            },
+            Case {
+                name: "already wrapped (sh)",
+                input: vs(&["sh", "-c", "x && y"]),
+                expected: Ok(vs(&["sh", "-c", "x && y"])),
+            },
+            Case {
+                name: "single-element with operator tokens",
+                input: vs(&["git init && git add ."]),
+                expected: Ok(vs(&["bash", "-c", "git init && git add ."])),
+            },
+            Case {
+                name: "single-element no operator",
+                input: vs(&["echo hi"]),
+                expected: Ok(vs(&["echo hi"])),
+            },
+            Case {
+                name: "operator + {{ name }} → err",
+                input: vs(&["echo", "{{ name }}", "&&", "echo", "hi"]),
+                expected: Err(()),
+            },
+            Case {
+                name: "operator + {% if %} → err",
+                input: vs(&["{% if x %}echo a{% endif %}", "&&", "echo", "b"]),
+                expected: Err(()),
+            },
+            Case {
+                name: "operator + {# comment #} → err",
+                input: vs(&["echo", "{# c #}", "&&", "echo", "b"]),
+                expected: Err(()),
+            },
+            Case {
+                name: "template only, no operator → unchanged",
+                input: vs(&["echo", "{{ name }}"]),
+                expected: Ok(vs(&["echo", "{{ name }}"])),
+            },
+        ];
+
+        for c in cases {
+            let got = normalize_hook_command_for_execution(&c.input);
+            match (&c.expected, &got) {
+                (Ok(exp), Ok(actual)) => {
+                    assert_eq!(actual, exp, "case {}", c.name);
+                }
+                (Err(_), Err(_)) => {
+                    // any HookCommandError is fine; current enum has one variant
+                }
+                _ => panic!(
+                    "case {}: result mismatch — expected {:?}, got {:?}",
+                    c.name, c.expected, got
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn normalize_hook_command_idempotent() {
+        let cases = vec![
+            vs(&["git", "init", "&&", "git", "add", "."]),
+            vs(&[
+                "git",
+                "commit",
+                "-m",
+                "initial commit",
+                "&&",
+                "git",
+                "status",
+            ]),
+            vs(&["echo", "$PATH", "&&", "echo", "done"]),
+            vs(&["git init && git add ."]),
+        ];
+        for input in cases {
+            let once = normalize_hook_command_for_execution(&input).expect("first pass");
+            let twice = normalize_hook_command_for_execution(&once).expect("second pass");
+            assert_eq!(once, twice, "idempotency for {:?}", input);
+        }
+    }
+
+    #[test]
+    fn evaluate_hook_plan_auto_wrap_basic() {
+        let hooks = vec![Hook {
+            key: "chain".to_string(),
+            command: vs(&["git", "init", "&&", "git", "add", "."]),
+            default: Some(true),
+            ..Hook::default()
+        }];
+        let plan = evaluate_hook_plan(&hooks, &[], &HashMap::new());
+        assert_eq!(plan.len(), 1);
+        assert!(plan[0].should_run);
+        assert_eq!(
+            plan[0].command,
+            vs(&["bash", "-c", "git init && git add ."])
+        );
+        assert!(plan[0].template_errors.is_empty());
+    }
+
+    #[test]
+    fn evaluate_hook_plan_auto_wrap_collision_errors() {
+        let hooks = vec![
+            Hook {
+                key: "broken".to_string(),
+                command: vs(&["echo", "{{ name }}", "&&", "echo", "done"]),
+                default: Some(true),
+                ..Hook::default()
+            },
+            Hook {
+                key: "after".to_string(),
+                command: vs(&["echo", "after"]),
+                r#if: Some("{{ hook_ran_broken }}".to_string()),
+                default: Some(true),
+                ..Hook::default()
+            },
+        ];
+        let data = HashMap::from([("name".to_string(), "hi".to_string())]);
+        let plan = evaluate_hook_plan(&hooks, &[], &data);
+        assert_eq!(plan.len(), 2);
+        assert!(!plan[0].should_run);
+        assert_eq!(plan[0].skip_reason.as_deref(), Some("template_error"));
+        assert!(
+            plan[0].template_errors[0].contains("shell injection"),
+            "got {:?}",
+            plan[0].template_errors
+        );
+        // hook_ran_broken must remain false → downstream conditional fails
+        assert!(!plan[1].should_run);
+        assert_eq!(plan[1].skip_reason.as_deref(), Some("false_conditional"));
+    }
+
+    #[test]
+    fn evaluate_hook_plan_already_wrapped_passthrough() {
+        let hooks = vec![Hook {
+            key: "explicit".to_string(),
+            command: vs(&["bash", "-c", "echo {{ name }} && echo done"]),
+            default: Some(true),
+            ..Hook::default()
+        }];
+        let data = HashMap::from([("name".to_string(), "hi".to_string())]);
+        let plan = evaluate_hook_plan(&hooks, &[], &data);
+        assert!(plan[0].should_run);
+        // Templating still runs on the body, so {{ name }} → hi
+        assert_eq!(plan[0].command, vs(&["bash", "-c", "echo hi && echo done"]));
+    }
+
+    #[test]
+    fn run_hooks_stream_chained_command_executes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let hooks = vec![Hook {
+            key: "chain".to_string(),
+            command: vs(&["touch", "a", "&&", "touch", "b"]),
+            ..Hook::default()
+        }];
+        let results = run_hooks(&hooks, tmp.path(), &Vec::new(), &HashMap::new(), None)
+            .expect("run_hooks failed");
+        assert!(
+            results.iter().any(|r| matches!(
+                r,
+                HookResult {
+                    kind: HookResultKind::Completed { .. },
+                    ..
+                }
+            )),
+            "expected chained command to complete, got {:?}",
+            results
+        );
+        assert!(tmp.path().join("a").exists(), "file 'a' not created");
+        assert!(tmp.path().join("b").exists(), "file 'b' not created");
+    }
+
+    #[test]
+    fn run_hooks_stream_chained_with_template_errors_invalid_command() {
+        let hooks = vec![Hook {
+            key: "broken".to_string(),
+            command: vs(&["touch", "{{ name }}/a", "&&", "touch", "{{ name }}/b"]),
+            ..Hook::default()
+        }];
+        let err = run_hooks(
+            &hooks,
+            ".",
+            &Vec::new(),
+            &HashMap::from([("name".to_string(), "x".to_string())]),
+            None,
+        )
+        .expect_err("expected InvalidHookCommand error");
+
+        // Display must include both the hook key and the source message
+        // so the CLI surfaces the actual collision reason.
+        let msg = err.to_string();
+        assert!(
+            msg.contains("'broken'"),
+            "expected hook key in msg, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("shell injection"),
+            "expected source error text in msg, got: {}",
+            msg
+        );
+
+        match err {
+            Error::InvalidHookCommand(_, HookCommandError::OperatorTemplateCollision { .. }) => {}
+            other => panic!("expected InvalidHookCommand, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_config_flags_operator_template_collision() {
+        let hooks = vec![
+            Hook {
+                key: "broken".to_string(),
+                command: vs(&["echo", "{{ name }}", "&&", "echo", "done"]),
+                ..Hook::default()
+            },
+            Hook {
+                key: "fine".to_string(),
+                command: vs(&["echo", "hi"]),
+                ..Hook::default()
+            },
+            Hook {
+                key: "fine_chain".to_string(),
+                command: vs(&["touch", "a", "&&", "touch", "b"]),
+                ..Hook::default()
+            },
+        ];
+        let errors = validate_config(&hooks, &[]);
+
+        let collision: Vec<_> = errors
+            .iter()
+            .filter(|e| e.code == Some("hook::command_shell_injection_risk"))
+            .collect();
+        assert_eq!(
+            collision.len(),
+            1,
+            "expected exactly one collision diag, got {:#?}",
+            errors
+        );
+        assert_eq!(collision[0].hook_key, "broken");
+        assert!(
+            collision[0].message.contains("shell injection"),
+            "expected shell injection mention, got: {}",
+            collision[0].message
+        );
+    }
+
+    #[test]
+    fn run_hooks_stream_explicit_bash_with_template_runs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let hooks = vec![Hook {
+            key: "explicit".to_string(),
+            command: vs(&["bash", "-c", "touch {{ name }} && touch other"]),
+            ..Hook::default()
+        }];
+        let results = run_hooks(
+            &hooks,
+            tmp.path(),
+            &Vec::new(),
+            &HashMap::from([("name".to_string(), "first".to_string())]),
+            None,
+        )
+        .expect("run_hooks failed");
+        assert!(results.iter().all(|r| matches!(
+            r,
+            HookResult {
+                kind: HookResultKind::Completed { .. },
+                ..
+            }
+        )));
+        assert!(tmp.path().join("first").exists());
+        assert!(tmp.path().join("other").exists());
     }
 }

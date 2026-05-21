@@ -131,6 +131,35 @@ key = "create_file"
 command = ["bash", "-c", "touch new_file && chmod +x new_file"]
 ```
 
+##### Automatic shell wrapping
+
+If your command contains a bare shell operator (`&&`, `||`, `|`, `;`) as its own argv element, spackle automatically wraps the command in `bash -c` before execution. Both forms below behave identically:
+
+```toml
+# explicit
+command = ["bash", "-c", "touch new_file && chmod +x new_file"]
+
+# auto-wrapped to the form above
+command = ["touch", "new_file", "&&", "chmod", "+x", "new_file"]
+```
+
+Args that contain whitespace or shell metacharacters are POSIX-quoted when wrapped, so values like `-m "initial commit"` survive intact:
+
+```toml
+command = ["git", "commit", "-m", "initial commit", "&&", "git", "status"]
+# wrapped to: ["bash", "-c", "git commit -m 'initial commit' && git status"]
+```
+
+Auto-wrap **only** triggers on standalone whitespace-separated argv elements — `"&&"` as its own element triggers wrapping, but the string `"a&&b"` is left untouched.
+
+Auto-wrap is **disabled** when any command element contains a template expression (`{{ ... }}`, `{% ... %}`, `{# ... #}`). Wrapping templated values into a shell string would let slot values inject shell metacharacters, so spackle errors at plan time. If you want template substitution inside a shell-evaluated command, use the explicit form and quote your templated values yourself:
+
+```toml
+command = ["bash", "-c", "echo '{{ name }}' && echo done"]
+```
+
+Auto-wrap uses `bash -c`; `bash` must be available on `PATH` at hook-execution time. Supported on Linux and macOS.
+
 ### key `string`
 
 The identifier for the hook.

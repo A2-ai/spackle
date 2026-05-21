@@ -192,11 +192,7 @@ pub fn validate_slot_data(
 /// `render_file` on the body, then strip the trailing extension
 /// host-side.
 #[wasm_bindgen]
-pub fn render_file(
-    template_bundle: JsValue,
-    target_path: &str,
-    slot_data_json: &str,
-) -> JsValue {
+pub fn render_file(template_bundle: JsValue, target_path: &str, slot_data_json: &str) -> JsValue {
     let entries = match decode_bundle(template_bundle) {
         Ok(e) => e,
         Err(msg) => return diag_response_file(target_path, msg),
@@ -237,9 +233,7 @@ pub fn render_file(
                 spackle::template::FileErrorKind::ErrorRenderingContents(e) => {
                     (e.to_string(), Some(e))
                 }
-                spackle::template::FileErrorKind::ErrorRenderingName(e) => {
-                    (e.to_string(), Some(e))
-                }
+                spackle::template::FileErrorKind::ErrorRenderingName(e) => (e.to_string(), Some(e)),
                 other => (other.to_string(), None),
             };
             let mut diag = spackle::Diagnostic::new(
@@ -533,12 +527,30 @@ fn plan_hooks_native_parity(
             continue;
         }
 
+        // Auto-wrap chained shell commands before templating. Mirrors
+        // `spackle::hook::evaluate_hook_plan` — detection on the raw
+        // command, collision is a hard plan-stage error.
+        let command_to_template =
+            match spackle::hook::normalize_hook_command_for_execution(&hook.command) {
+                Ok(normalized) => normalized,
+                Err(e) => {
+                    results.push(HookPlanEntry {
+                        key: hook.key.clone(),
+                        command: hook.command.clone(),
+                        should_run: false,
+                        skip_reason: Some("template_error".to_string()),
+                        template_errors: vec![format!("hook '{}': {}", hook.key, e)],
+                    });
+                    continue;
+                }
+            };
+
         let context = match Context::from_serialize(&running) {
             Ok(c) => c,
             Err(e) => {
                 results.push(HookPlanEntry {
                     key: hook.key.clone(),
-                    command: hook.command.clone(),
+                    command: command_to_template,
                     should_run: false,
                     skip_reason: Some("template_error".to_string()),
                     template_errors: vec![format!("context error: {}", e)],
@@ -548,8 +560,7 @@ fn plan_hooks_native_parity(
         };
 
         let mut template_errors = Vec::new();
-        let templated_command: Vec<String> = hook
-            .command
+        let templated_command: Vec<String> = command_to_template
             .iter()
             .map(|arg| match Tera::one_off(arg, &context, false) {
                 Ok(rendered) => rendered,
@@ -852,6 +863,86 @@ default = true
             masked["template_errors"].is_array(),
             "template_errors array missing: {}",
             masked
+        );
+    }
+
+    #[test]
+    fn chained_command_auto_wrapped_in_plan() {
+        let toml = br#"
+[[hooks]]
+key = "chain"
+command = ["git", "init", "&&", "git", "add", "."]
+default = true
+"#;
+        let entries = vec![BundleEntry {
+            path: "/project/spackle.toml".to_string(),
+            bytes: toml.to_vec(),
+        }];
+        let plan = call_with_bundle(entries, "{}", None);
+        let chain = plan
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["key"] == "chain")
+            .unwrap();
+        assert_eq!(chain["should_run"], true, "got: {}", chain);
+        assert_eq!(chain["command"][0], "bash");
+        assert_eq!(chain["command"][1], "-c");
+        assert_eq!(chain["command"][2], "git init && git add .");
+    }
+
+    #[test]
+    fn chained_command_with_template_yields_template_error() {
+        let toml = br#"
+[[hooks]]
+key = "broken"
+command = ["echo", "{{ name }}", "&&", "echo", "done"]
+default = true
+"#;
+        let entries = vec![BundleEntry {
+            path: "/project/spackle.toml".to_string(),
+            bytes: toml.to_vec(),
+        }];
+        let plan = call_with_bundle(entries, r#"{"name": "hi"}"#, None);
+        let broken = plan
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["key"] == "broken")
+            .unwrap();
+        assert_eq!(broken["should_run"], false, "got: {}", broken);
+        assert_eq!(broken["skip_reason"], "template_error");
+        let errs = broken["template_errors"].as_array().unwrap();
+        assert!(
+            errs[0].as_str().unwrap().contains("shell injection"),
+            "expected shell injection mention, got: {}",
+            errs[0]
+        );
+    }
+
+    #[test]
+    fn chained_command_preserves_quoted_args() {
+        let toml = br#"
+[[hooks]]
+key = "commit"
+command = ["git", "commit", "-m", "initial commit", "&&", "git", "status"]
+default = true
+"#;
+        let entries = vec![BundleEntry {
+            path: "/project/spackle.toml".to_string(),
+            bytes: toml.to_vec(),
+        }];
+        let plan = call_with_bundle(entries, "{}", None);
+        let commit = plan
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["key"] == "commit")
+            .unwrap();
+        assert_eq!(commit["should_run"], true);
+        assert_eq!(
+            commit["command"][2],
+            "git commit -m 'initial commit' && git status"
         );
     }
 }

@@ -570,7 +570,10 @@ mod tests {
         // render call unless the target transitively references it.
         let mut templates = HashMap::new();
         templates.insert("target.j2".to_string(), "ok".to_string());
-        templates.insert("unrelated.j2".to_string(), "{{ undefined_var }}".to_string());
+        templates.insert(
+            "unrelated.j2".to_string(),
+            "{{ undefined_var }}".to_string(),
+        );
         let data: HashMap<String, String> = HashMap::new();
         let out = render_one_from_memory(&templates, "target.j2", &data).expect("render ok");
         assert_eq!(out, "ok");
@@ -618,8 +621,16 @@ mod tests {
         match err {
             ValidateError::RenderError(errs) => {
                 let files: Vec<&str> = errs.iter().map(|e| e.file.as_str()).collect();
-                assert!(files.contains(&"bad.j2"), "expected bad.j2 in errs: {:?}", files);
-                assert!(!files.contains(&"good.j2"), "good.j2 wrongly flagged: {:?}", files);
+                assert!(
+                    files.contains(&"bad.j2"),
+                    "expected bad.j2 in errs: {:?}",
+                    files
+                );
+                assert!(
+                    !files.contains(&"good.j2"),
+                    "good.j2 wrongly flagged: {:?}",
+                    files
+                );
             }
             _ => panic!("expected RenderError"),
         }
@@ -651,8 +662,16 @@ mod tests {
             .filter_map(|r| r.as_ref().err())
             .map(|e| e.file.clone())
             .collect();
-        assert!(oks.contains(&"a.j2".to_string()), "a.j2 missing from oks: {:?}", oks);
-        assert!(oks.contains(&"b.j2".to_string()), "b.j2 missing from oks: {:?}", oks);
+        assert!(
+            oks.contains(&"a.j2".to_string()),
+            "a.j2 missing from oks: {:?}",
+            oks
+        );
+        assert!(
+            oks.contains(&"b.j2".to_string()),
+            "b.j2 missing from oks: {:?}",
+            oks
+        );
         assert_eq!(errs, vec!["bad.j2".to_string()]);
     }
 
@@ -786,5 +805,4 @@ mod tests {
             );
         }
     }
-
 }
