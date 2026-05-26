@@ -445,7 +445,7 @@ default = true
     const bundle = [{ path: "/project/spackle.toml", bytes: new TextEncoder().encode(toml) }];
 
     const mock = new MockHooks((cmd) => {
-      if (cmd.includes("fail")) return { exitCode: 1, ok: false };
+      if (cmd.some((c) => c.includes("fail"))) return { exitCode: 1, ok: false };
       return {};
     });
 
@@ -598,7 +598,7 @@ default = true
     // despite the consumer's mutations.
     expect(mock.calls.length).toBe(3);
     for (const call of mock.calls) {
-      expect(call.command[0]).toBe("sh");
+      expect(call.command[0]).toBe("bash");
       expect(call.command.includes("not-a-real-binary")).toBe(false);
     }
   });
@@ -641,14 +641,14 @@ default = true
   });
 });
 
-describe("auto-wrap chained commands", () => {
+describe("hook command forms", () => {
   const cleanup: string[] = [];
   beforeEach(() => void (cleanup.length = 0));
   afterEach(async () => {
     await Promise.all(cleanup.map((p) => rm(p, { recursive: true, force: true })));
   });
 
-  async function runPlanWithMock(toml: string, mock: MockHooks, cwd: string) {
+  async function runPlanWithMock(toml: string, mock: MockHooks, cwd: string, data = {}) {
     const bundle = [{ path: "/project/spackle.toml", bytes: new TextEncoder().encode(toml) }];
     const { loadSpackleWasm } = await import("../src/wasm/index.ts");
     const wasm = await loadSpackleWasm();
@@ -657,14 +657,14 @@ describe("auto-wrap chained commands", () => {
         bundle,
         projectDir: "/project",
         outDir: "/tmp/out",
-        data: {},
+        data,
         hooks: mock,
         cwd,
       }),
     );
   }
 
-  test("operator-as-element produces bash -c wrapped argv at execute()", async () => {
+  test("array operator-as-element produces bash -c wrapped argv at execute()", async () => {
     const toml = `
 [[hooks]]
 key = "chain"
@@ -677,7 +677,7 @@ default = true
     expect(mock.calls[0]?.command).toEqual(["bash", "-c", "touch a && touch b"]);
   });
 
-  test("args with whitespace are POSIX-quoted in the shell body", async () => {
+  test("array args with whitespace are POSIX-quoted in the shell body", async () => {
     const toml = `
 [[hooks]]
 key = "commit"
@@ -694,7 +694,7 @@ default = true
     ]);
   });
 
-  test("operator-as-substring is left untouched", async () => {
+  test("array operator-as-substring is quoted, not split", async () => {
     const toml = `
 [[hooks]]
 key = "noop"
@@ -704,7 +704,7 @@ default = true
     const mock = new MockHooks();
     await runPlanWithMock(toml, mock, "/tmp");
     expect(mock.calls.length).toBe(1);
-    expect(mock.calls[0]?.command).toEqual(["echo", "a&&b"]);
+    expect(mock.calls[0]?.command).toEqual(["bash", "-c", "echo 'a&&b'"]);
   });
 
   test("already-wrapped bash -c argv passes through unchanged", async () => {
@@ -720,11 +720,37 @@ default = true
     expect(mock.calls[0]?.command).toEqual(["bash", "-c", "echo hi && echo there"]);
   });
 
-  test("operator + template expression yields terminal template_errors", async () => {
+  test("array operator + template renders a literal, safely quoted argument", async () => {
     const toml = `
 [[hooks]]
-key = "broken"
+key = "first"
 command = ["echo", "{{ name }}", "&&", "echo", "done"]
+default = true
+`;
+    const mock = new MockHooks();
+    await runPlanWithMock(toml, mock, "/tmp", { name: "evil; rm x" });
+    expect(mock.calls.length).toBe(1);
+    expect(mock.calls[0]?.command).toEqual(["bash", "-c", "echo 'evil; rm x' && echo done"]);
+  });
+
+  test("string form renders with raw substitution", async () => {
+    const toml = `
+[[hooks]]
+key = "s"
+command = "echo {{ name }} && echo done"
+default = true
+`;
+    const mock = new MockHooks();
+    await runPlanWithMock(toml, mock, "/tmp", { name: "hi" });
+    expect(mock.calls.length).toBe(1);
+    expect(mock.calls[0]?.command).toEqual(["bash", "-c", "echo hi && echo done"]);
+  });
+
+  test("dangerous command is blocked with terminal template_errors", async () => {
+    const toml = `
+[[hooks]]
+key = "danger"
+command = "rm -rf /"
 default = true
 `;
     const bundle = [{ path: "/project/spackle.toml", bytes: new TextEncoder().encode(toml) }];
@@ -736,7 +762,7 @@ default = true
         bundle,
         projectDir: "/project",
         outDir: "/tmp/out",
-        data: { name: "hi" },
+        data: {},
         hooks: mock,
         cwd: "/tmp",
       }),
@@ -746,9 +772,9 @@ default = true
     const terminal = events[events.length - 1];
     expect(terminal?.type).toBe("template_errors");
     if (terminal?.type === "template_errors") {
-      expect(terminal.templateErrors[0]?.key).toBe("broken");
+      expect(terminal.templateErrors[0]?.key).toBe("danger");
       const msg = terminal.templateErrors[0]?.errors[0] ?? "";
-      expect(msg).toContain("shell injection");
+      expect(msg).toContain("dangerous");
     }
   });
 

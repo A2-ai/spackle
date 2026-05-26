@@ -121,54 +121,50 @@ name = "Create a new file"
 description = "Create a new file called new_file"
 ```
 
-#### Command sequences
+#### Command forms and substitution
 
-To manage hook command sequences, create a single hook that runs a shell command, invoking your desired commands in sequence. For example:
+Every hook runs under `bash -c`, so chaining commands works without any special handling. `bash` must be on `PATH` at hook-execution time (Linux and macOS). `command` accepts two forms, which differ in how templated slot values are substituted:
+
+**String form** — templated as a whole, then run via `bash -c`. Slot values substitute as **raw shell text**, so you own quoting. Use this when you want shell semantics from a slot value, or just for readability:
 
 ```toml
-[[hooks]]
-key = "create_file"
-command = ["bash", "-c", "touch new_file && chmod +x new_file"]
+command = "touch new_file && chmod +x new_file"
+
+# Raw substitution — quote it yourself if the value should stay literal:
+command = "echo '{{ name }}' && echo done"
 ```
 
-##### Automatic shell wrapping
-
-If your command contains a bare shell operator (`&&`, `||`, `|`, `;`) as its own argv element, spackle automatically wraps the command in `bash -c` before execution. Both forms below behave identically:
+**Array form** — each element is templated, then POSIX-quoted (bare shell operators `&&`, `||`, `|`, `;` pass through), then joined and run via `bash -c`. Slot values become **literal arguments** and can never act as shell syntax:
 
 ```toml
-# explicit
-command = ["bash", "-c", "touch new_file && chmod +x new_file"]
-
-# auto-wrapped to the form above
 command = ["touch", "new_file", "&&", "chmod", "+x", "new_file"]
-```
 
-Args that contain whitespace or shell metacharacters are POSIX-quoted when wrapped, so values like `-m "initial commit"` survive intact:
-
-```toml
+# Whitespace and metacharacters in a value are quoted automatically:
 command = ["git", "commit", "-m", "initial commit", "&&", "git", "status"]
-# wrapped to: ["bash", "-c", "git commit -m 'initial commit' && git status"]
+# runs: git commit -m 'initial commit' && git status
+
+# A slot value can't break out — it stays one argument:
+command = ["touch", "{{ name }}"]
+# name = "weird; rm x"  →  touch 'weird; rm x'   (one file, no injection)
 ```
 
-Auto-wrap **only** triggers on standalone whitespace-separated argv elements — `"&&"` as its own element triggers wrapping, but the string `"a&&b"` is left untouched.
+An array of the shape `["bash"|"sh", "-c", body]` is treated as the string form: `body` is templated and run via `bash -c`.
 
-Auto-wrap is **disabled** when any command element contains a template expression (`{{ ... }}`, `{% ... %}`, `{# ... #}`). Wrapping templated values into a shell string would let slot values inject shell metacharacters, so spackle errors at plan time. If you want template substitution inside a shell-evaluated command, use the explicit form and quote your templated values yourself:
+##### Blocked patterns
 
-```toml
-command = ["bash", "-c", "echo '{{ name }}' && echo done"]
-```
-
-Auto-wrap uses `bash -c`; `bash` must be available on `PATH` at hook-execution time. Supported on Linux and macOS.
+Hooks run as the invoking user, so the blast radius is whatever that user could already type at their shell. spackle still refuses a small denylist of unambiguously catastrophic rendered commands — a fork bomb, or a recursive force-remove of `/` or a top-level system directory (`rm -rf /`, `rm -rf /etc`, …). These are caught at plan time and the hook does not run.
 
 ### key `string`
 
 The identifier for the hook.
 
-### command `string[]` <span style="color: darkseagreen;">{s}</span>
+### command `string` or `string[]` <span style="color: darkseagreen;">{s}</span>
 
-The command to execute. The first element is the command and the rest are arguments. Accepts values from slots.
+The command to execute, in either string or array form (see [Command forms and substitution](#command-forms-and-substitution)). Accepts values from slots. Runs under `bash -c`.
 
 ```toml
+command = "echo Hello {{ foo }}"
+# or
 command = ["echo", "Hello {{ foo }}"]
 ```
 
