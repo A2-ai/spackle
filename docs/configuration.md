@@ -121,25 +121,50 @@ name = "Create a new file"
 description = "Create a new file called new_file"
 ```
 
-#### Command sequences
+#### Command forms and substitution
 
-To manage hook command sequences, create a single hook that runs a shell command, invoking your desired commands in sequence. For example:
+Every hook runs under `bash -c`, so chaining commands works without any special handling. `bash` must be on `PATH` at hook-execution time (Linux and macOS). `command` accepts two forms, which differ in how templated slot values are substituted:
+
+**String form** — templated as a whole, then run via `bash -c`. Slot values substitute as **raw shell text**, so you own quoting. Use this when you want shell semantics from a slot value, or just for readability:
 
 ```toml
-[[hooks]]
-key = "create_file"
-command = ["bash", "-c", "touch new_file && chmod +x new_file"]
+command = "touch new_file && chmod +x new_file"
+
+# Raw substitution — quote it yourself if the value should stay literal:
+command = "echo '{{ name }}' && echo done"
 ```
+
+**Array form** — each element is templated, then POSIX-quoted (bare shell operators `&&`, `||`, `|`, `;` pass through), then joined and run via `bash -c`. Slot values become **literal arguments** and can never act as shell syntax:
+
+```toml
+command = ["touch", "new_file", "&&", "chmod", "+x", "new_file"]
+
+# Whitespace and metacharacters in a value are quoted automatically:
+command = ["git", "commit", "-m", "initial commit", "&&", "git", "status"]
+# runs: git commit -m 'initial commit' && git status
+
+# A slot value can't break out — it stays one argument:
+command = ["touch", "{{ name }}"]
+# name = "weird; rm x"  →  touch 'weird; rm x'   (one file, no injection)
+```
+
+An array of the shape `["bash"|"sh", "-c", body]` is treated as the string form: `body` is templated and run via `bash -c`.
+
+##### Blocked patterns
+
+Hooks run as the invoking user, so the blast radius is whatever that user could already type at their shell. spackle still refuses a small denylist of unambiguously catastrophic rendered commands — a fork bomb, or a recursive force-remove of `/` or a top-level system directory (`rm -rf /`, `rm -rf /etc`, …). These are caught at plan time and the hook does not run.
 
 ### key `string`
 
 The identifier for the hook.
 
-### command `string[]` <span style="color: darkseagreen;">{s}</span>
+### command `string` or `string[]` <span style="color: darkseagreen;">{s}</span>
 
-The command to execute. The first element is the command and the rest are arguments. Accepts values from slots.
+The command to execute, in either string or array form (see [Command forms and substitution](#command-forms-and-substitution)). Accepts values from slots. Runs under `bash -c`.
 
 ```toml
+command = "echo Hello {{ foo }}"
+# or
 command = ["echo", "Hello {{ foo }}"]
 ```
 
