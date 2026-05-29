@@ -193,11 +193,7 @@ pub fn validate_slot_data(
 /// `render_file` on the body, then strip the trailing extension
 /// host-side.
 #[wasm_bindgen]
-pub fn render_file(
-    template_bundle: JsValue,
-    target_path: &str,
-    slot_data_json: &str,
-) -> JsValue {
+pub fn render_file(template_bundle: JsValue, target_path: &str, slot_data_json: &str) -> JsValue {
     let entries = match decode_bundle(template_bundle) {
         Ok(e) => e,
         Err(msg) => return diag_response_file(target_path, msg),
@@ -238,9 +234,7 @@ pub fn render_file(
                 spackle::template::FileErrorKind::ErrorRenderingContents(e) => {
                     (e.to_string(), Some(e))
                 }
-                spackle::template::FileErrorKind::ErrorRenderingName(e) => {
-                    (e.to_string(), Some(e))
-                }
+                spackle::template::FileErrorKind::ErrorRenderingName(e) => (e.to_string(), Some(e)),
                 other => (other.to_string(), None),
             };
             let mut diag = spackle::Diagnostic::new(
@@ -507,7 +501,7 @@ fn plan_hooks_native_parity(
 ) -> Vec<spackle::hook::HookPlanEntry> {
     use spackle::hook::HookPlanEntry;
     use spackle::needs::Needy;
-    use tera::{Context, Tera};
+    use tera::Context;
 
     let items: Vec<&dyn Needy> = {
         let mut v: Vec<&dyn Needy> = slots.iter().map(|s| s as &dyn Needy).collect();
@@ -533,7 +527,7 @@ fn plan_hooks_native_parity(
         if !hook.is_enabled(&running) {
             results.push(HookPlanEntry {
                 key: hook.key.clone(),
-                command: hook.command.clone(),
+                command: hook.command.display_argv(),
                 should_run: false,
                 skip_reason: Some("user_disabled".to_string()),
                 template_errors: vec![],
@@ -544,7 +538,7 @@ fn plan_hooks_native_parity(
         if !hook.is_satisfied(&items, &running) {
             results.push(HookPlanEntry {
                 key: hook.key.clone(),
-                command: hook.command.clone(),
+                command: hook.command.display_argv(),
                 should_run: false,
                 skip_reason: Some("unsatisfied_needs".to_string()),
                 template_errors: vec![],
@@ -552,12 +546,15 @@ fn plan_hooks_native_parity(
             continue;
         }
 
+        // Render the command into its full `bash -c` argv, then run the
+        // denylist on argv[2] (the `-c` body). Mirrors
+        // `spackle::hook::evaluate_hook_plan`.
         let context = match Context::from_serialize(&running) {
             Ok(c) => c,
             Err(e) => {
                 results.push(HookPlanEntry {
                     key: hook.key.clone(),
-                    command: hook.command.clone(),
+                    command: hook.command.display_argv(),
                     should_run: false,
                     skip_reason: Some("template_error".to_string()),
                     template_errors: vec![format!("context error: {}", e)],
@@ -566,29 +563,32 @@ fn plan_hooks_native_parity(
             }
         };
 
-        let mut template_errors = Vec::new();
-        let templated_command: Vec<String> = hook
-            .command
-            .iter()
-            .map(|arg| match Tera::one_off(arg, &context, false) {
-                Ok(rendered) => rendered,
-                Err(e) => {
-                    template_errors.push(format!("arg {:?}: {}", arg, e));
-                    arg.clone()
-                }
-            })
-            .collect();
+        let argv = match spackle::hook::render_command(&hook.command, &context) {
+            Ok(argv) => argv,
+            Err(e) => {
+                results.push(HookPlanEntry {
+                    key: hook.key.clone(),
+                    command: hook.command.display_argv(),
+                    should_run: false,
+                    skip_reason: Some("template_error".to_string()),
+                    template_errors: vec![format!("hook '{}': {}", hook.key, e)],
+                });
+                continue;
+            }
+        };
 
-        if !template_errors.is_empty() {
+        if let Err(e) = spackle::hook::dangerous_pattern_check(&argv[2]) {
             results.push(HookPlanEntry {
                 key: hook.key.clone(),
-                command: templated_command,
+                command: argv,
                 should_run: false,
                 skip_reason: Some("template_error".to_string()),
-                template_errors,
+                template_errors: vec![format!("hook '{}': {}", hook.key, e)],
             });
             continue;
         }
+
+        let wrapped = argv;
 
         // Conditional evaluation runs AFTER templating — native parity.
         // A hook whose command templates cleanly but whose `if` is false
@@ -598,7 +598,7 @@ fn plan_hooks_native_parity(
             Ok(false) => {
                 results.push(HookPlanEntry {
                     key: hook.key.clone(),
-                    command: templated_command,
+                    command: wrapped,
                     should_run: false,
                     skip_reason: Some("false_conditional".to_string()),
                     template_errors: vec![],
@@ -608,7 +608,7 @@ fn plan_hooks_native_parity(
             Err(e) => {
                 results.push(HookPlanEntry {
                     key: hook.key.clone(),
-                    command: templated_command,
+                    command: wrapped,
                     should_run: false,
                     skip_reason: Some(format!("conditional_error: {}", e)),
                     template_errors: vec![],
@@ -620,7 +620,7 @@ fn plan_hooks_native_parity(
 
         results.push(HookPlanEntry {
             key: hook.key.clone(),
-            command: templated_command,
+            command: wrapped,
             should_run: true,
             skip_reason: None,
             template_errors: vec![],
@@ -857,7 +857,10 @@ default = true
         assert!(h.get("template_errors").is_none(), "got: {}", h);
         // upper("hello world") = "HELLO WORLD" — asserts the filter
         // actually ran, not just that the raw template passed through.
-        assert_eq!(h["command"][1], "HELLO WORLD", "got: {}", h);
+        // Array form renders each element then POSIX-quotes it into the
+        // `bash -c` body.
+        assert_eq!(h["command"][0], "bash");
+        assert_eq!(h["command"][2], "echo 'HELLO WORLD'", "got: {}", h);
     }
 
     #[test]
@@ -891,6 +894,198 @@ default = true
             masked["template_errors"].is_array(),
             "template_errors array missing: {}",
             masked
+        );
+    }
+
+    #[test]
+    fn chained_command_auto_wrapped_in_plan() {
+        let toml = br#"
+[[hooks]]
+key = "chain"
+command = ["git", "init", "&&", "git", "add", "."]
+default = true
+"#;
+        let entries = vec![BundleEntry {
+            path: "/project/spackle.toml".to_string(),
+            bytes: toml.to_vec(),
+        }];
+        let plan = call_with_bundle(entries, "{}", None);
+        let chain = plan
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["key"] == "chain")
+            .unwrap();
+        assert_eq!(chain["should_run"], true, "got: {}", chain);
+        assert_eq!(chain["command"][0], "bash");
+        assert_eq!(chain["command"][1], "-c");
+        assert_eq!(chain["command"][2], "git init && git add .");
+    }
+
+    #[test]
+    fn chained_command_with_template_is_literal_and_safe() {
+        // Template-then-quote: the slot value becomes a literal argument, so
+        // mixing operators and templates is safe (no longer a hard error).
+        let toml = br#"
+[[hooks]]
+key = "first"
+command = ["echo", "{{ name }}", "&&", "echo", "done"]
+default = true
+"#;
+        let entries = vec![BundleEntry {
+            path: "/project/spackle.toml".to_string(),
+            bytes: toml.to_vec(),
+        }];
+        let plan = call_with_bundle(entries, r#"{"name": "evil; rm x"}"#, None);
+        let first = plan
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["key"] == "first")
+            .unwrap();
+        assert_eq!(first["should_run"], true, "got: {}", first);
+        assert_eq!(first["command"][0], "bash");
+        assert_eq!(first["command"][2], "echo 'evil; rm x' && echo done");
+    }
+
+    #[test]
+    fn string_form_command_raw_substitution_in_plan() {
+        let toml = br#"
+[[hooks]]
+key = "s"
+command = "echo {{ name }} && echo done"
+default = true
+"#;
+        let entries = vec![BundleEntry {
+            path: "/project/spackle.toml".to_string(),
+            bytes: toml.to_vec(),
+        }];
+        let plan = call_with_bundle(entries, r#"{"name": "hi"}"#, None);
+        let s = plan
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["key"] == "s")
+            .unwrap();
+        assert_eq!(s["should_run"], true, "got: {}", s);
+        assert_eq!(s["command"][2], "echo hi && echo done");
+    }
+
+    #[test]
+    fn dangerous_command_blocked_in_plan() {
+        let toml = br#"
+[[hooks]]
+key = "danger"
+command = "rm -rf /"
+default = true
+"#;
+        let entries = vec![BundleEntry {
+            path: "/project/spackle.toml".to_string(),
+            bytes: toml.to_vec(),
+        }];
+        let plan = call_with_bundle(entries, "{}", None);
+        let danger = plan
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["key"] == "danger")
+            .unwrap();
+        assert_eq!(danger["should_run"], false, "got: {}", danger);
+        assert_eq!(danger["skip_reason"], "template_error");
+        let errs = danger["template_errors"].as_array().unwrap();
+        assert!(
+            errs[0].as_str().unwrap().contains("dangerous"),
+            "expected dangerous-pattern mention, got: {}",
+            errs[0]
+        );
+    }
+
+    #[test]
+    fn string_form_non_padded_separator_does_not_bypass_denylist() {
+        // The separator is not whitespace-padded, but the trailing `rm` must
+        // still be recognized as a command and blocked.
+        let toml = br#"
+[[hooks]]
+key = "sneaky"
+command = "echo safe;rm -rf /"
+default = true
+"#;
+        let entries = vec![BundleEntry {
+            path: "/project/spackle.toml".to_string(),
+            bytes: toml.to_vec(),
+        }];
+        let plan = call_with_bundle(entries, "{}", None);
+        let sneaky = plan
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["key"] == "sneaky")
+            .unwrap();
+        assert_eq!(sneaky["should_run"], false, "got: {}", sneaky);
+        assert_eq!(sneaky["skip_reason"], "template_error");
+        let errs = sneaky["template_errors"].as_array().unwrap();
+        assert!(
+            errs[0].as_str().unwrap().contains("dangerous"),
+            "expected dangerous-pattern mention, got: {}",
+            errs[0]
+        );
+    }
+
+    #[test]
+    fn bash_c_with_positionals_does_not_bypass_denylist() {
+        // A `bash -c` array with extra positional args must not slip a
+        // slot-injected `rm -rf /` past the denylist — the `-c` body is
+        // scanned directly.
+        let toml = br#"
+[[hooks]]
+key = "sneaky"
+command = ["bash", "-c", "rm -rf {{ target }}", "x"]
+default = true
+"#;
+        let entries = vec![BundleEntry {
+            path: "/project/spackle.toml".to_string(),
+            bytes: toml.to_vec(),
+        }];
+        let plan = call_with_bundle(entries, r#"{"target": "/"}"#, None);
+        let sneaky = plan
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["key"] == "sneaky")
+            .unwrap();
+        assert_eq!(sneaky["should_run"], false, "got: {}", sneaky);
+        assert_eq!(sneaky["skip_reason"], "template_error");
+        let errs = sneaky["template_errors"].as_array().unwrap();
+        assert!(
+            errs[0].as_str().unwrap().contains("dangerous"),
+            "expected dangerous-pattern mention, got: {}",
+            errs[0]
+        );
+    }
+
+    #[test]
+    fn chained_command_preserves_quoted_args() {
+        let toml = br#"
+[[hooks]]
+key = "commit"
+command = ["git", "commit", "-m", "initial commit", "&&", "git", "status"]
+default = true
+"#;
+        let entries = vec![BundleEntry {
+            path: "/project/spackle.toml".to_string(),
+            bytes: toml.to_vec(),
+        }];
+        let plan = call_with_bundle(entries, "{}", None);
+        let commit = plan
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["key"] == "commit")
+            .unwrap();
+        assert_eq!(commit["should_run"], true);
+        assert_eq!(
+            commit["command"][2],
+            "git commit -m 'initial commit' && git status"
         );
     }
 }

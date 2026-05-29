@@ -555,7 +555,7 @@ default = true
     const bundle = [{ path: "/project/spackle.toml", bytes: new TextEncoder().encode(toml) }];
 
     const mock = new MockHooks((cmd) => {
-      if (cmd.includes("fail")) return { exitCode: 1, ok: false };
+      if (cmd.some((c) => c.includes("fail"))) return { exitCode: 1, ok: false };
       return {};
     });
 
@@ -708,7 +708,7 @@ default = true
     // despite the consumer's mutations.
     expect(mock.calls.length).toBe(3);
     for (const call of mock.calls) {
-      expect(call.command[0]).toBe("sh");
+      expect(call.command[0]).toBe("bash");
       expect(call.command.includes("not-a-real-binary")).toBe(false);
     }
   });
@@ -748,5 +748,181 @@ default = true
       expect(terminal.templateErrors[0]?.key).toBe("broken");
     }
     expect(mock.calls.length).toBe(0);
+  });
+});
+
+describe("hook command forms", () => {
+  const cleanup: string[] = [];
+  beforeEach(() => void (cleanup.length = 0));
+  afterEach(async () => {
+    await Promise.all(cleanup.map((p) => rm(p, { recursive: true, force: true })));
+  });
+
+  async function runPlanWithMock(toml: string, mock: MockHooks, cwd: string, data = {}) {
+    const bundle = [{ path: "/project/spackle.toml", bytes: new TextEncoder().encode(toml) }];
+    const { loadSpackleWasm } = await import("../src/wasm/index.ts");
+    const wasm = await loadSpackleWasm();
+    return drain(
+      runHookPlanStream((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
+        bundle,
+        projectDir: "/project",
+        outDir: "/tmp/out",
+        data,
+        hooks: mock,
+        cwd,
+      }),
+    );
+  }
+
+  test("array operator-as-element produces bash -c wrapped argv at execute()", async () => {
+    const toml = `
+[[hooks]]
+key = "chain"
+command = ["touch", "a", "&&", "touch", "b"]
+default = true
+`;
+    const mock = new MockHooks();
+    await runPlanWithMock(toml, mock, "/tmp");
+    expect(mock.calls.length).toBe(1);
+    expect(mock.calls[0]?.command).toEqual(["bash", "-c", "touch a && touch b"]);
+  });
+
+  test("array args with whitespace are POSIX-quoted in the shell body", async () => {
+    const toml = `
+[[hooks]]
+key = "commit"
+command = ["git", "commit", "-m", "initial commit", "&&", "git", "status"]
+default = true
+`;
+    const mock = new MockHooks();
+    await runPlanWithMock(toml, mock, "/tmp");
+    expect(mock.calls.length).toBe(1);
+    expect(mock.calls[0]?.command).toEqual([
+      "bash",
+      "-c",
+      "git commit -m 'initial commit' && git status",
+    ]);
+  });
+
+  test("array operator-as-substring is quoted, not split", async () => {
+    const toml = `
+[[hooks]]
+key = "noop"
+command = ["echo", "a&&b"]
+default = true
+`;
+    const mock = new MockHooks();
+    await runPlanWithMock(toml, mock, "/tmp");
+    expect(mock.calls.length).toBe(1);
+    expect(mock.calls[0]?.command).toEqual(["bash", "-c", "echo 'a&&b'"]);
+  });
+
+  test("already-wrapped bash -c argv passes through unchanged", async () => {
+    const toml = `
+[[hooks]]
+key = "explicit"
+command = ["bash", "-c", "echo hi && echo there"]
+default = true
+`;
+    const mock = new MockHooks();
+    await runPlanWithMock(toml, mock, "/tmp");
+    expect(mock.calls.length).toBe(1);
+    expect(mock.calls[0]?.command).toEqual(["bash", "-c", "echo hi && echo there"]);
+  });
+
+  test("array operator + template renders a literal, safely quoted argument", async () => {
+    const toml = `
+[[hooks]]
+key = "first"
+command = ["echo", "{{ name }}", "&&", "echo", "done"]
+default = true
+`;
+    const mock = new MockHooks();
+    await runPlanWithMock(toml, mock, "/tmp", { name: "evil; rm x" });
+    expect(mock.calls.length).toBe(1);
+    expect(mock.calls[0]?.command).toEqual(["bash", "-c", "echo 'evil; rm x' && echo done"]);
+  });
+
+  test("string form renders with raw substitution", async () => {
+    const toml = `
+[[hooks]]
+key = "s"
+command = "echo {{ name }} && echo done"
+default = true
+`;
+    const mock = new MockHooks();
+    await runPlanWithMock(toml, mock, "/tmp", { name: "hi" });
+    expect(mock.calls.length).toBe(1);
+    expect(mock.calls[0]?.command).toEqual(["bash", "-c", "echo hi && echo done"]);
+  });
+
+  test("dangerous command is blocked with terminal template_errors", async () => {
+    const toml = `
+[[hooks]]
+key = "danger"
+command = "rm -rf /"
+default = true
+`;
+    const bundle = [{ path: "/project/spackle.toml", bytes: new TextEncoder().encode(toml) }];
+    const mock = new MockHooks();
+    const { loadSpackleWasm } = await import("../src/wasm/index.ts");
+    const wasm = await loadSpackleWasm();
+    const events = await drain(
+      runHookPlanStream((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
+        bundle,
+        projectDir: "/project",
+        outDir: "/tmp/out",
+        data: {},
+        hooks: mock,
+        cwd: "/tmp",
+      }),
+    );
+
+    expect(mock.calls.length).toBe(0);
+    const terminal = events[events.length - 1];
+    expect(terminal?.type).toBe("template_errors");
+    if (terminal?.type === "template_errors") {
+      expect(terminal.templateErrors[0]?.key).toBe("danger");
+      const msg = terminal.templateErrors[0]?.errors[0] ?? "";
+      expect(msg).toContain("dangerous");
+    }
+  });
+
+  test("real executor runs the chained command and side effects land on disk", async () => {
+    const ws = await workspace("hooks_fixture");
+    cleanup.push(ws.root);
+    // We need a real outDir for the executor cwd. The runHookPlanStream
+    // path uses the cwd argument directly — point both at a temp dir.
+    const { mkdir, stat } = await import("node:fs/promises");
+    await mkdir(ws.outDir, { recursive: true });
+
+    const toml = `
+[[hooks]]
+key = "chain"
+command = ["touch", "a.real", "&&", "touch", "b.real"]
+default = true
+`;
+    const bundle = [{ path: "/project/spackle.toml", bytes: new TextEncoder().encode(toml) }];
+    const { loadSpackleWasm } = await import("../src/wasm/index.ts");
+    const wasm = await loadSpackleWasm();
+    const hooks = defaultHooks();
+    const events = await drain(
+      runHookPlanStream((b, pdir, odir, d, hr) => wasm.planHooks(b, pdir, odir, d, hr), {
+        bundle,
+        projectDir: "/project",
+        outDir: ws.outDir,
+        data: {},
+        hooks,
+        cwd: ws.outDir,
+      }),
+    );
+    expect(events.some((e) => e.type === "template_errors")).toBe(false);
+    expect(events.some((e) => e.type === "plan_error")).toBe(false);
+    const results = resultsOf(events);
+    expect(results.length).toBe(1);
+    expect(results[0]?.kind).toBe("completed");
+
+    await stat(join(ws.outDir, "a.real"));
+    await stat(join(ws.outDir, "b.real"));
   });
 });

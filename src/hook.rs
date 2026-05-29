@@ -20,10 +20,72 @@ use users::User;
 
 use crate::needs::{is_satisfied, Needy};
 
+/// A hook's command, as written in `spackle.toml`. Two forms:
+///
+/// - `command = "echo {{ name }} && echo hi"` — a single string. Templated
+///   as a whole, then run via `bash -c`. Slot values substitute as **raw
+///   shell text**; the author owns quoting (`'{{ name }}'` for literal).
+/// - `command = ["echo", "{{ name }}", "&&", "echo", "hi"]` — an argv
+///   array. Each element is templated, then POSIX-quoted (bare shell
+///   operators pass through), then joined and run via `bash -c`. Slot
+///   values are **literal arguments** and can't act as shell syntax.
+///
+/// An array of the shape `["bash"|"sh", "-c", body]` is a pass-through:
+/// `body` is templated and re-wrapped, equivalent to the string form.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum HookCommand {
+    String(String),
+    Array(Vec<String>),
+}
+
+impl HookCommand {
+    /// Template-bearing parts, for parse-only validation.
+    fn template_parts(&self) -> Vec<&str> {
+        match self {
+            HookCommand::String(s) => vec![s.as_str()],
+            HookCommand::Array(args) => args.iter().map(|s| s.as_str()).collect(),
+        }
+    }
+
+    /// Un-templated shell body, for the static denylist scan and `Display`.
+    /// Mirrors [`render_command`]'s quoting (just without templating) so the
+    /// static scan matches what would actually execute: array elements are
+    /// POSIX-quoted (operators pass through), which keeps a literal argument
+    /// like `["echo", "a; rm -rf /"]` from looking like a chained command.
+    fn raw_body(&self) -> String {
+        match self {
+            HookCommand::String(s) => s.clone(),
+            HookCommand::Array(args) if is_shell_wrapper(args) => args[2].clone(),
+            HookCommand::Array(args) => args
+                .iter()
+                .map(|a| {
+                    if SHELL_OPERATORS.contains(&a.as_str()) {
+                        a.clone()
+                    } else {
+                        posix_quote(a)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        }
+    }
+
+    /// Argv to surface in a plan entry for a hook that will NOT run. Runnable
+    /// hooks carry their rendered `["bash", "-c", body]`; this is only for
+    /// skipped/errored entries where no body was rendered.
+    pub fn display_argv(&self) -> Vec<String> {
+        match self {
+            HookCommand::String(s) => vec!["bash".to_string(), "-c".to_string(), s.clone()],
+            HookCommand::Array(args) => args.clone(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Hook {
     pub key: String,
-    pub command: Vec<String>,
+    pub command: HookCommand,
     pub r#if: Option<String>,
     #[serde(default)]
     pub needs: Vec<String>,
@@ -47,12 +109,7 @@ impl Display for Hook {
                 "".to_string()
             }
             .dimmed(),
-            self.command
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<String>>()
-                .join(" ")
-                .dimmed()
+            self.command.raw_body().dimmed()
         )
     }
 }
@@ -61,7 +118,7 @@ impl Default for Hook {
     fn default() -> Self {
         Hook {
             key: "".to_string(),
-            command: vec![],
+            command: HookCommand::Array(vec![]),
             r#if: None,
             needs: vec![],
             name: None,
@@ -114,6 +171,236 @@ impl Hook {
 
         Ok(condition)
     }
+}
+
+const SHELL_OPERATORS: &[&str] = &["&&", "||", "|", ";"];
+
+#[derive(Debug, thiserror::Error)]
+pub enum HookCommandError {
+    #[error("command matches a blocked dangerous pattern ({pattern}); refusing to run: {matched}")]
+    DangerousPattern {
+        pattern: &'static str,
+        matched: String,
+    },
+}
+
+/// POSIX single-quote a string so it survives `bash -c` as one literal
+/// argument. Safe characters pass through unquoted; everything else is
+/// wrapped in `'...'` with embedded single quotes escaped as `'\''`.
+fn posix_quote(s: &str) -> String {
+    if s.is_empty() {
+        return "''".to_string();
+    }
+    if s.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(c, '_' | '-' | '/' | '.' | ':' | '=' | '@' | ',' | '+')
+    }) {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+fn is_shell_wrapper(args: &[String]) -> bool {
+    args.len() >= 3 && (args[0] == "bash" || args[0] == "sh") && args[1] == "-c"
+}
+
+/// Render a [`HookCommand`] into the full argv to spawn — always
+/// `["bash", "-c", <body>, <positional>...]`. The executable shell text is
+/// always at index 2, which is what [`dangerous_pattern_check`] must scan.
+///
+/// - String form: template the whole string (raw substitution).
+/// - `["bash"|"sh", "-c", body, pos...]`: template `body` and any positional
+///   args (pass-through). The `-c` body is taken verbatim so the denylist
+///   sees the real command, not a quoted-inside-out version of it.
+/// - Array form: template each element, then POSIX-quote (bare shell
+///   operators pass through), then join into a single body. This
+///   template-then-quote order makes slot values literal arguments — they
+///   can't act as shell syntax.
+pub fn render_command(
+    command: &HookCommand,
+    context: &Context,
+) -> Result<Vec<String>, tera::Error> {
+    let mut argv = vec!["bash".to_string(), "-c".to_string()];
+    match command {
+        HookCommand::String(s) => {
+            argv.push(Tera::one_off(s, context, false)?);
+        }
+        HookCommand::Array(args) if is_shell_wrapper(args) => {
+            // args[2] is the `-c` body; args[3..] are bash positional params
+            // ($0, $1, ...). Render each and forward them as real argv so the
+            // body executes as the author wrote it.
+            for arg in &args[2..] {
+                argv.push(Tera::one_off(arg, context, false)?);
+            }
+        }
+        HookCommand::Array(args) => {
+            let mut parts = Vec::with_capacity(args.len());
+            for arg in args {
+                if SHELL_OPERATORS.contains(&arg.as_str()) {
+                    parts.push(arg.clone());
+                } else {
+                    parts.push(posix_quote(&Tera::one_off(arg, context, false)?));
+                }
+            }
+            argv.push(parts.join(" "));
+        }
+    }
+    Ok(argv)
+}
+
+/// Refuse a small denylist of catastrophic shell patterns in a rendered
+/// command body. This is the only safety net: hooks run as the target user,
+/// so the blast radius is what that user could already type at their shell —
+/// but a templated `rm -rf /` or fork bomb is almost never intended, so we
+/// block the unambiguous cases.
+pub fn dangerous_pattern_check(rendered: &str) -> Result<(), HookCommandError> {
+    let collapsed: String = rendered.chars().filter(|c| !c.is_whitespace()).collect();
+    if collapsed.contains(":(){:|:&};:") {
+        return Err(HookCommandError::DangerousPattern {
+            pattern: "fork bomb",
+            matched: rendered.trim().to_string(),
+        });
+    }
+    if let Some(matched) = detect_rm_rf_root(rendered) {
+        return Err(HookCommandError::DangerousPattern {
+            pattern: "recursive force-remove of a root/system path",
+            matched,
+        });
+    }
+    Ok(())
+}
+
+/// True for targets that a `rm -rf` should never touch: `/`, `/*`, or a
+/// top-level system directory (with optional trailing `/` or `/*`).
+fn is_dangerous_rm_target(target: &str) -> bool {
+    let core = target.trim_end_matches("/*").trim_end_matches('/');
+    if core.is_empty() {
+        return true; // "/", "//", "/*"
+    }
+    const TOP_LEVEL: &[&str] = &[
+        "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib64", "/proc", "/root", "/sbin",
+        "/sys", "/usr", "/var",
+    ];
+    TOP_LEVEL.contains(&core)
+}
+
+/// Is this `rm` segment recursive AND forced AND aimed at a root/system path?
+fn rm_segment_is_dangerous(segment: &[&str]) -> bool {
+    let (mut recursive, mut force, mut root_target) = (false, false, false);
+    for arg in segment {
+        if let Some(long) = arg.strip_prefix("--") {
+            match long {
+                "recursive" => recursive = true,
+                "force" => force = true,
+                _ => {}
+            }
+        } else if let Some(short) = arg.strip_prefix('-') {
+            if short.contains(['r', 'R']) {
+                recursive = true;
+            }
+            if short.contains('f') {
+                force = true;
+            }
+        } else if is_dangerous_rm_target(arg) {
+            root_target = true;
+        }
+    }
+    recursive && force && root_target
+}
+
+/// Split a shell body into command segments at *unquoted* command separators
+/// (`;`, `&`, `&&`, `|`, `||`, newline). Single and double quotes — and
+/// backslash escapes outside single quotes — suppress separator recognition,
+/// so a separator inside a quoted argument stays part of one segment. This is
+/// a best-effort scanner for the denylist, not a full shell parser, but it
+/// matches separators whether or not they are whitespace-padded
+/// (`a;rm`, `a && rm`, a trailing newline, …).
+fn split_command_segments(body: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut chars = body.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+
+    while let Some(c) = chars.next() {
+        if in_single {
+            current.push(c);
+            if c == '\'' {
+                in_single = false;
+            }
+            continue;
+        }
+        if in_double {
+            current.push(c);
+            if c == '\\' {
+                if let Some(n) = chars.next() {
+                    current.push(n);
+                }
+            } else if c == '"' {
+                in_double = false;
+            }
+            continue;
+        }
+        match c {
+            '\'' => {
+                in_single = true;
+                current.push(c);
+            }
+            '"' => {
+                in_double = true;
+                current.push(c);
+            }
+            '\\' => {
+                current.push(c);
+                if let Some(n) = chars.next() {
+                    current.push(n);
+                }
+            }
+            ';' | '\n' | '&' | '|' => {
+                // Consume a doubled operator (`&&` / `||`) as one separator.
+                if (c == '&' || c == '|') && chars.peek() == Some(&c) {
+                    chars.next();
+                }
+                segments.push(std::mem::take(&mut current));
+            }
+            _ => current.push(c),
+        }
+    }
+    segments.push(current);
+    segments
+}
+
+/// Scan a rendered command body for a recursive, forced `rm` of a
+/// root/system path. Splits into command segments so chained commands are
+/// considered independently, then for each segment checks whether the leading
+/// command — after transparent `sudo`/`doas` — is such an `rm`. Quoted
+/// separators don't split, so a literal argument like `echo 'a; rm -rf /'` is
+/// correctly treated as data, while `echo a; rm -rf /` is caught.
+fn detect_rm_rf_root(rendered: &str) -> Option<String> {
+    for segment in split_command_segments(rendered) {
+        let tokens: Vec<&str> = segment.split_whitespace().collect();
+        let mut idx = 0;
+        while matches!(tokens.get(idx), Some(&"sudo") | Some(&"doas")) {
+            idx += 1;
+        }
+        if tokens.get(idx) == Some(&"rm") {
+            let args = &tokens[idx + 1..];
+            if rm_segment_is_dangerous(args) {
+                return Some(format!("rm {}", args.join(" ")));
+            }
+        }
+    }
+    None
 }
 
 #[derive(Serialize, Debug)]
@@ -256,7 +543,7 @@ pub fn evaluate_hook_plan(
         if !hook.is_enabled(&running_data) {
             results.push(HookPlanEntry {
                 key: hook.key.clone(),
-                command: hook.command.clone(),
+                command: hook.command.display_argv(),
                 should_run: false,
                 skip_reason: Some("user_disabled".to_string()),
                 template_errors: vec![],
@@ -267,7 +554,7 @@ pub fn evaluate_hook_plan(
         if !hook.is_satisfied(&items, &running_data) {
             results.push(HookPlanEntry {
                 key: hook.key.clone(),
-                command: hook.command.clone(),
+                command: hook.command.display_argv(),
                 should_run: false,
                 skip_reason: Some("unsatisfied_needs".to_string()),
                 template_errors: vec![],
@@ -281,7 +568,7 @@ pub fn evaluate_hook_plan(
             Ok(false) => {
                 results.push(HookPlanEntry {
                     key: hook.key.clone(),
-                    command: hook.command.clone(),
+                    command: hook.command.display_argv(),
                     should_run: false,
                     skip_reason: Some("false_conditional".to_string()),
                     template_errors: vec![],
@@ -291,7 +578,7 @@ pub fn evaluate_hook_plan(
             Err(e) => {
                 results.push(HookPlanEntry {
                     key: hook.key.clone(),
-                    command: hook.command.clone(),
+                    command: hook.command.display_argv(),
                     should_run: false,
                     skip_reason: Some(format!("conditional_error: {}", e)),
                     template_errors: vec![],
@@ -301,55 +588,55 @@ pub fn evaluate_hook_plan(
             Ok(true) => {}
         }
 
-        // Template the command args. Matches native semantics: templating
-        // failure is a hard error — the hook is NOT runnable, and
-        // hook_ran_* is NOT flipped (downstream conditionals see false).
+        // Template the command into its `bash -c` body. Matches native
+        // semantics: templating failure is a hard error — the hook is NOT
+        // runnable, and hook_ran_* is NOT flipped (downstream conditionals
+        // see false).
         let context = match Context::from_serialize(&running_data) {
             Ok(c) => c,
             Err(e) => {
                 results.push(HookPlanEntry {
                     key: hook.key.clone(),
-                    command: hook.command.clone(),
+                    command: hook.command.display_argv(),
                     should_run: false,
                     skip_reason: Some("template_error".to_string()),
                     template_errors: vec![format!("context error: {}", e)],
                 });
-                // Do NOT flip hook_ran — native would have aborted here.
                 continue;
             }
         };
 
-        let mut template_errors = Vec::new();
-        let templated_command: Vec<String> = hook
-            .command
-            .iter()
-            .map(|arg| match Tera::one_off(arg, &context, false) {
-                Ok(rendered) => rendered,
-                Err(e) => {
-                    template_errors.push(format!("arg {:?}: {}", arg, e));
-                    arg.clone()
-                }
-            })
-            .collect();
+        let argv = match render_command(&hook.command, &context) {
+            Ok(argv) => argv,
+            Err(e) => {
+                results.push(HookPlanEntry {
+                    key: hook.key.clone(),
+                    command: hook.command.display_argv(),
+                    should_run: false,
+                    skip_reason: Some("template_error".to_string()),
+                    template_errors: vec![format!("hook '{}': {}", hook.key, e)],
+                });
+                continue;
+            }
+        };
 
-        if !template_errors.is_empty() {
-            // Native run_hooks_stream returns Error::ErrorRenderingTemplate
-            // and aborts the entire stream. We surface the same signal as
-            // should_run=false so the caller can decide.
+        // Refuse catastrophic patterns in the rendered `-c` body (argv[2]).
+        // Treated like a template error: the hook does not run and hook_ran_*
+        // stays false.
+        if let Err(e) = dangerous_pattern_check(&argv[2]) {
             results.push(HookPlanEntry {
                 key: hook.key.clone(),
-                command: templated_command,
+                command: argv,
                 should_run: false,
                 skip_reason: Some("template_error".to_string()),
-                template_errors,
+                template_errors: vec![format!("hook '{}': {}", hook.key, e)],
             });
-            // Do NOT flip hook_ran — native would have aborted here.
             continue;
         }
 
         results.push(HookPlanEntry {
             key: hook.key.clone(),
-            command: templated_command,
+            command: argv,
             should_run: true,
             skip_reason: None,
             template_errors: vec![],
@@ -373,6 +660,8 @@ pub enum Error {
     InvalidConditional(Hook, ConditionalError),
     #[error("Setup failed: {0}")]
     SetupFailed(Hook, io::Error),
+    #[error("invalid hook command for '{key}': {source}", key = .0.key, source = .1)]
+    InvalidHookCommand(Hook, #[source] HookCommandError),
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -412,32 +701,25 @@ pub fn run_hooks_stream(
         }
     }
 
-    // Apply template to command
-    let mut templated_hooks = Vec::new();
+    // Render each queued hook into its full `bash -c` argv, then build the
+    // command to run it. Rendering happens here (with the initial slot data);
+    // chained conditionals are re-evaluated in-stream against accumulated
+    // hook_ran_* state.
+    let mut commands = Vec::new();
     for hook in queued_hooks {
         let context = Context::from_serialize(data)
             .map_err(|e| Error::ErrorRenderingTemplate(hook.clone(), e))?;
 
-        let command = hook
-            .command
-            .iter()
-            .map(|arg| {
-                Tera::one_off(arg, &context, false)
-                    .map_err(|e| Error::ErrorRenderingTemplate(hook.clone(), e))
-            })
-            .collect::<Result<Vec<String>, Error>>()?;
+        let argv = render_command(&hook.command, &context)
+            .map_err(|e| Error::ErrorRenderingTemplate(hook.clone(), e))?;
 
-        templated_hooks.push(Hook {
-            command,
-            ..hook.clone()
-        });
-    }
+        // argv[2] is the executable `-c` body — the thing the shell runs.
+        dangerous_pattern_check(&argv[2])
+            .map_err(|e| Error::InvalidHookCommand(hook.clone(), e))?;
 
-    let mut commands = Vec::new();
-    for hook in templated_hooks {
         let cmd = match run_as_user {
             // TODO spackle shouldn't need to depend on polyjuice, it should instead be able to receive an arbitrary Command from a consumer, who may choose to wrap it in polyjuice or not
-            Some(ref user) => match polyjuice::cmd_as_user(&hook.command[0], user.clone()) {
+            Some(ref user) => match polyjuice::cmd_as_user(&argv[0], user.clone()) {
                 Ok(cmd) => cmd,
                 Err(e) => {
                     return Err(Error::SetupFailed(
@@ -449,10 +731,10 @@ pub fn run_hooks_stream(
                     )); //TODO we probably want a different error type here
                 }
             },
-            None => process::Command::new(&hook.command[0]),
+            None => process::Command::new(&argv[0]),
         };
 
-        commands.push((hook, async_process::Command::from(cmd)));
+        commands.push((hook, argv, async_process::Command::from(cmd)));
     }
 
     let slot_data_owned = data.clone();
@@ -468,7 +750,7 @@ pub fn run_hooks_stream(
         }
 
         let mut ran_hooks = Vec::new();
-        for (hook, mut cmd) in commands {
+        for (hook, argv, mut cmd) in commands {
             yield HookStreamResult::HookStarted(hook.key.clone());
 
             // Evaluate conditional
@@ -501,7 +783,7 @@ pub fn run_hooks_stream(
                 continue;
             }
 
-            let cmd_result = cmd.args(&hook.command[1..])
+            let cmd_result = cmd.args(&argv[1..])
                 .current_dir(dir.as_ref())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -605,7 +887,9 @@ impl std::error::Error for ConfigError {}
 ///   - `needs` references that don't resolve to a known slot or hook key
 ///   - `if` conditional templates that fail to parse (unclosed brackets,
 ///     bad syntax)
-///   - `command` arg templates that fail to parse
+///   - `command` part templates that fail to parse
+///   - `command` bodies that match a blocked dangerous pattern (see
+///     [`dangerous_pattern_check`])
 ///
 /// Returns every problem found, not just the first. The companion to
 /// `slot::validate`, used by the top-level `check` to produce structured
@@ -643,18 +927,30 @@ pub fn validate_config(hooks: &[Hook], slots: &[Slot]) -> Vec<ConfigError> {
             }
         }
 
-        // Parse each command arg's template. Parse-only catches unclosed
+        // Parse each command part's template. Parse-only catches unclosed
         // brackets / bad filter syntax without needing slot values.
-        for (i, arg) in hook.command.iter().enumerate() {
-            if let Err(e) = tera::Tera::default().add_raw_template("__hook_cmd__", arg) {
+        for (i, part) in hook.command.template_parts().iter().enumerate() {
+            if let Err(e) = tera::Tera::default().add_raw_template("__hook_cmd__", part) {
                 let span = crate::diagnostic::extract_tera_span(&e);
                 errors.push(ConfigError {
                     hook_key: hook.key.clone(),
-                    message: format!("invalid command arg[{}] template: {}", i, e),
+                    message: format!("invalid command part[{}] template: {}", i, e),
                     span,
                     code: Some("hook::command_template_parse"),
                 });
             }
+        }
+
+        // Catch catastrophic patterns the author wrote literally. Slot-injected
+        // dangers are caught post-template at plan/exec time; this is the
+        // best-effort static check `spackle check` can do without slot data.
+        if let Err(e) = dangerous_pattern_check(&hook.command.raw_body()) {
+            errors.push(ConfigError {
+                hook_key: hook.key.clone(),
+                message: e.to_string(),
+                span: None,
+                code: Some("hook::command_dangerous_pattern"),
+            });
         }
     }
 
@@ -703,7 +999,7 @@ mod tests {
     fn basic() {
         let hooks = vec![Hook {
             key: "hello world".to_string(),
-            command: vec!["echo".to_string(), "hello world".to_string()],
+            command: HookCommand::Array(vec!["echo".to_string(), "hello world".to_string()]),
             ..Hook::default()
         }];
 
@@ -716,7 +1012,7 @@ mod tests {
             // Hook::new("okay".to_string(), vec!["true".to_string()]),
             Hook {
                 key: "error".to_string(),
-                command: vec!["false".to_string()],
+                command: HookCommand::Array(vec!["false".to_string()]),
                 ..Hook::default()
             },
         ];
@@ -740,12 +1036,12 @@ mod tests {
         let hooks = vec![
             Hook {
                 key: "1".to_string(),
-                command: vec!["echo".to_string(), "hello world".to_string()],
+                command: HookCommand::Array(vec!["echo".to_string(), "hello world".to_string()]),
                 ..Hook::default()
             },
             Hook {
                 key: "2".to_string(),
-                command: vec!["invalid_cmd".to_string()],
+                command: HookCommand::Array(vec!["invalid_cmd".to_string()]),
                 ..Hook::default()
             },
         ];
@@ -771,24 +1067,24 @@ mod tests {
         let hooks = vec![
             Hook {
                 key: "1".to_string(),
-                command: vec!["echo".to_string(), "hello world".to_string()],
+                command: HookCommand::Array(vec!["echo".to_string(), "hello world".to_string()]),
                 r#if: Some("true".to_string()),
                 ..Hook::default()
             },
             Hook {
                 key: "2".to_string(),
-                command: vec!["echo".to_string(), "hello world".to_string()],
+                command: HookCommand::Array(vec!["echo".to_string(), "hello world".to_string()]),
                 r#if: Some("false".to_string()),
                 ..Hook::default()
             },
             Hook {
                 key: "3".to_string(),
-                command: vec!["echo".to_string(), "hello world".to_string()],
+                command: HookCommand::Array(vec!["echo".to_string(), "hello world".to_string()]),
                 ..Hook::default()
             },
             Hook {
                 key: "4".to_string(),
-                command: vec!["echo".to_string(), "hello world".to_string()],
+                command: HookCommand::Array(vec!["echo".to_string(), "hello world".to_string()]),
                 r#if: Some("{{ hook_ran_1 }}".to_string()),
                 ..Hook::default()
             },
@@ -827,13 +1123,13 @@ mod tests {
         let hooks = vec![
             Hook {
                 key: "1".to_string(),
-                command: vec!["echo".to_string(), "hello world".to_string()],
+                command: HookCommand::Array(vec!["echo".to_string(), "hello world".to_string()]),
                 r#if: Some("{{ good_var }}".to_string()),
                 ..Hook::default()
             },
             Hook {
                 key: "2".to_string(),
-                command: vec!["echo".to_string(), "hello world".to_string()],
+                command: HookCommand::Array(vec!["echo".to_string(), "hello world".to_string()]),
                 r#if: Some("{{ bad_var }}".to_string()),
                 ..Hook::default()
             },
@@ -865,7 +1161,7 @@ mod tests {
     fn bad_conditional_value() {
         let hooks = vec![Hook {
             key: "1".to_string(),
-            command: vec!["echo".to_string(), "hello world".to_string()],
+            command: HookCommand::Array(vec!["echo".to_string(), "hello world".to_string()]),
             r#if: Some("lorem ipsum".to_string()),
             ..Hook::default()
         }];
@@ -891,18 +1187,18 @@ mod tests {
         let hooks = vec![
             Hook {
                 key: "1".to_string(),
-                command: vec!["echo".to_string(), "hello world".to_string()],
+                command: HookCommand::Array(vec!["echo".to_string(), "hello world".to_string()]),
                 ..Hook::default()
             },
             Hook {
                 key: "2".to_string(),
-                command: vec!["echo".to_string(), "hello world".to_string()],
+                command: HookCommand::Array(vec!["echo".to_string(), "hello world".to_string()]),
                 default: Some(false),
                 ..Hook::default()
             },
             Hook {
                 key: "3".to_string(),
-                command: vec!["echo".to_string(), "hello world".to_string()],
+                command: HookCommand::Array(vec!["echo".to_string(), "hello world".to_string()]),
                 default: Some(false),
                 ..Hook::default()
             },
@@ -948,12 +1244,18 @@ mod tests {
         let hooks = vec![
             Hook {
                 key: "1".to_string(),
-                command: vec!["{{ field_1 }}".to_string(), "{{ field_2 }}".to_string()],
+                command: HookCommand::Array(vec![
+                    "{{ field_1 }}".to_string(),
+                    "{{ field_2 }}".to_string(),
+                ]),
                 ..Hook::default()
             },
             Hook {
                 key: "2".to_string(),
-                command: vec!["echo".to_string(), "{{ _output_name }}".to_string()],
+                command: HookCommand::Array(vec![
+                    "echo".to_string(),
+                    "{{ _output_name }}".to_string(),
+                ]),
                 ..Hook::default()
             },
         ];
@@ -1001,7 +1303,10 @@ mod tests {
     fn invalid_templated_cmd() {
         let hooks = vec![Hook {
             key: "1".to_string(),
-            command: vec!["{{ field_1 }}".to_string(), "{{ field_2 }}".to_string()],
+            command: HookCommand::Array(vec![
+                "{{ field_1 }}".to_string(),
+                "{{ field_2 }}".to_string(),
+            ]),
             ..Hook::default()
         }];
 
@@ -1025,12 +1330,12 @@ mod tests {
         let hooks = vec![
             Hook {
                 key: "hook".to_string(),
-                command: vec!["true".to_string()],
+                command: HookCommand::Array(vec!["true".to_string()]),
                 ..Hook::default()
             },
             Hook {
                 key: "needy".to_string(),
-                command: vec!["true".to_string()],
+                command: HookCommand::Array(vec!["true".to_string()]),
                 needs: vec![
                     "hook".to_string(),
                     "string_slot".to_string(),
@@ -1086,13 +1391,13 @@ mod tests {
         let hooks = vec![
             Hook {
                 key: "hook".to_string(),
-                command: vec!["true".to_string()],
+                command: HookCommand::Array(vec!["true".to_string()]),
                 default: Some(false),
                 ..Hook::default()
             },
             Hook {
                 key: "needy".to_string(),
-                command: vec!["true".to_string()],
+                command: HookCommand::Array(vec!["true".to_string()]),
                 needs: vec!["hook".to_string()],
                 ..Hook::default()
             },
@@ -1116,7 +1421,7 @@ mod tests {
     fn needs_invalid_key() {
         let hooks = vec![Hook {
             key: "hook".to_string(),
-            command: vec!["true".to_string()],
+            command: HookCommand::Array(vec!["true".to_string()]),
             needs: vec!["invalid_key".to_string()],
             ..Hook::default()
         }];
@@ -1140,18 +1445,18 @@ mod tests {
         let hooks = vec![
             Hook {
                 key: "a".to_string(),
-                command: vec!["echo".to_string(), "a".to_string()],
+                command: HookCommand::Array(vec!["echo".to_string(), "a".to_string()]),
                 ..Hook::default()
             },
             Hook {
                 key: "b".to_string(),
-                command: vec!["echo".to_string(), "b".to_string()],
+                command: HookCommand::Array(vec!["echo".to_string(), "b".to_string()]),
                 needs: vec!["a".to_string()],
                 ..Hook::default()
             },
             Hook {
                 key: "c".to_string(),
-                command: vec!["echo".to_string(), "c".to_string()],
+                command: HookCommand::Array(vec!["echo".to_string(), "c".to_string()]),
                 needs: vec!["b".to_string()],
                 ..Hook::default()
             },
@@ -1178,14 +1483,14 @@ mod tests {
         let hooks = vec![
             Hook {
                 key: "hook_a".to_string(),
-                command: vec!["true".to_string()],
+                command: HookCommand::Array(vec!["true".to_string()]),
                 default: Some(false),
                 needs: vec!["slot_a".to_string()],
                 ..Hook::default()
             },
             Hook {
                 key: "hook_b".to_string(),
-                command: vec!["true".to_string()],
+                command: HookCommand::Array(vec!["true".to_string()]),
                 needs: vec!["hook_a".to_string()],
                 ..Hook::default()
             },
@@ -1253,7 +1558,7 @@ mod tests {
                 name: "default=true → runs",
                 hooks: vec![Hook {
                     key: "h1".to_string(),
-                    command: vec!["echo".to_string(), "hi".to_string()],
+                    command: HookCommand::Array(vec!["echo".to_string(), "hi".to_string()]),
                     default: Some(true),
                     ..Default::default()
                 }],
@@ -1265,7 +1570,7 @@ mod tests {
                 name: "default=false → user_disabled",
                 hooks: vec![Hook {
                     key: "h1".to_string(),
-                    command: vec!["echo".to_string()],
+                    command: HookCommand::Array(vec!["echo".to_string()]),
                     default: Some(false),
                     ..Default::default()
                 }],
@@ -1277,7 +1582,7 @@ mod tests {
                 name: "user override enables disabled hook",
                 hooks: vec![Hook {
                     key: "h1".to_string(),
-                    command: vec!["echo".to_string()],
+                    command: HookCommand::Array(vec!["echo".to_string()]),
                     default: Some(false),
                     ..Default::default()
                 }],
@@ -1290,13 +1595,13 @@ mod tests {
                 hooks: vec![
                     Hook {
                         key: "first".to_string(),
-                        command: vec!["echo".to_string(), "1".to_string()],
+                        command: HookCommand::Array(vec!["echo".to_string(), "1".to_string()]),
                         default: Some(true),
                         ..Default::default()
                     },
                     Hook {
                         key: "second".to_string(),
-                        command: vec!["echo".to_string(), "2".to_string()],
+                        command: HookCommand::Array(vec!["echo".to_string(), "2".to_string()]),
                         r#if: Some("{{ hook_ran_first }}".to_string()),
                         default: Some(true),
                         ..Default::default()
@@ -1311,13 +1616,13 @@ mod tests {
                 hooks: vec![
                     Hook {
                         key: "first".to_string(),
-                        command: vec!["echo".to_string()],
+                        command: HookCommand::Array(vec!["echo".to_string()]),
                         default: Some(false),
                         ..Default::default()
                     },
                     Hook {
                         key: "second".to_string(),
-                        command: vec!["echo".to_string()],
+                        command: HookCommand::Array(vec!["echo".to_string()]),
                         r#if: Some("{{ hook_ran_first }}".to_string()),
                         default: Some(true),
                         ..Default::default()
@@ -1334,7 +1639,10 @@ mod tests {
                 name: "command templating with slot data",
                 hooks: vec![Hook {
                     key: "h1".to_string(),
-                    command: vec!["echo".to_string(), "Hello {{ name }}".to_string()],
+                    command: HookCommand::Array(vec![
+                        "echo".to_string(),
+                        "Hello {{ name }}".to_string(),
+                    ]),
                     default: Some(true),
                     ..Default::default()
                 }],
@@ -1346,7 +1654,10 @@ mod tests {
                 name: "command template error → should_run=false + template_error skip",
                 hooks: vec![Hook {
                     key: "broken".to_string(),
-                    command: vec!["echo".to_string(), "{{ undefined_var }}".to_string()],
+                    command: HookCommand::Array(vec![
+                        "echo".to_string(),
+                        "{{ undefined_var }}".to_string(),
+                    ]),
                     default: Some(true),
                     ..Default::default()
                 }],
@@ -1359,13 +1670,13 @@ mod tests {
                 hooks: vec![
                     Hook {
                         key: "broken".to_string(),
-                        command: vec!["{{ undefined }}".to_string()],
+                        command: HookCommand::Array(vec!["{{ undefined }}".to_string()]),
                         default: Some(true),
                         ..Default::default()
                     },
                     Hook {
                         key: "after".to_string(),
-                        command: vec!["echo".to_string()],
+                        command: HookCommand::Array(vec!["echo".to_string()]),
                         r#if: Some("{{ hook_ran_broken }}".to_string()),
                         default: Some(true),
                         ..Default::default()
@@ -1424,7 +1735,7 @@ mod tests {
             if c.name == "command templating with slot data" {
                 assert_eq!(
                     plan[0].command,
-                    vec!["echo", "Hello world"],
+                    vec!["bash", "-c", "echo 'Hello world'"],
                     "case {}: templated command",
                     c.name
                 );
@@ -1444,5 +1755,460 @@ mod tests {
                 assert!(plan[1].template_errors.is_empty());
             }
         }
+    }
+
+    // --- HookCommand rendering + denylist ---
+
+    fn vs(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn arr(args: &[&str]) -> HookCommand {
+        HookCommand::Array(vs(args))
+    }
+
+    fn ctx(data: &HashMap<String, String>) -> Context {
+        Context::from_serialize(data).expect("context")
+    }
+
+    #[test]
+    fn render_command_table() {
+        let empty = HashMap::new();
+        let name_hi = HashMap::from([("name".to_string(), "hi".to_string())]);
+        let name_meta = HashMap::from([("name".to_string(), "a; b".to_string())]);
+
+        struct Case {
+            name: &'static str,
+            cmd: HookCommand,
+            data: HashMap<String, String>,
+            // Full expected argv (always begins with bash, -c).
+            expected: Vec<&'static str>,
+        }
+
+        let cases = vec![
+            Case {
+                name: "string raw",
+                cmd: HookCommand::String("echo hi && echo done".to_string()),
+                data: empty.clone(),
+                expected: vec!["bash", "-c", "echo hi && echo done"],
+            },
+            Case {
+                name: "string raw substitution",
+                cmd: HookCommand::String("echo {{ name }} && echo done".to_string()),
+                data: name_hi.clone(),
+                expected: vec!["bash", "-c", "echo hi && echo done"],
+            },
+            Case {
+                name: "array simple",
+                cmd: arr(&["echo", "hi"]),
+                data: empty.clone(),
+                expected: vec!["bash", "-c", "echo hi"],
+            },
+            Case {
+                name: "array whitespace gets quoted",
+                cmd: arr(&["echo", "hello world"]),
+                data: empty.clone(),
+                expected: vec!["bash", "-c", "echo 'hello world'"],
+            },
+            Case {
+                name: "array operators pass through",
+                cmd: arr(&["git", "init", "&&", "git", "add", "."]),
+                data: empty.clone(),
+                expected: vec!["bash", "-c", "git init && git add ."],
+            },
+            Case {
+                name: "array template is literal",
+                cmd: arr(&["echo", "{{ name }}", "&&", "echo", "done"]),
+                data: name_hi.clone(),
+                expected: vec!["bash", "-c", "echo hi && echo done"],
+            },
+            Case {
+                name: "array template with metachars stays literal",
+                cmd: arr(&["echo", "{{ name }}"]),
+                data: name_meta.clone(),
+                expected: vec!["bash", "-c", "echo 'a; b'"],
+            },
+            Case {
+                name: "bash -c passthrough templates body",
+                cmd: arr(&["bash", "-c", "echo {{ name }} && echo done"]),
+                data: name_hi.clone(),
+                expected: vec!["bash", "-c", "echo hi && echo done"],
+            },
+            Case {
+                name: "sh -c passthrough",
+                cmd: arr(&["sh", "-c", "x && y"]),
+                data: empty.clone(),
+                expected: vec!["bash", "-c", "x && y"],
+            },
+            Case {
+                name: "bash -c passthrough preserves positional args",
+                cmd: arr(&["bash", "-c", "echo {{ name }}", "argzero"]),
+                data: name_hi.clone(),
+                expected: vec!["bash", "-c", "echo hi", "argzero"],
+            },
+        ];
+
+        for c in cases {
+            let got = render_command(&c.cmd, &ctx(&c.data)).expect(c.name);
+            assert_eq!(got, c.expected, "case {}", c.name);
+        }
+    }
+
+    #[test]
+    fn dangerous_pattern_check_table() {
+        // (input, expected_ok)
+        let cases: Vec<(&str, bool)> = vec![
+            ("echo hi", true),
+            ("rm -rf build", true),
+            ("rm -rf /tmp/foo", true),
+            ("rm -r /", true), // recursive but not forced
+            ("rm -f /", true), // forced but not recursive
+            ("rm -rf /", false),
+            ("rm -rf /*", false),
+            ("rm -fr /", false),
+            ("rm --recursive --force /", false),
+            ("rm -rf /etc", false),
+            ("rm -rf /usr/", false),
+            ("sudo rm -rf / --no-preserve-root", false),
+            ("doas rm -rf /", false),
+            ("echo done && rm -rf /", false),
+            ("true && sudo rm -rf /etc", false),
+            (":(){ :|:& };:", false),
+            (":(){:|:&};:", false),
+            // Separators that are NOT whitespace-padded must still split the
+            // body so the trailing `rm` is recognized as a command.
+            ("echo safe; rm -rf /", false),
+            ("echo safe;rm -rf /", false),
+            ("echo safe&&rm -rf /", false),
+            ("echo safe||rm -rf /", false),
+            ("echo safe|rm -rf /", false),
+            ("echo safe & rm -rf /", false),
+            ("echo safe\nrm -rf /", false),
+            // A quoted literal containing the text is data, not an executable
+            // command — correctly NOT flagged, even with an inner separator.
+            ("echo 'rm -rf /'", true),
+            ("echo 'a; rm -rf /'", true),
+            ("echo \"a; rm -rf /\"", true),
+            // `rm` as an ARGUMENT to another command is not an rm invocation —
+            // must NOT be flagged (array form promises literal arguments).
+            ("echo rm -rf /", true),
+            ("printf rm -rf /", true),
+            ("git commit -m rm -rf /", true),
+            // ...but a real rm after a separator still is.
+            ("echo rm && rm -rf /", false),
+        ];
+        for (input, ok) in cases {
+            assert_eq!(
+                dangerous_pattern_check(input).is_ok(),
+                ok,
+                "input {:?}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn evaluate_hook_plan_array_chain_wraps() {
+        let hooks = vec![Hook {
+            key: "chain".to_string(),
+            command: arr(&["git", "init", "&&", "git", "add", "."]),
+            default: Some(true),
+            ..Hook::default()
+        }];
+        let plan = evaluate_hook_plan(&hooks, &[], &HashMap::new());
+        assert_eq!(plan.len(), 1);
+        assert!(plan[0].should_run);
+        assert_eq!(
+            plan[0].command,
+            vs(&["bash", "-c", "git init && git add ."])
+        );
+        assert!(plan[0].template_errors.is_empty());
+    }
+
+    #[test]
+    fn evaluate_hook_plan_array_template_operator_is_safe() {
+        // Previously a hard collision error; now template-then-quote makes
+        // the slot value a literal argument, so the hook runs and downstream
+        // conditionals see it ran.
+        let hooks = vec![
+            Hook {
+                key: "first".to_string(),
+                command: arr(&["echo", "{{ name }}", "&&", "echo", "done"]),
+                default: Some(true),
+                ..Hook::default()
+            },
+            Hook {
+                key: "after".to_string(),
+                command: arr(&["echo", "after"]),
+                r#if: Some("{{ hook_ran_first }}".to_string()),
+                default: Some(true),
+                ..Hook::default()
+            },
+        ];
+        let data = HashMap::from([("name".to_string(), "evil; rm x".to_string())]);
+        let plan = evaluate_hook_plan(&hooks, &[], &data);
+        assert_eq!(plan.len(), 2);
+        assert!(plan[0].should_run, "got {:?}", plan[0]);
+        assert_eq!(
+            plan[0].command,
+            vs(&["bash", "-c", "echo 'evil; rm x' && echo done"])
+        );
+        assert!(plan[1].should_run);
+    }
+
+    #[test]
+    fn evaluate_hook_plan_string_form_raw_substitution() {
+        let hooks = vec![Hook {
+            key: "s".to_string(),
+            command: HookCommand::String("echo {{ name }} && echo done".to_string()),
+            default: Some(true),
+            ..Hook::default()
+        }];
+        let data = HashMap::from([("name".to_string(), "hi".to_string())]);
+        let plan = evaluate_hook_plan(&hooks, &[], &data);
+        assert!(plan[0].should_run);
+        assert_eq!(plan[0].command, vs(&["bash", "-c", "echo hi && echo done"]));
+    }
+
+    #[test]
+    fn evaluate_hook_plan_bash_c_passthrough() {
+        let hooks = vec![Hook {
+            key: "explicit".to_string(),
+            command: arr(&["bash", "-c", "echo {{ name }} && echo done"]),
+            default: Some(true),
+            ..Hook::default()
+        }];
+        let data = HashMap::from([("name".to_string(), "hi".to_string())]);
+        let plan = evaluate_hook_plan(&hooks, &[], &data);
+        assert!(plan[0].should_run);
+        assert_eq!(plan[0].command, vs(&["bash", "-c", "echo hi && echo done"]));
+    }
+
+    #[test]
+    fn evaluate_hook_plan_bash_c_with_positionals_is_scanned() {
+        // Regression: a `bash -c` array with extra positional args must NOT
+        // bypass the denylist. The `-c` body (argv[2]) is rendered verbatim
+        // and scanned, so a slot-injected `rm -rf /` is still caught.
+        let hooks = vec![Hook {
+            key: "sneaky".to_string(),
+            command: arr(&["bash", "-c", "rm -rf {{ target }}", "x"]),
+            default: Some(true),
+            ..Hook::default()
+        }];
+        let data = HashMap::from([("target".to_string(), "/".to_string())]);
+        let plan = evaluate_hook_plan(&hooks, &[], &data);
+        assert!(!plan[0].should_run, "got {:?}", plan[0]);
+        assert_eq!(plan[0].skip_reason.as_deref(), Some("template_error"));
+        assert!(
+            plan[0].template_errors[0].contains("dangerous"),
+            "got {:?}",
+            plan[0].template_errors
+        );
+    }
+
+    #[test]
+    fn evaluate_hook_plan_command_arg_named_rm_is_not_flagged() {
+        // Array form promises literal arguments: `rm` passed to `echo` is
+        // data, not a command, and must run.
+        let hooks = vec![Hook {
+            key: "echo_rm".to_string(),
+            command: arr(&["echo", "rm", "-rf", "/"]),
+            default: Some(true),
+            ..Hook::default()
+        }];
+        let plan = evaluate_hook_plan(&hooks, &[], &HashMap::new());
+        assert!(plan[0].should_run, "got {:?}", plan[0]);
+        assert_eq!(plan[0].command, vs(&["bash", "-c", "echo rm -rf /"]));
+    }
+
+    #[test]
+    fn evaluate_hook_plan_denylist_blocks() {
+        let hooks = vec![
+            Hook {
+                key: "danger".to_string(),
+                command: arr(&["rm", "-rf", "/"]),
+                default: Some(true),
+                ..Hook::default()
+            },
+            Hook {
+                key: "after".to_string(),
+                command: arr(&["echo", "after"]),
+                r#if: Some("{{ hook_ran_danger }}".to_string()),
+                default: Some(true),
+                ..Hook::default()
+            },
+        ];
+        let plan = evaluate_hook_plan(&hooks, &[], &HashMap::new());
+        assert_eq!(plan.len(), 2);
+        assert!(!plan[0].should_run);
+        assert_eq!(plan[0].skip_reason.as_deref(), Some("template_error"));
+        assert!(
+            plan[0].template_errors[0].contains("dangerous"),
+            "got {:?}",
+            plan[0].template_errors
+        );
+        // hook_ran_danger stays false → downstream conditional fails
+        assert!(!plan[1].should_run);
+        assert_eq!(plan[1].skip_reason.as_deref(), Some("false_conditional"));
+    }
+
+    #[test]
+    fn run_hooks_stream_array_chain_executes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let hooks = vec![Hook {
+            key: "chain".to_string(),
+            command: arr(&["touch", "a", "&&", "touch", "b"]),
+            ..Hook::default()
+        }];
+        let results = run_hooks(&hooks, tmp.path(), &Vec::new(), &HashMap::new(), None)
+            .expect("run_hooks failed");
+        assert!(
+            results.iter().any(|r| matches!(
+                r,
+                HookResult {
+                    kind: HookResultKind::Completed { .. },
+                    ..
+                }
+            )),
+            "expected chained command to complete, got {:?}",
+            results
+        );
+        assert!(tmp.path().join("a").exists(), "file 'a' not created");
+        assert!(tmp.path().join("b").exists(), "file 'b' not created");
+    }
+
+    #[test]
+    fn run_hooks_stream_string_form_executes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let hooks = vec![Hook {
+            key: "s".to_string(),
+            command: HookCommand::String("touch {{ name }} && touch other".to_string()),
+            ..Hook::default()
+        }];
+        let results = run_hooks(
+            &hooks,
+            tmp.path(),
+            &Vec::new(),
+            &HashMap::from([("name".to_string(), "first".to_string())]),
+            None,
+        )
+        .expect("run_hooks failed");
+        assert!(results.iter().all(|r| matches!(
+            r,
+            HookResult {
+                kind: HookResultKind::Completed { .. },
+                ..
+            }
+        )));
+        assert!(tmp.path().join("first").exists());
+        assert!(tmp.path().join("other").exists());
+    }
+
+    #[test]
+    fn run_hooks_stream_array_literal_substitution() {
+        // A slot value with shell metacharacters becomes ONE literal argument
+        // (a filename), not a second command.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let hooks = vec![Hook {
+            key: "lit".to_string(),
+            command: arr(&["touch", "{{ name }}"]),
+            ..Hook::default()
+        }];
+        let evil = "weird; name";
+        let results = run_hooks(
+            &hooks,
+            tmp.path(),
+            &Vec::new(),
+            &HashMap::from([("name".to_string(), evil.to_string())]),
+            None,
+        )
+        .expect("run_hooks failed");
+        assert!(results.iter().all(|r| matches!(
+            r,
+            HookResult {
+                kind: HookResultKind::Completed { .. },
+                ..
+            }
+        )));
+        assert!(
+            tmp.path().join(evil).exists(),
+            "file with literal name should exist"
+        );
+        // No injection: the metachar split must NOT have created a bare 'name'.
+        assert!(!tmp.path().join("name").exists());
+    }
+
+    #[test]
+    fn run_hooks_stream_denylist_blocks() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let hooks = vec![Hook {
+            key: "danger".to_string(),
+            command: HookCommand::String("rm -rf /".to_string()),
+            ..Hook::default()
+        }];
+        let err = run_hooks(&hooks, tmp.path(), &Vec::new(), &HashMap::new(), None)
+            .expect_err("expected InvalidHookCommand error");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("'danger'"),
+            "expected hook key in msg, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("dangerous"),
+            "expected denylist text, got: {}",
+            msg
+        );
+
+        match err {
+            Error::InvalidHookCommand(_, HookCommandError::DangerousPattern { .. }) => {}
+            other => panic!(
+                "expected InvalidHookCommand/DangerousPattern, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn validate_config_flags_dangerous_pattern() {
+        let hooks = vec![
+            Hook {
+                key: "danger".to_string(),
+                command: arr(&["rm", "-rf", "/"]),
+                ..Hook::default()
+            },
+            Hook {
+                key: "fine".to_string(),
+                command: arr(&["echo", "hi"]),
+                ..Hook::default()
+            },
+            Hook {
+                key: "fine_chain".to_string(),
+                command: arr(&["touch", "a", "&&", "touch", "b"]),
+                ..Hook::default()
+            },
+            // Array literal containing an inner separator: posix-quoted at
+            // runtime, so it's data, not a chained `rm`. The static scan must
+            // mirror that and NOT flag it.
+            Hook {
+                key: "quoted_literal".to_string(),
+                command: arr(&["echo", "safe; rm -rf /"]),
+                ..Hook::default()
+            },
+        ];
+        let errors = validate_config(&hooks, &[]);
+
+        let flagged: Vec<_> = errors
+            .iter()
+            .filter(|e| e.code == Some("hook::command_dangerous_pattern"))
+            .collect();
+        assert_eq!(
+            flagged.len(),
+            1,
+            "expected exactly one dangerous-pattern diag, got {:#?}",
+            errors
+        );
+        assert_eq!(flagged[0].hook_key, "danger");
     }
 }
