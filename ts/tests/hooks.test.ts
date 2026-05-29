@@ -158,6 +158,52 @@ describe("planHooks", () => {
       expect(body).toContain("my-output-dir");
     }
   });
+
+  test("caller-supplied _project_name in data is overwritten by the resolved name", async () => {
+    // Native parity + security: a host that accidentally (or
+    // maliciously) sets `data._project_name` must NOT leak into the
+    // templating context. The TS flow re-resolves and always
+    // overwrites. With no override and config.name = "hooks-demo",
+    // the resolved value wins.
+    const ws = await workspace("hooks_fixture");
+    cleanup.push(ws.root);
+    const fs = new DiskFs({ workspaceRoot: ws.root });
+
+    const res = await planHooks(
+      ws.projectDir,
+      join(ws.root, "out"),
+      { _project_name: "EVIL_INJECTION", _output_name: "EVIL_OUT" },
+      fs,
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const names = res.plan.find((e) => e.key === "hook_names");
+      const body = names?.command[2];
+      expect(body).toContain("hooks-demo");
+      expect(body).toContain("out");
+      expect(body).not.toContain("EVIL_INJECTION");
+      expect(body).not.toContain("EVIL_OUT");
+    }
+  });
+
+  test("names.outputName override beats basename(outDir)", async () => {
+    const ws = await workspace("hooks_fixture");
+    cleanup.push(ws.root);
+    const fs = new DiskFs({ workspaceRoot: ws.root });
+
+    const outDir = join(ws.root, "uuid-out");
+    const res = await planHooks(ws.projectDir, outDir, {}, fs, {
+      names: { outputName: "slug-out" },
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const names = res.plan.find((e) => e.key === "hook_names");
+      const body = names?.command[2];
+      expect(body).toContain("hooks-demo"); // _project_name from config.name (no override)
+      expect(body).toContain("slug-out");
+      expect(body).not.toContain("uuid-out");
+    }
+  });
 });
 
 describe("runHooksStream (default runner — actually spawns)", () => {
@@ -189,6 +235,70 @@ describe("runHooksStream (default runner — actually spawns)", () => {
     const names = await readFile(join(ws.outDir, "names.out"), "utf8");
     expect(names).toContain("hooks-demo");
     expect(names).toContain("output"); // basename of ws.outDir
+  });
+
+  test("outputName override end-to-end: side-effect file picks up the rendered slug", async () => {
+    // hook_names writes `'<_project_name>/<_output_name>'` to names.out.
+    // With `outputName` set, the on-disk artifact must carry the slug
+    // on the output side while `_project_name` stays on its rc2
+    // default (config.name = "hooks-demo").
+    const ws = await workspace("hooks_fixture");
+    cleanup.push(ws.root);
+    const fs = new DiskFs({ workspaceRoot: ws.root });
+
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(ws.outDir, { recursive: true });
+
+    await drain(
+      runHooksStream(ws.projectDir, ws.outDir, {}, fs, {
+        names: { outputName: "my_cool_project" },
+      }),
+    );
+
+    const names = await readFile(join(ws.outDir, "names.out"), "utf8");
+    expect(names).toBe("hooks-demo/my_cool_project");
+  });
+
+  test("outputName override survives a re-plan", async () => {
+    // hooks_fixture chains hook_b on `hook_ran_hook_a`. Failing hook_a
+    // triggers a re-plan; the re-emitted plan must still apply the
+    // outputName override to hook_names' templated command.
+    const ws = await workspace("hooks_fixture");
+    cleanup.push(ws.root);
+    const fs = new DiskFs({ workspaceRoot: ws.root });
+
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(ws.outDir, { recursive: true });
+
+    // Fail hook_a (its body writes hook_a.out), succeed everything else.
+    const hooks = new MockHooks((cmd) =>
+      cmd[2]?.includes("hook_a.out") ? { exitCode: 1, ok: false } : { exitCode: 0, ok: true },
+    );
+    const events = await drain(
+      runHooksStream(ws.projectDir, ws.outDir, {}, fs, {
+        hooks,
+        names: { outputName: "replan-out-slug" },
+      }),
+    );
+
+    // Initial plan carries the override.
+    const runStart = events.find((e) => e.type === "run_start");
+    expect(runStart?.type).toBe("run_start");
+    if (runStart?.type === "run_start") {
+      const namesEntry = runStart.plan.find((e) => e.key === "hook_names");
+      expect(namesEntry?.command[2]).toContain("replan-out-slug");
+    }
+
+    // After hook_a fails, a replan fires. The re-plan must still
+    // carry the override (proves it isn't a one-time injection).
+    const replan = events.find((e) => e.type === "replan");
+    expect(replan).toBeDefined();
+    if (replan?.type === "replan") {
+      const namesEntry = replan.plan.find((e) => e.key === "hook_names");
+      expect(namesEntry?.command[2]).toContain("replan-out-slug");
+      // basename(ws.outDir) is "output" — must NOT appear in place of the slug.
+      expect(namesEntry?.command[2]).not.toContain("/output");
+    }
   });
 
   test("emits run_start, hook_start/hook_end pairs with timing fields", async () => {

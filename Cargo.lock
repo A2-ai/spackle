@@ -1165,7 +1165,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "spackle"
-version = "0.5.1"
+version = "0.6.0-rc1"
 dependencies = [
  "async-process",
  "async-stream",
@@ -1189,7 +1189,7 @@ dependencies = [
 
 [[package]]
 name = "spackle-cli"
-version = "0.5.1"
+version = "0.6.0-rc1"
 dependencies = [
  "anyhow",
  "atty",
@@ -1207,7 +1207,7 @@ dependencies = [
 
 [[package]]
 name = "spackle-wasm"
-version = "0.5.1"
+version = "0.6.0-rc1"
 dependencies = [
  "console_error_panic_hook",
  "getrandom 0.2.17",

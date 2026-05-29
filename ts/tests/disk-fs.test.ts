@@ -8,10 +8,16 @@
 //   - `streamCopy` round-trips bytes through `pipeline()`
 
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+/** Hex suffix for collision-proof on-disk test paths. */
+function randomSuffix(): string {
+  return randomBytes(8).toString("hex");
+}
 
 import { DiskFs } from "../src/spackle.ts";
 
@@ -153,4 +159,86 @@ describe("DiskFs", () => {
     await writeFile(join(root, "real"), "x");
     expect(fs.exists(join(root, "real"))).toBe(true);
   });
+});
+
+describe("DiskFs constructor validation", () => {
+  test("relative workspaceRoot throws", () => {
+    expect(() => new DiskFs({ workspaceRoot: "relative/root" })).toThrow(
+      /workspaceRoot must be absolute/,
+    );
+  });
+
+  test("nonexistent workspaceRoot throws", () => {
+    expect(() => new DiskFs({ workspaceRoot: "/nonexistent/spackle-disk-fs-test" })).toThrow(
+      /workspaceRoot not accessible/,
+    );
+  });
+});
+
+// Regression: containment via `startsWith(root + sep)` previously
+// rejected every real path when `workspaceRoot === "/"` because
+// `"/" + "/" === "//"` and no canonical absolute path begins with
+// "//". The fix is in `isContainedUnder` (see disk-fs.ts).
+describe("DiskFs with workspaceRoot: '/'", () => {
+  // Skipping on Windows — POSIX-root semantics don't apply (drive letters).
+  test.skipIf(process.platform === "win32")(
+    "accepts a path under the POSIX root without the // bug",
+    async () => {
+      const tmp = await realpath(await mkdtemp(join(tmpdir(), "spackle-disk-")));
+      try {
+        const fs = new DiskFs({ workspaceRoot: "/" });
+        // realpath of tmp lives under /private/var on macOS; on Linux
+        // it's under /tmp. Either way it's beneath "/" — must contain.
+        expect(fs.containProject(tmp)).toBe(tmp);
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "containedJoin handles base === '/' without double-slash",
+    () => {
+      const fs = new DiskFs({ workspaceRoot: "/" });
+      // base "/" + rel "tmp/x" must resolve to "/tmp/x" and not get
+      // rejected by an off-by-one prefix check.
+      const rel = `tmp/spackle-disk-${randomSuffix()}`;
+      expect(fs.containedJoin("/", rel)).toBe(`/${rel}`);
+    },
+  );
+
+  // Regression: `containDiskForCreate` used `existing.slice(parent.length + 1)`
+  // and `${canonicalExisting}${sep}${tail.join(sep)}`. When the
+  // nearest existing ancestor is `/`, both forms misbehaved:
+  // - slice("/foo", 1+1) = "oo"
+  // - "/" + "/" + "oo" = "//oo"
+  // The fix uses pathBasename + pathJoin. We randomize the leaf so
+  // the test is collision-proof against anything that may sit at the
+  // POSIX root.
+  test.skipIf(process.platform === "win32")(
+    "assertOutDirAvailable accepts a brand-new top-level path under '/'",
+    () => {
+      const fs = new DiskFs({ workspaceRoot: "/" });
+      // Random-suffixed top-level path; never actually created on disk.
+      const want = `/spackle-disk-fs-test-${randomSuffix()}`;
+      expect(fs.assertOutDirAvailable(want)).toBe(want);
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "assertOutDirAvailable produces no '//' prefix when the path has multiple new segments under '/'",
+    () => {
+      const fs = new DiskFs({ workspaceRoot: "/" });
+      // Multiple missing segments — every iteration of the
+      // containDiskForCreate loop must produce a clean basename. With
+      // the bug, intermediate segments would lose their leading char
+      // when their parent was `/`.
+      const want = `/spackle-disk-fs-test-${randomSuffix()}/sub/leaf`;
+      const got = fs.assertOutDirAvailable(want);
+      expect(got).toBe(want);
+      // Extra guard: no accidental double-separator anywhere in the
+      // result (a regression of the concat-form join bug).
+      expect(got).not.toContain("//");
+    },
+  );
 });
