@@ -439,6 +439,30 @@ describe("spackle render (diagnostics-first)", () => {
   });
 });
 
+// Fixture: spackle.toml has a name, the file path is templated on
+// `_output_name`, the body references both specials.
+// `_project_name` is NOT overridable — it stays on rc2's
+// config.name → basename(projectDir) fallback. `_output_name`
+// accepts an override so a project written to a UUID staging dir
+// can render under a human-readable slug.
+async function namesFixture(
+  root: string,
+  opts: { configName?: string } = {},
+): Promise<{ projectDir: string; outDir: string }> {
+  const projectDir = join(root, "spackle-gen-uuid");
+  await mkdir(projectDir, { recursive: true });
+  const configName = opts.configName === undefined ? "" : `name = "${opts.configName}"\n`;
+  await writeFile(
+    join(projectDir, "spackle.toml"),
+    `${configName}[[slots]]\nkey = "noop"\ntype = "String"\n`,
+  );
+  await writeFile(
+    join(projectDir, "{{ _output_name }}.txt.j2"),
+    "project={{ _project_name }}, output={{ _output_name }}",
+  );
+  return { projectDir, outDir: join(root, "spackle-gen-out-uuid") };
+}
+
 describe("names overrides", () => {
   const cleanup: string[] = [];
   beforeEach(() => void (cleanup.length = 0));
@@ -446,34 +470,10 @@ describe("names overrides", () => {
     await Promise.all(cleanup.map((p) => rm(p, { recursive: true, force: true })));
   });
 
-  // Fixture: spackle.toml has a name, the file path is templated on
-  // `_output_name`, the body references both specials.
-  // `_project_name` is NOT overridable — it stays on rc2's
-  // config.name → basename(projectDir) fallback. `_output_name`
-  // accepts an override so a project written to a UUID staging dir
-  // can render under a human-readable slug.
-  async function fixture(
-    root: string,
-    opts: { configName?: string } = {},
-  ): Promise<{ projectDir: string; outDir: string }> {
-    const projectDir = join(root, "spackle-gen-uuid");
-    await mkdir(projectDir, { recursive: true });
-    const configName = opts.configName === undefined ? "" : `name = "${opts.configName}"\n`;
-    await writeFile(
-      join(projectDir, "spackle.toml"),
-      `${configName}[[slots]]\nkey = "noop"\ntype = "String"\n`,
-    );
-    await writeFile(
-      join(projectDir, "{{ _output_name }}.txt.j2"),
-      "project={{ _project_name }}, output={{ _output_name }}",
-    );
-    return { projectDir, outDir: join(root, "spackle-gen-out-uuid") };
-  }
-
   test("generate: names.outputName beats basename(outDir); _project_name stays on config.name", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-names-")));
     cleanup.push(root);
-    const { projectDir, outDir } = await fixture(root, { configName: "my_cool_project" });
+    const { projectDir, outDir } = await namesFixture(root, { configName: "my_cool_project" });
 
     const fs = new DiskFs({ workspaceRoot: root });
     const res = await generate(projectDir, outDir, { noop: "x" }, fs, {
@@ -490,7 +490,7 @@ describe("names overrides", () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-names-")));
     cleanup.push(root);
     // No config.name → _project_name falls back to basename(projectDir).
-    const { projectDir, outDir } = await fixture(root, { configName: undefined });
+    const { projectDir, outDir } = await namesFixture(root, { configName: undefined });
 
     const fs = new DiskFs({ workspaceRoot: root });
     const res = await generate(projectDir, outDir, { noop: "x" }, fs);
@@ -503,7 +503,7 @@ describe("names overrides", () => {
   test("render: outputName override flows through the diagnostics-first path", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "spackle-names-")));
     cleanup.push(root);
-    const { projectDir, outDir } = await fixture(root, { configName: "from-config" });
+    const { projectDir, outDir } = await namesFixture(root, { configName: "from-config" });
 
     const fs = new DiskFs({ workspaceRoot: root });
     const res = await render(projectDir, outDir, { noop: "x" }, fs, {
