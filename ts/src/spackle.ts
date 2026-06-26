@@ -385,6 +385,12 @@ export async function generate(
 
   let files = 0;
   let dirs = 0;
+  // Directory modes are applied after the whole tree is written, never
+  // at creation time: a restrictive source mode (e.g. 0o555 / 0o500)
+  // applied up front would make the output dir non-writable before its
+  // children are copied/rendered into it, breaking generation midway.
+  // Collected in top-down walk order, applied deepest-first below.
+  const dirModes: Array<{ abs: string; mode: number }> = [];
   for (const entry of walkDisk(absProject)) {
     // Classify on the **source** filename, not the rendered path. A
     // static file whose templated name renders to `foo.j2` is still
@@ -406,8 +412,16 @@ export async function generate(
     }
     const renderedRel = pathRes.path;
 
+    // Preserve the source entry's permission bits onto its output so
+    // executable scripts stay executable and restricted files stay
+    // restricted. Templates inherit the mode of their source `.j2` /
+    // `.tera` file.
+    const srcMode = fs.modeOf(entry.absPath);
+
     if (entry.kind === "dir") {
-      fs.ensureOutDir(fs.containedJoin(absOut, renderedRel));
+      const absDir = fs.containedJoin(absOut, renderedRel);
+      fs.ensureOutDir(absDir);
+      dirModes.push({ abs: absDir, mode: srcMode });
       dirs++;
       continue;
     }
@@ -419,7 +433,7 @@ export async function generate(
         if (d) return { ok: false, error: `${d.path ?? entry.relPath}: ${d.message}` };
       }
       const dstAbs = fs.containedJoin(absOut, stripTemplateExt(renderedRel));
-      fs.writeFile(dstAbs, renderRes.bytes);
+      fs.writeFile(dstAbs, renderRes.bytes, srcMode);
       files++;
     } else {
       const dstAbs = fs.containedJoin(absOut, renderedRel);
@@ -427,7 +441,7 @@ export async function generate(
         // Sequential: parallel copies would explode the FD budget on
         // large projects.
         // oxlint-disable-next-line eslint/no-await-in-loop
-        await fs.streamCopy(entry.absPath, dstAbs);
+        await fs.streamCopy(entry.absPath, dstAbs, srcMode);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         return { ok: false, error: `${entry.relPath}: ${msg}` };
@@ -438,6 +452,15 @@ export async function generate(
 
   // An all-ignored / empty project still produces an empty `outDir`.
   fs.ensureOutDir(absOut);
+
+  // Deepest-first (reverse of the top-down walk) so every child is
+  // chmodded while its parents are still traversable — a parent locked
+  // to a mode without execute (e.g. 0o444) would otherwise strand its
+  // descendants.
+  for (let i = dirModes.length - 1; i >= 0; i--) {
+    const dir = dirModes[i];
+    if (dir) fs.chmod(dir.abs, dir.mode);
+  }
 
   return { ok: true, files, dirs };
 }
