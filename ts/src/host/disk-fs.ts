@@ -4,12 +4,14 @@
 // template bytes via `writeFile`.
 
 import {
+  chmodSync,
   createReadStream,
   createWriteStream,
   existsSync,
   mkdirSync,
   readFileSync,
   realpathSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import {
@@ -79,7 +81,9 @@ export class DiskFs {
     return absOut;
   }
 
-  /** Idempotent `mkdir -p` for `outDir` under `workspaceRoot`. */
+  /** Idempotent `mkdir -p` for `outDir` under `workspaceRoot`. Always
+   * creates the dir writable; preserved directory modes are applied
+   * later via [[chmod]], once descendants are populated. */
   ensureOutDir(outDir: string): string {
     const absOut = this.containDiskForCreate(outDir);
     mkdirSync(absOut, { recursive: true });
@@ -99,18 +103,33 @@ export class DiskFs {
     return resolved;
   }
 
-  /** Write `bytes` at `absPath`, creating parent dirs as needed. */
-  writeFile(absPath: string, bytes: Uint8Array): void {
+  /** Write `bytes` at `absPath`, creating parent dirs as needed. When
+   * `mode` is supplied, chmod after writing so the bits survive umask. */
+  writeFile(absPath: string, bytes: Uint8Array, mode?: number): void {
     mkdirSync(pathDirname(absPath), { recursive: true });
     writeFileSync(absPath, bytes);
+    if (mode !== undefined) chmodSync(absPath, mode);
   }
 
   /** Stream-copy `srcAbs` → `dstAbs` via `pipeline()`. Bytes traverse
    * Node's default ~64 KiB highWaterMark chunks; large files never
-   * sit fully in memory. */
-  async streamCopy(srcAbs: string, dstAbs: string): Promise<void> {
+   * sit fully in memory. When `mode` is supplied, chmod the
+   * destination after the copy completes so the bits survive umask. */
+  async streamCopy(srcAbs: string, dstAbs: string, mode?: number): Promise<void> {
     mkdirSync(pathDirname(dstAbs), { recursive: true });
     await pipeline(createReadStream(srcAbs), createWriteStream(dstAbs));
+    if (mode !== undefined) chmodSync(dstAbs, mode);
+  }
+
+  /** Permission bits (0o777-masked) of an existing path. */
+  modeOf(absPath: string): number {
+    return statSync(absPath).mode & 0o777;
+  }
+
+  /** Apply permission bits to an existing path. Best-effort on Windows
+   * (only the read-only bit is honored there). */
+  chmod(absPath: string, mode: number): void {
+    chmodSync(absPath, mode);
   }
 
   /** Read a single file's bytes from disk. */

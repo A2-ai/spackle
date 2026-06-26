@@ -9,7 +9,7 @@
 
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { chmodSync, existsSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -126,6 +126,31 @@ describe("DiskFs", () => {
     expect(existsSync(target)).toBe(true);
   });
 
+  const posix = process.platform !== "win32";
+
+  test.if(posix)("writeFile applies the supplied mode", () => {
+    const fs = new DiskFs({ workspaceRoot: root });
+    const target = join(root, "out", "exec.sh");
+    fs.writeFile(target, new TextEncoder().encode("#!/bin/sh\n"), 0o600);
+    expect(statSync(target).mode & 0o777).toBe(0o600);
+  });
+
+  test.if(posix)("chmod applies the supplied mode to an existing path", () => {
+    const fs = new DiskFs({ workspaceRoot: root });
+    const dir = join(root, "secret");
+    fs.ensureOutDir(dir);
+    fs.chmod(dir, 0o555);
+    expect(statSync(dir).mode & 0o777).toBe(0o555);
+  });
+
+  test.if(posix)("modeOf returns the masked permission bits of a path", async () => {
+    const fs = new DiskFs({ workspaceRoot: root });
+    const p = join(root, "m.txt");
+    await writeFile(p, "x");
+    chmodSync(p, 0o640);
+    expect(fs.modeOf(p)).toBe(0o640);
+  });
+
   test("streamCopy pipes bytes through createReadStream/createWriteStream", async () => {
     const fs = new DiskFs({ workspaceRoot: root });
     const srcPath = join(root, "src.bin");
@@ -138,11 +163,14 @@ describe("DiskFs", () => {
     for (let i = 0; i < payload.length; i++) payload[i] = i & 0xff;
     await writeFile(srcPath, payload);
 
-    await fs.streamCopy(srcPath, dstPath);
+    await fs.streamCopy(srcPath, dstPath, 0o755);
 
     const back = await readFile(dstPath);
     expect(back.byteLength).toBe(payload.byteLength);
     expect(new Uint8Array(back)).toEqual(payload);
+    if (process.platform !== "win32") {
+      expect(statSync(dstPath).mode & 0o777).toBe(0o755);
+    }
   });
 
   test("readFile returns the file's bytes", async () => {

@@ -14,6 +14,7 @@
 //     match native semantics
 
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { chmodSync, statSync } from "node:fs";
 import { cp, mkdtemp, realpath, rm, readFile, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -197,6 +198,65 @@ describe("spackle (DiskFs)", () => {
       expect(draftThrew).toBe(true);
     }
   });
+
+  // Windows can't represent unix exec/permission bits, so the mode
+  // assertions only run on POSIX.
+  test.if(process.platform !== "win32")(
+    "generate: preserves source permission bits onto output (files, templates, dirs)",
+    async () => {
+      const ws = await workspace("basic_project");
+      cleanup.push(ws.root);
+
+      // Distinctive, non-default modes so the assertions prove *exact*
+      // preservation rather than a coincidental umask default. `docs/`
+      // is a **read-only** (0o555) directory that still contains a
+      // file: it exercises the deferred-chmod path — applying 0o555 at
+      // creation time would block writing `static.md` into it. Chmod
+      // the contained file before the dir so the dir stays writable
+      // while we set up the source tree.
+      chmodSync(join(ws.projectDir, "README.md.j2"), 0o755); // template → exec output
+      chmodSync(join(ws.projectDir, "docs", "static.md"), 0o600); // static copy → 0o600
+      chmodSync(join(ws.projectDir, "src", "{{ filename }}.txt.j2"), 0o640); // template → 0o640
+      chmodSync(join(ws.projectDir, "docs"), 0o555); // read-only directory
+
+      const fs = new DiskFs({ workspaceRoot: ws.root });
+      try {
+        const res = await generate(
+          ws.projectDir,
+          ws.outDir,
+          { greeting: "hi", target: "world", filename: "notes" },
+          fs,
+        );
+        // Generation must SUCCEED even though `docs/` is read-only — the
+        // file inside it is written before the dir mode is applied.
+        expect(res.ok).toBe(true);
+
+        // The file landed inside the read-only dir with the right content.
+        const copied = await readFile(join(ws.outDir, "docs", "static.md"), "utf8");
+        expect(copied).toContain("{{ greeting }}");
+
+        const mode = (...seg: string[]) => statSync(join(ws.outDir, ...seg)).mode & 0o777;
+        // 1. exec bit preserved into rendered template output
+        expect(mode("README.md")).toBe(0o755);
+        // 2. static-copy preservation
+        expect(mode("docs", "static.md")).toBe(0o600);
+        // 3. rendered-template mode from the source template file
+        expect(mode("src", "notes.txt")).toBe(0o640);
+        // 4. read-only directory mode preserved (deepest-first chmod)
+        expect(mode("docs")).toBe(0o555);
+      } finally {
+        // Re-open the read-only dirs so afterEach's `rm -rf` can unlink
+        // their children (a 0o555 parent blocks removal). Wrapping the
+        // generate() call too means a mid-generation throw still leaves
+        // the source dir restorable; the output dir may not exist yet,
+        // so guard it.
+        const { existsSync } = await import("node:fs");
+        chmodSync(join(ws.projectDir, "docs"), 0o755);
+        const outDocs = join(ws.outDir, "docs");
+        if (existsSync(outDocs)) chmodSync(outDocs, 0o755);
+      }
+    },
+  );
 
   test("generate: ignore matches by basename at any depth, not just first segment", async () => {
     // Native `copy::copy_collect` matches the ignore list against
