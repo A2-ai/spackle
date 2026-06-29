@@ -1,13 +1,17 @@
 pre-commit:
   parallel: true
-  commands:
-    run-tests:
-      run: cargo test --workspace
-
-    run-clippy:
-      run: cargo clippy --workspace
-      # stage_fixed: true
-
-    ts-test:
+  jobs:
+    - name: ts test
       glob: "ts/**/*.{ts,tsx,json}"
       run: cd ts && bun test
+
+# Full-workspace cargo commands compile everything, so they're too slow for
+# every commit. Run them on push instead; CI re-runs both regardless.
+pre-push:
+  parallel: true
+  jobs:
+    - name: cargo test
+      run: cargo test --workspace
+
+    - name: cargo clippy
+      run: cargo clippy --workspace
