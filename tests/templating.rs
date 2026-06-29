@@ -401,21 +401,23 @@ fn error_undefined_variable_in_filename() {
 }
 
 #[test]
-#[ignore = "blocked on tera 2.0.0-alpha.2: load_from_glob panics on parse errors \
-(see tera.rs:74 `expect(\"to have a source\")`). Re-enable when upstream \
-returns Err instead of panicking."]
 fn error_malformed_syntax() {
-    // Malformed syntax should surface as a Tera load error from `fill`.
+    // Malformed syntax should surface as a per-file parse error from `fill`.
     let project = scaffold(&[("busted.j2", "{% if foo %}oops")]);
-    let err = template::fill(
+    let results = template::fill(
         &StdFs::new(),
         &project.path(),
         out_dir().path(),
         &HashMap::new(),
     )
-    .unwrap_err();
-    // We don't inspect the inner message — any tera::Error is correct here.
-    assert!(!format!("{err}").is_empty());
+    .expect("load should succeed");
+
+    let err = results.into_iter().next().unwrap().unwrap_err();
+    assert!(
+        matches!(err.kind, FileErrorKind::ErrorParsingTemplate(_)),
+        "expected ErrorParsingTemplate, got {:?}",
+        err.kind
+    );
 }
 
 #[test]
