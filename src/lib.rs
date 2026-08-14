@@ -175,11 +175,18 @@ impl Project {
         slot_data.insert("_output_name".to_string(), get_output_name(out_dir));
 
         // Copy all non-template files to the output directory
-        copy::copy(fs, project_dir, &out_dir, &config.ignore, &slot_data)
-            .map_err(GenerateError::CopyError)?;
+        copy::copy(
+            fs,
+            project_dir,
+            &out_dir,
+            &config.ignore,
+            &slot_data,
+            &config.slots,
+        )
+        .map_err(GenerateError::CopyError)?;
 
         // Render template files to the output directory
-        let results = template::fill(fs, project_dir, out_dir, &slot_data)
+        let results = template::fill(fs, project_dir, out_dir, &slot_data, &config.slots)
             .map_err(GenerateError::TemplateError)?;
 
         // Split vector into vector of rendered files and vector of errors
@@ -205,7 +212,14 @@ impl Project {
         data.insert("_project_name".to_string(), self.get_name());
         data.insert("_output_name".to_string(), get_output_name(out_dir));
 
-        copy::copy(fs, &self.path, out_dir, &self.config.ignore, &data)
+        copy::copy(
+            fs,
+            &self.path,
+            out_dir,
+            &self.config.ignore,
+            &data,
+            &self.config.slots,
+        )
     }
 
     pub fn render_templates<F: fs::FileSystem>(
@@ -218,7 +232,7 @@ impl Project {
         data.insert("_project_name".to_string(), self.get_name());
         data.insert("_output_name".to_string(), get_output_name(out_dir));
 
-        template::fill(fs, &self.path, out_dir, &data)
+        template::fill(fs, &self.path, out_dir, &data, &self.config.slots)
     }
 
     /// Render a single-file (`.j2t`) project into a string.

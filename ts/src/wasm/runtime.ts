@@ -8,6 +8,7 @@ import type {
   PlanHooksResponse,
   RenderFileResponse,
   RenderPathResponse,
+  Slot,
   SlotData,
   ValidationResponse,
 } from "./types.ts";
@@ -32,9 +33,14 @@ export interface RawWasmExports {
   validateSlotData(projectBundle: unknown, projectDir: string, slotDataJson: string): string;
   /** Returns `{ bytes, diagnostics }` as a `JsValue` object (not a
    * JSON string); the typed wrapper narrows it. */
-  renderFile(templateBundle: unknown, targetPath: string, slotDataJson: string): unknown;
+  renderFile(
+    templateBundle: unknown,
+    targetPath: string,
+    slotDataJson: string,
+    slotsJson?: string | null,
+  ): unknown;
   /** Returns `{ path, diagnostics }` as a `JsValue` object. */
-  renderPath(pathTemplate: string, slotDataJson: string): unknown;
+  renderPath(pathTemplate: string, slotDataJson: string, slotsJson?: string | null): unknown;
   planHooks(
     projectBundle: unknown,
     projectDir: string,
@@ -60,11 +66,16 @@ export interface SpackleWasm {
    * against the bundle. Static asset bytes must stay out of the
    * bundle. The bundle paths and `targetPath` use the same key
    * space. */
-  renderFile(templateBundle: Bundle, targetPath: string, slotData: SlotData): RenderFileResponse;
+  renderFile(
+    templateBundle: Bundle,
+    targetPath: string,
+    slotData: SlotData,
+    slots?: Slot[],
+  ): RenderFileResponse;
   /** Render a single path template (e.g. `"src/{{ project }}.txt"`).
    * On error, `path` falls back to the input — branch on
    * `diagnostics`. */
-  renderPath(pathTemplate: string, slotData: SlotData): RenderPathResponse;
+  renderPath(pathTemplate: string, slotData: SlotData, slots?: Slot[]): RenderPathResponse;
   planHooks(
     projectBundle: Bundle,
     projectDir: string,
@@ -129,18 +140,23 @@ async function initialize(
         raw.validateSlotData(projectBundle, projectDir, JSON.stringify(slotData)),
       ) as ValidationResponse;
     },
-    renderFile(templateBundle, targetPath, slotData) {
+    renderFile(templateBundle, targetPath, slotData, slots) {
       // render_file returns a JsValue object, not a JSON string.
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
       return raw.renderFile(
         templateBundle,
         targetPath,
         JSON.stringify(slotData),
+        slots === undefined ? undefined : JSON.stringify(slots),
       ) as RenderFileResponse;
     },
-    renderPath(pathTemplate, slotData) {
+    renderPath(pathTemplate, slotData, slots) {
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
-      return raw.renderPath(pathTemplate, JSON.stringify(slotData)) as RenderPathResponse;
+      return raw.renderPath(
+        pathTemplate,
+        JSON.stringify(slotData),
+        slots === undefined ? undefined : JSON.stringify(slots),
+      ) as RenderPathResponse;
     },
     planHooks(projectBundle, projectDir, outDir, data, hookRan) {
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion

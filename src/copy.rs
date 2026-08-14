@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use tera::{Context, Tera};
+use tera::Tera;
 
 use crate::fs::{self as fsmod, FileSystem, FileType};
 use crate::slot::Slot;
@@ -50,16 +50,9 @@ pub fn validate_paths<F: FileSystem>(
     skip: &Vec<String>,
     slots: &[Slot],
 ) -> Result<Vec<Error>, Error> {
-    let mut context_data: HashMap<String, String> = slots
-        .iter()
-        .map(|s| (s.key.clone(), String::new()))
-        .collect();
-    context_data.insert("_project_name".to_string(), String::new());
-    context_data.insert("_output_name".to_string(), String::new());
-    let context = Context::from_serialize(&context_data).map_err(|e| Error {
-        source: e.into(),
-        path: src.to_path_buf(),
-    })?;
+    let mut context = crate::slot::placeholder_context(slots);
+    context.insert("_project_name".to_string(), "");
+    context.insert("_output_name".to_string(), "");
 
     let entries = fsmod::walk(fs, src).map_err(|e| Error {
         source: Box::new(e),
@@ -122,8 +115,9 @@ pub fn copy<F: FileSystem>(
     dest: &Path,
     skip: &Vec<String>,
     data: &HashMap<String, String>,
+    slots: &[Slot],
 ) -> Result<CopyResult, Error> {
-    let report = copy_collect(fs, src, dest, skip, data)?;
+    let report = copy_collect(fs, src, dest, skip, data, slots)?;
     if let Some(first) = report.errors.into_iter().next() {
         return Err(first);
     }
@@ -143,6 +137,7 @@ pub fn copy_collect<F: FileSystem>(
     dest: &Path,
     skip: &Vec<String>,
     data: &HashMap<String, String>,
+    slots: &[Slot],
 ) -> Result<CopyReport, Error> {
     let mut copied_count = 0;
     let mut skipped_count = 0;
@@ -202,16 +197,7 @@ pub fn copy_collect<F: FileSystem>(
         let src_path = src.join(&rel_path);
         let dst_path_maybe_template = dest.join(&rel_path);
 
-        let context = match Context::from_serialize(data) {
-            Ok(c) => c,
-            Err(e) => {
-                errors.push(Error {
-                    source: e.into(),
-                    path: src_path.clone(),
-                });
-                continue;
-            }
-        };
+        let context = crate::slot::context_from_data(data, slots);
         let dst_path: PathBuf =
             match Tera::one_off(&dst_path_maybe_template.to_string_lossy(), &context, false) {
                 Ok(path) => path.into(),
@@ -306,6 +292,7 @@ mod tests {
             &dst_dir,
             &vec!["file-0.txt".to_string()],
             &HashMap::from([("foo".to_string(), "bar".to_string())]),
+            &[],
         )
         .unwrap();
 
@@ -344,6 +331,7 @@ mod tests {
             &dst_dir,
             &vec!["file-0.txt".to_string()],
             &HashMap::from([("foo".to_string(), "bar".to_string())]),
+            &[],
         )
         .unwrap();
 
@@ -385,6 +373,7 @@ mod tests {
                 ("template_name".to_string(), "template".to_string()),
                 ("_output_name".to_string(), "foo".to_string()),
             ]),
+            &[],
         )
         .unwrap();
 

@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use tera::{Context, Tera};
+use tera::Tera;
 use thiserror::Error;
 
 use super::slot::Slot;
@@ -100,13 +100,7 @@ pub fn validate_in_memory(
         })
         .collect();
 
-    let mut context = Context::from_serialize(
-        &slots
-            .iter()
-            .map(|s| (s.key.clone(), ""))
-            .collect::<HashMap<_, _>>(),
-    )
-    .map_err(ValidateError::TeraError)?;
+    let mut context = super::slot::placeholder_context(slots);
     context.insert("_project_name".to_string(), "");
     context.insert("_output_name".to_string(), "");
 
@@ -160,6 +154,7 @@ pub fn render_one_from_memory(
     templates: &HashMap<String, String>,
     target_path: &str,
     data: &HashMap<String, String>,
+    slots: &[Slot],
 ) -> Result<String, FileError> {
     let (tera, mut registry_errs) = build_resilient_registry(templates);
     if let Some(e) = registry_errs.remove(target_path) {
@@ -168,10 +163,7 @@ pub fn render_one_from_memory(
             file: target_path.to_string(),
         });
     }
-    let context = Context::from_serialize(data).map_err(|e| FileError {
-        kind: FileErrorKind::ErrorRenderingContents(e),
-        file: target_path.to_string(),
-    })?;
+    let context = super::slot::context_from_data(data, slots);
     tera.render(target_path, &context).map_err(|e| FileError {
         kind: FileErrorKind::ErrorRenderingContents(e),
         file: target_path.to_string(),
@@ -185,6 +177,7 @@ pub fn render_one_from_memory(
 pub fn render_in_memory(
     templates: &HashMap<String, String>,
     data: &HashMap<String, String>,
+    slots: &[Slot],
 ) -> Result<Vec<Result<RenderedFile, FileError>>, tera::Error> {
     let (tera, registry_errs) = build_resilient_registry(templates);
     let parse_failures: Vec<FileError> = registry_errs
@@ -194,7 +187,7 @@ pub fn render_in_memory(
             file,
         })
         .collect();
-    let context = Context::from_serialize(data)?;
+    let context = super::slot::context_from_data(data, slots);
 
     let template_names = tera.get_template_names();
     let rendered = template_names.into_iter().map(|template_name| {
@@ -325,6 +318,7 @@ pub fn fill<F: FileSystem>(
     project_dir: &Path,
     out_dir: &Path,
     data: &HashMap<String, String>,
+    slots: &[Slot],
 ) -> Result<Vec<Result<RenderedFile, FileError>>, tera::Error> {
     // Collect templates via the fs trait, render in memory (per-file —
     // no accumulating the whole project's output bytes), then write each
@@ -332,7 +326,7 @@ pub fn fill<F: FileSystem>(
     let templates = collect_templates(fs, project_dir)
         .map_err(|e| tera::Error::message(format!("failed to walk project dir: {}", e)))?;
 
-    let rendered = render_in_memory(&templates, data)?;
+    let rendered = render_in_memory(&templates, data, slots)?;
 
     let mut out = Vec::with_capacity(rendered.len());
     for result in rendered {
@@ -499,7 +493,7 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect();
 
-            let results = render_in_memory(&templates, &data).expect(&format!(
+            let results = render_in_memory(&templates, &data, &[]).expect(&format!(
                 "case {}: render_in_memory should not return Err",
                 c.name
             ));
@@ -543,7 +537,7 @@ mod tests {
         );
         templates.insert("partial.j2".to_string(), "world".to_string());
         let data: HashMap<String, String> = HashMap::new();
-        let out = render_one_from_memory(&templates, "main.j2", &data).expect("render ok");
+        let out = render_one_from_memory(&templates, "main.j2", &data, &[]).expect("render ok");
         assert_eq!(out, "hello world");
     }
 
@@ -560,7 +554,7 @@ mod tests {
         );
         let mut data: HashMap<String, String> = HashMap::new();
         data.insert("who".to_string(), "world".to_string());
-        let out = render_one_from_memory(&templates, "child.j2", &data).expect("render ok");
+        let out = render_one_from_memory(&templates, "child.j2", &data, &[]).expect("render ok");
         assert_eq!(out, "BEGIN hi world END");
     }
 
@@ -575,7 +569,7 @@ mod tests {
             "{{ undefined_var }}".to_string(),
         );
         let data: HashMap<String, String> = HashMap::new();
-        let out = render_one_from_memory(&templates, "target.j2", &data).expect("render ok");
+        let out = render_one_from_memory(&templates, "target.j2", &data, &[]).expect("render ok");
         assert_eq!(out, "ok");
     }
 
@@ -651,7 +645,7 @@ mod tests {
             r#"{% include "nope.j2" %}"#.to_string(),
         );
         let data: HashMap<String, String> = HashMap::new();
-        let results = render_in_memory(&templates, &data).expect("global render ok");
+        let results = render_in_memory(&templates, &data, &[]).expect("global render ok");
         let oks: Vec<String> = results
             .iter()
             .filter_map(|r| r.as_ref().ok())
@@ -706,8 +700,8 @@ mod tests {
             r#"{% include "nope.j2" %}"#.to_string(),
         );
         let data: HashMap<String, String> = HashMap::new();
-        let out =
-            render_one_from_memory(&templates, "target.j2", &data).expect("target should render");
+        let out = render_one_from_memory(&templates, "target.j2", &data, &[])
+            .expect("target should render");
         assert_eq!(out, "ok");
     }
 
@@ -721,7 +715,7 @@ mod tests {
             r#"{% include "nope.j2" %}"#.to_string(),
         );
         let data: HashMap<String, String> = HashMap::new();
-        let err = render_one_from_memory(&templates, "target.j2", &data)
+        let err = render_one_from_memory(&templates, "target.j2", &data, &[])
             .expect_err("missing include should error");
         assert_eq!(err.file, "target.j2");
         assert!(matches!(err.kind, FileErrorKind::ErrorParsingTemplate(_)));
@@ -732,7 +726,8 @@ mod tests {
         let mut templates = HashMap::new();
         templates.insert("target.j2".to_string(), "{% if %}".to_string());
         let data: HashMap<String, String> = HashMap::new();
-        let err = render_one_from_memory(&templates, "target.j2", &data).expect_err("parse err");
+        let err =
+            render_one_from_memory(&templates, "target.j2", &data, &[]).expect_err("parse err");
         assert_eq!(err.file, "target.j2");
         assert!(matches!(err.kind, FileErrorKind::ErrorParsingTemplate(_)));
     }
@@ -804,5 +799,24 @@ mod tests {
                 result,
             );
         }
+    }
+
+    #[test]
+    fn validate_tolerates_a_comparison_on_a_declared_number() {
+        // The static checks run before any value is supplied. Against an
+        // empty-string placeholder this template looks like a type error,
+        // so the placeholder has to carry the declared type.
+        let mut templates = HashMap::new();
+        templates.insert(
+            "out.j2".to_string(),
+            "{% if count > 2 %}many{% endif %}".to_string(),
+        );
+        let slots = vec![super::super::slot::Slot {
+            key: "count".to_string(),
+            r#type: super::super::slot::SlotType::Number,
+            ..Default::default()
+        }];
+
+        assert!(validate_in_memory(&templates, &slots).is_ok());
     }
 }

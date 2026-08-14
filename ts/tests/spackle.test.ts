@@ -610,3 +610,54 @@ describe("checkBundle (in-memory)", () => {
     expect(res.config?.name).toBe("x");
   });
 });
+
+describe("declared slot types reach the template", () => {
+  const cleanup: string[] = [];
+  beforeEach(() => void (cleanup.length = 0));
+  afterEach(async () => {
+    await Promise.all(cleanup.map((p) => rm(p, { recursive: true, force: true })));
+  });
+
+  async function renderTyped(slotData: Record<string, string>) {
+    const ws = await workspace("typed_slots_render");
+    cleanup.push(ws.root);
+    const fs = new DiskFs({ workspaceRoot: ws.root });
+    const res = await generate(ws.projectDir, ws.outDir, slotData, fs);
+    expect(res.ok).toBe(true);
+    return readFile(join(ws.outDir, "SKILL.md"), "utf8");
+  }
+
+  test("a false boolean omits its block", async () => {
+    const out = await renderTyped({ validated: "false", reviewers: "1" });
+    expect(out).not.toContain("do a second adversarial review");
+  });
+
+  test("a true boolean includes its block", async () => {
+    const out = await renderTyped({ validated: "true", reviewers: "1" });
+    expect(out).toContain("do a second adversarial review");
+  });
+
+  test("a number compares numerically rather than as text", async () => {
+    expect(await renderTyped({ validated: "false", reviewers: "3" })).toContain(
+      "collect every sign-off",
+    );
+    expect(await renderTyped({ validated: "false", reviewers: "1" })).not.toContain(
+      "collect every sign-off",
+    );
+  });
+
+  test("interpolated values print exactly as before", async () => {
+    const out = await renderTyped({ validated: "false", reviewers: "3" });
+    expect(out).toContain("reviewers=3 validated=false");
+  });
+
+  test("check accepts a numeric comparison before any value is supplied", async () => {
+    // The static check renders against placeholders. Those carry the
+    // declared type too, so a correct template isn't reported as broken.
+    const ws = await workspace("typed_slots_render");
+    cleanup.push(ws.root);
+    const fs = new DiskFs({ workspaceRoot: ws.root });
+    const res = await check(ws.projectDir, fs);
+    expect(res.diagnostics).toEqual([]);
+  });
+});

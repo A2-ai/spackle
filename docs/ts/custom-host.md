@@ -86,6 +86,10 @@ const data = {
     _project_name: checkRes.config?.name ?? "project",
     _output_name: "abc-123",
 };
+// Slot declarations decide the type each value has in the template.
+// Omit them and every value is a string, so `{% if flag %}` is true
+// even for "false".
+const slots = checkRes.config?.slots ?? [];
 const ignore = new Set(checkRes.config?.ignore ?? []);
 const segments = (rel: string) => rel.split("/");
 const isIgnored = (rel: string) => segments(rel).some((s) => ignore.has(s));
@@ -104,6 +108,11 @@ const hasConfigAncestor = (rel: string) => {
     return false;
 };
 
+// `renderFile` renders one target out of a registry of every template
+// body, so `{% include %}` / `{% extends %}` resolve across the
+// project. Static assets stay out of it.
+const templateSources = bundle.filter((e) => /\.(j2|tera)$/.test(e.path));
+
 const outFiles: { path: string; bytes: Uint8Array }[] = [];
 const outDirs = new Set<string>();
 for (const entry of bundle) {
@@ -120,12 +129,12 @@ for (const entry of bundle) {
         if (hasConfigAncestor(rel)) continue;
     }
 
-    const pathRes = wasm.renderPath(rel, data);
+    const pathRes = wasm.renderPath(rel, data, slots);
     if (pathRes.diagnostics.length) throw new Error(pathRes.diagnostics[0].message);
     const renderedRel = pathRes.path;
 
     if (isTemplate) {
-        const r = wasm.renderFile(entry.bytes, data, rel);
+        const r = wasm.renderFile(templateSources, entry.path, data, slots);
         if (r.diagnostics.length) throw new Error(r.diagnostics[0].message);
         outFiles.push({ path: renderedRel.replace(/\.(j2|tera)$/, ""), bytes: r.bytes });
     } else {

@@ -153,13 +153,14 @@ impl Hook {
     pub fn evaluate_conditional(
         &self,
         context: &HashMap<String, String>,
+        slots: &[Slot],
     ) -> Result<bool, ConditionalError> {
         let conditional = match &self.r#if {
             Some(conditional) => conditional,
             None => return Ok(true),
         };
 
-        let context = Context::from_serialize(context).map_err(ConditionalError::InvalidContext)?;
+        let context = crate::slot::context_from_data(context, slots);
 
         let condition_str = Tera::one_off(conditional, &context, false)
             .map_err(ConditionalError::InvalidTemplate)?;
@@ -564,7 +565,7 @@ pub fn evaluate_hook_plan(
 
         // Evaluate conditional using the running context (includes
         // hook_ran_* for prior hooks).
-        match hook.evaluate_conditional(&running_data) {
+        match hook.evaluate_conditional(&running_data, slots) {
             Ok(false) => {
                 results.push(HookPlanEntry {
                     key: hook.key.clone(),
@@ -592,19 +593,7 @@ pub fn evaluate_hook_plan(
         // semantics: templating failure is a hard error — the hook is NOT
         // runnable, and hook_ran_* is NOT flipped (downstream conditionals
         // see false).
-        let context = match Context::from_serialize(&running_data) {
-            Ok(c) => c,
-            Err(e) => {
-                results.push(HookPlanEntry {
-                    key: hook.key.clone(),
-                    command: hook.command.display_argv(),
-                    should_run: false,
-                    skip_reason: Some("template_error".to_string()),
-                    template_errors: vec![format!("context error: {}", e)],
-                });
-                continue;
-            }
-        };
+        let context = crate::slot::context_from_data(&running_data, slots);
 
         let argv = match render_command(&hook.command, &context) {
             Ok(argv) => argv,
@@ -707,8 +696,7 @@ pub fn run_hooks_stream(
     // hook_ran_* state.
     let mut commands = Vec::new();
     for hook in queued_hooks {
-        let context = Context::from_serialize(data)
-            .map_err(|e| Error::ErrorRenderingTemplate(hook.clone(), e))?;
+        let context = crate::slot::context_from_data(data, slots);
 
         let argv = render_command(&hook.command, &context)
             .map_err(|e| Error::ErrorRenderingTemplate(hook.clone(), e))?;
@@ -738,6 +726,9 @@ pub fn run_hooks_stream(
     }
 
     let slot_data_owned = data.clone();
+    // Owned because the stream outlives this call and re-evaluates
+    // conditionals, which needs the slot types.
+    let slots_owned = slots.clone();
     let hook_keys = hooks.iter().map(|h| h.key.clone()).collect::<Vec<String>>();
 
     Ok(stream! {
@@ -764,7 +755,7 @@ pub fn run_hooks_stream(
                 cond_context.insert(format!("hook_ran_{}", hook), "true".to_string());
             }
 
-            let condition = match hook.evaluate_conditional(&cond_context) {
+            let condition = match hook.evaluate_conditional(&cond_context, &slots_owned) {
                 Ok(condition) => condition,
                 Err(e) => {
                     yield HookStreamResult::HookDone(HookResult {

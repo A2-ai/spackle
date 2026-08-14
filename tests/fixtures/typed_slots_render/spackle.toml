@@ -1,0 +1,11 @@
+name = "typed-slots-render"
+
+[[slots]]
+key = "validated"
+type = "Boolean"
+default = "false"
+
+[[slots]]
+key = "reviewers"
+type = "Number"
+default = "1"
