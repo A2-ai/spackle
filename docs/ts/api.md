@@ -162,6 +162,8 @@ Empty-directory parity: native `spackle generate` calls `create_dir_all` for eve
 
 **Memory.** Static files stream-copy through `pipeline(createReadStream, createWriteStream)` — peak memory per static is one ~64 KiB Node `highWaterMark` chunk regardless of file size. GB-scale assets are fine. Templated bodies still buffer fully in memory (Tera produces a `String`), but typical templates are KB-scale.
 
+**Slot types in templates.** `generate` already reads the project config, so it passes the slot declarations to every `renderFile` / `renderPath` call. A `Boolean` slot is a boolean inside the template and a `Number` slot is a number, so `{% if flag %}` and `{% if count > 2 %}` behave as written. `slotData` stays `Record<string, string>`.
+
 **Template semantics.** `renderFile` builds a Tera instance per call from a template-source registry — every `.j2` / `.tera` body the host walked — and renders only the requested target. Tera 2's cross-template tags (`{% include %}` and `{% extends %}`) resolve across the project. Tera 2 does not support `{% macro %}` / `{% import %}`. Static assets never enter the registry; only template bodies cross the wasm boundary.
 
 ## `planHooks(projectDir, outDir, data, fs, opts?)`
@@ -305,6 +307,15 @@ function planHooksBundle(
 ```
 
 No bundle-input variant of `generate` / `render` ships — those are disk-walking orchestrators. Browser / custom-source hosts that need bundle-input generation compose the per-file primitives themselves: read the bundle, call `wasm.renderFile` / `wasm.renderPath` per entry via `loadSpackleWasm()`, and assemble results in whatever shape suits them.
+
+Pass the config's `slots` to those two primitives — they take it as an optional trailing argument:
+
+```ts
+wasm.renderFile(bundle, targetPath, slotData, config.slots);
+wasm.renderPath(pathTemplate, slotData, config.slots);
+```
+
+Without it every value is a string, so a `Boolean` slot is the truthy text `"false"` and a `Number` slot cannot be compared numerically. `checkBundle` returns the `config`, so the declarations are already available.
 
 Pair with `MemoryFs.toBundle()` / `MemoryFs.fromBundle()` to inspect inputs / outputs in-memory.
 

@@ -106,6 +106,18 @@ fn parse_slot_data(slot_data_json: &str) -> Result<HashMap<String, String>, Stri
     serde_json::from_str(slot_data_json).map_err(|e| format!("invalid slot_data_json: {}", e))
 }
 
+/// Slot declarations, so a render can convert each value to its declared
+/// type.
+///
+/// Optional, because the host may not have parsed the config yet. Without
+/// them every value stays text, which is what these primitives did before.
+fn parse_slots(slots_json: Option<String>) -> Result<Vec<spackle::slot::Slot>, String> {
+    match slots_json {
+        None => Ok(Vec::new()),
+        Some(raw) => serde_json::from_str(&raw).map_err(|e| format!("invalid slots_json: {}", e)),
+    }
+}
+
 // --- exports ---
 
 /// Run every static project check against `project_bundle`. Always
@@ -193,7 +205,12 @@ pub fn validate_slot_data(
 /// `render_file` on the body, then strip the trailing extension
 /// host-side.
 #[wasm_bindgen]
-pub fn render_file(template_bundle: JsValue, target_path: &str, slot_data_json: &str) -> JsValue {
+pub fn render_file(
+    template_bundle: JsValue,
+    target_path: &str,
+    slot_data_json: &str,
+    slots_json: Option<String>,
+) -> JsValue {
     let entries = match decode_bundle(template_bundle) {
         Ok(e) => e,
         Err(msg) => return diag_response_file(target_path, msg),
@@ -218,8 +235,12 @@ pub fn render_file(template_bundle: JsValue, target_path: &str, slot_data_json: 
         Ok(d) => d,
         Err(e) => return diag_response_file(target_path, e),
     };
+    let slots = match parse_slots(slots_json) {
+        Ok(s) => s,
+        Err(e) => return diag_response_file(target_path, e),
+    };
 
-    match spackle::template::render_one_from_memory(&templates, target_path, &slot_data) {
+    match spackle::template::render_one_from_memory(&templates, target_path, &slot_data, &slots) {
         Ok(rendered) => RenderFileResponse {
             bytes: rendered.into_bytes(),
             diagnostics: Vec::new(),
@@ -279,16 +300,21 @@ fn diag_response_file(target_path: &str, message: String) -> JsValue {
 /// diagnostic to a specific path in its UI; callers branch on
 /// `diagnostics`, not on `path` content.
 #[wasm_bindgen]
-pub fn render_path(path_template: &str, slot_data_json: &str) -> JsValue {
+pub fn render_path(
+    path_template: &str,
+    slot_data_json: &str,
+    slots_json: Option<String>,
+) -> JsValue {
     let slot_data = match parse_slot_data(slot_data_json) {
         Ok(d) => d,
         Err(e) => return diag_response_path(path_template, e),
     };
-
-    let context = match tera::Context::from_serialize(&slot_data) {
-        Ok(c) => c,
-        Err(e) => return diag_response_path(path_template, format!("context error: {}", e)),
+    let slots = match parse_slots(slots_json) {
+        Ok(s) => s,
+        Err(e) => return diag_response_path(path_template, e),
     };
+
+    let context = spackle::slot::context_from_data(&slot_data, &slots);
 
     match tera::Tera::one_off(path_template, &context, false) {
         Ok(rendered) => RenderPathResponse {
@@ -501,7 +527,6 @@ fn plan_hooks_native_parity(
 ) -> Vec<spackle::hook::HookPlanEntry> {
     use spackle::hook::HookPlanEntry;
     use spackle::needs::Needy;
-    use tera::Context;
 
     let items: Vec<&dyn Needy> = {
         let mut v: Vec<&dyn Needy> = slots.iter().map(|s| s as &dyn Needy).collect();
@@ -549,19 +574,7 @@ fn plan_hooks_native_parity(
         // Render the command into its full `bash -c` argv, then run the
         // denylist on argv[2] (the `-c` body). Mirrors
         // `spackle::hook::evaluate_hook_plan`.
-        let context = match Context::from_serialize(&running) {
-            Ok(c) => c,
-            Err(e) => {
-                results.push(HookPlanEntry {
-                    key: hook.key.clone(),
-                    command: hook.command.display_argv(),
-                    should_run: false,
-                    skip_reason: Some("template_error".to_string()),
-                    template_errors: vec![format!("context error: {}", e)],
-                });
-                continue;
-            }
-        };
+        let context = spackle::slot::context_from_data(&running, slots);
 
         let argv = match spackle::hook::render_command(&hook.command, &context) {
             Ok(argv) => argv,
@@ -594,7 +607,7 @@ fn plan_hooks_native_parity(
         // A hook whose command templates cleanly but whose `if` is false
         // is a legitimate skip. A hook whose command template breaks is
         // a hard error regardless of conditional.
-        match hook.evaluate_conditional(&running) {
+        match hook.evaluate_conditional(&running, slots) {
             Ok(false) => {
                 results.push(HookPlanEntry {
                     key: hook.key.clone(),

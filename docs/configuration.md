@@ -72,6 +72,29 @@ The data type of the slot. Can be one of the following:
 type = "String"
 ```
 
+The type is enforced when a value is supplied, and it is also the type the
+value has inside a template. A `Boolean` slot is a boolean and a `Number` slot
+is a number, so these work:
+
+```jinja
+{% if validated %}do a second adversarial review{% endif %}
+{% if reviewers > 1 %}collect every sign-off{% endif %}
+```
+
+Values still cross the API as strings (`"true"`, `"3"`), and spackle converts
+them using the declared type. A value that doesn't parse stays a string rather
+than failing the render; slot validation rejects it earlier. Printed output is
+unchanged: `{{ reviewers }}` prints `3`, not `3.0`.
+
+Slots with no declaration in `spackle.toml` are strings, as is any `String`
+slot.
+
+A template written against the older behaviour, where every value was text,
+may need one edit: `{% if validated == "true" %}` no longer matches, because
+`validated` is a boolean rather than the string `"true"`. Use
+`{% if validated %}` instead. The other common workaround, `{{ count | int }}`,
+still works.
+
 ### needs `string[]`
 
 The slots that the slot depends on.

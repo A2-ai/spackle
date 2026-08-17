@@ -66,7 +66,14 @@ pub fn render<F: FileSystem>(
     // copy_collect's outer `Err` is reserved for non-recoverable
     // preconditions (no writable dest root, no readable src); per-entry
     // failures land in `report.errors` instead.
-    let copy_report = match copy::copy_collect(fs, project_dir, out_dir, &config.ignore, &data) {
+    let copy_report = match copy::copy_collect(
+        fs,
+        project_dir,
+        out_dir,
+        &config.ignore,
+        &data,
+        &config.slots,
+    ) {
         Ok(r) => r,
         Err(fatal) => {
             diagnostics.push(diagnostic::from_copy_error(&fatal));
@@ -83,7 +90,7 @@ pub fn render<F: FileSystem>(
     }
 
     let mut rendered: Vec<template::RenderedFile> = Vec::new();
-    match template::fill(fs, project_dir, out_dir, &data) {
+    match template::fill(fs, project_dir, out_dir, &data, &config.slots) {
         Ok(results) => {
             for r in results {
                 match r {

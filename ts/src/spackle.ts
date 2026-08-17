@@ -377,6 +377,10 @@ export async function generate(
   const outputName = get_output_name(outDir, opts.names?.outputName);
   const data = injectSpecials(slotData, projectName, outputName);
   const ignore = checkRes.config?.ignore ?? [];
+  // The renderer needs the declarations to convert a `Boolean` / `Number`
+  // value to its declared type. Without them `{% if flag %}` is true
+  // whatever `flag` holds.
+  const slots = checkRes.config?.slots ?? [];
 
   // Build the template-source registry once; the wasm renderFile call
   // consumes it for every target template so cross-template tags
@@ -405,7 +409,7 @@ export async function generate(
       if (hasConfigFileAncestor(entry.relPath)) continue;
     }
 
-    const pathRes = wasm.renderPath(entry.relPath, data);
+    const pathRes = wasm.renderPath(entry.relPath, data, slots);
     if (pathRes.diagnostics.length > 0) {
       const d = pathRes.diagnostics[0];
       if (d) return { ok: false, error: `${d.path ?? entry.relPath}: ${d.message}` };
@@ -427,7 +431,7 @@ export async function generate(
     }
 
     if (isTemplate) {
-      const renderRes = wasm.renderFile(templateBundle, entry.relPath, data);
+      const renderRes = wasm.renderFile(templateBundle, entry.relPath, data, slots);
       if (renderRes.diagnostics.length > 0) {
         const d = renderRes.diagnostics[0];
         if (d) return { ok: false, error: `${d.path ?? entry.relPath}: ${d.message}` };
@@ -511,6 +515,9 @@ export async function render(
   const outputName = get_output_name(outDir, opts.names?.outputName);
   const data = injectSpecials(slotData, projectName, outputName);
   const ignore = checkRes.config.ignore ?? [];
+  // See `generate`: without the declarations every value reaches Tera as
+  // text.
+  const slots = checkRes.config.slots ?? [];
 
   const templateBundle = buildTemplateBundle(absProject);
 
@@ -525,7 +532,7 @@ export async function render(
       if (hasConfigFileAncestor(entry.relPath)) continue;
     }
 
-    const pathRes = wasm.renderPath(entry.relPath, data);
+    const pathRes = wasm.renderPath(entry.relPath, data, slots);
     diagnostics.push(...pathRes.diagnostics);
     // On render_name failure, `path` falls back to the input so the
     // walk continues against a stable path.
@@ -537,7 +544,7 @@ export async function render(
     }
 
     if (isTemplate) {
-      const renderRes = wasm.renderFile(templateBundle, entry.relPath, data);
+      const renderRes = wasm.renderFile(templateBundle, entry.relPath, data, slots);
       diagnostics.push(...renderRes.diagnostics);
       if (renderRes.diagnostics.length === 0) {
         fileMap.set(stripTemplateExt(renderedRel), renderRes.bytes);

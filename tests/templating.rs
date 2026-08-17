@@ -29,9 +29,19 @@ fn data(pairs: &[(&str, &str)]) -> HashMap<String, String> {
 /// Run `template::fill` over a scaffolded project and return the rendered
 /// files collected into a sorted `Vec<(relative_path, contents)>`.
 fn fill_all(project: &common::Scaffold, data: &HashMap<String, String>) -> Vec<(String, String)> {
+    fill_all_typed(project, data, &[])
+}
+
+/// `fill_all`, with the slot declarations a real render would carry. They
+/// decide whether a value reaches Tera as text or as its declared type.
+fn fill_all_typed(
+    project: &common::Scaffold,
+    data: &HashMap<String, String>,
+    slots: &[spackle::slot::Slot],
+) -> Vec<(String, String)> {
     let out = out_dir();
     let fs = StdFs::new();
-    let results = template::fill(&fs, &project.path(), out.path(), data)
+    let results = template::fill(&fs, &project.path(), out.path(), data, slots)
         .expect("fill should load templates")
         .into_iter()
         .map(|r| r.expect("render should succeed"))
@@ -371,8 +381,14 @@ fn copy_respects_ignore_patterns() {
 fn error_undefined_variable_in_content() {
     let project = scaffold(&[("bad.j2", "{{ missing_slot }}")]);
     let out = out_dir();
-    let results = template::fill(&StdFs::new(), &project.path(), out.path(), &HashMap::new())
-        .expect("load should succeed");
+    let results = template::fill(
+        &StdFs::new(),
+        &project.path(),
+        out.path(),
+        &HashMap::new(),
+        &[],
+    )
+    .expect("load should succeed");
 
     assert_eq!(results.len(), 1);
     let err = results.into_iter().next().unwrap().unwrap_err();
@@ -389,8 +405,14 @@ fn error_undefined_variable_in_filename() {
     // so rendering the name should fail.
     let project = scaffold(&[("{{ missing_name }}.j2", "body")]);
     let out = out_dir();
-    let results = template::fill(&StdFs::new(), &project.path(), out.path(), &HashMap::new())
-        .expect("load should succeed");
+    let results = template::fill(
+        &StdFs::new(),
+        &project.path(),
+        out.path(),
+        &HashMap::new(),
+        &[],
+    )
+    .expect("load should succeed");
 
     let err = results.into_iter().next().unwrap().unwrap_err();
     assert!(
@@ -409,6 +431,7 @@ fn error_malformed_syntax() {
         &project.path(),
         out_dir().path(),
         &HashMap::new(),
+        &[],
     )
     .expect("load should succeed");
 
@@ -535,4 +558,86 @@ fn generate_fails_when_out_dir_exists() {
         .generate(&StdFs::new(), &project.path(), &dst, &HashMap::new())
         .unwrap_err();
     assert!(matches!(err, GenerateError::AlreadyExists(_)));
+}
+
+// ---------------------------------------------------------------------------
+// declared slot types reach the template
+// ---------------------------------------------------------------------------
+
+fn typed_slot(key: &str, slot_type: spackle::slot::SlotType) -> spackle::slot::Slot {
+    spackle::slot::Slot {
+        key: key.to_string(),
+        r#type: slot_type,
+        ..Default::default()
+    }
+}
+
+/// A template that includes a block only when a boolean is true. Without
+/// the declared type the value arrives as the text "false", which is
+/// truthy, so the block renders at every value.
+#[test]
+fn boolean_slot_gates_a_block() {
+    use spackle::slot::SlotType;
+
+    let project = scaffold(&[(
+        "SKILL.md.j2",
+        "review\n{% if validated %}second pass{% endif %}",
+    )]);
+    let slots = vec![typed_slot("validated", SlotType::Boolean)];
+
+    let off = fill_all_typed(&project, &data(&[("validated", "false")]), &slots);
+    assert_eq!(off[0].1, "review\n");
+
+    let on = fill_all_typed(&project, &data(&[("validated", "true")]), &slots);
+    assert_eq!(on[0].1, "review\nsecond pass");
+}
+
+#[test]
+fn number_slot_compares_numerically() {
+    use spackle::slot::SlotType;
+
+    let project = scaffold(&[("out.j2", "{% if count > 2 %}many{% else %}few{% endif %}")]);
+    let slots = vec![typed_slot("count", SlotType::Number)];
+
+    assert_eq!(
+        fill_all_typed(&project, &data(&[("count", "5")]), &slots)[0].1,
+        "many"
+    );
+    assert_eq!(
+        fill_all_typed(&project, &data(&[("count", "1")]), &slots)[0].1,
+        "few"
+    );
+}
+
+/// Conversion changes conditionals; printed output stays the same.
+#[test]
+fn typed_slots_print_the_same_text_as_before() {
+    use spackle::slot::SlotType;
+
+    let project = scaffold(&[("out.j2", "{{ flag }}|{{ count }}|{{ name }}")]);
+    let slots = vec![
+        typed_slot("flag", SlotType::Boolean),
+        typed_slot("count", SlotType::Number),
+        typed_slot("name", SlotType::String),
+    ];
+
+    let files = fill_all_typed(
+        &project,
+        &data(&[("flag", "false"), ("count", "5"), ("name", "spackle")]),
+        &slots,
+    );
+    assert_eq!(files[0].1, "false|5|spackle");
+}
+
+/// Filenames use the same context, so a name that branches on a boolean
+/// follows the value too.
+#[test]
+fn boolean_slot_gates_a_filename() {
+    use spackle::slot::SlotType;
+
+    let project = scaffold(&[("{% if beta %}beta{% else %}stable{% endif %}.md.j2", "body")]);
+    let slots = vec![typed_slot("beta", SlotType::Boolean)];
+
+    let files = fill_all_typed(&project, &data(&[("beta", "false")]), &slots);
+    assert_eq!(files[0].0, "stable.md");
 }
