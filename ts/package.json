@@ -41,9 +41,9 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "@types/node": "^26.1.0",
-    "oxfmt": "^0.57.0",
-    "oxlint": "^1.72.0",
+    "@types/node": "^26.5.1",
+    "oxfmt": "^0.67.0",
+    "oxlint": "^1.82.0",
     "oxlint-tsgolint": "^0.24.0",
     "typescript": "^6.0.3"
   }
